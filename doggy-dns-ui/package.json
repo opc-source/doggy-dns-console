@@ -1,6 +1,6 @@
 {
   "name": "doggy-dns-ui",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -17,11 +17,19 @@
     "format": "oxfmt src/"
   },
   "dependencies": {
+    "@ag-ui/core": "^1.0.3",
+    "@fontsource-variable/geist": "^5.3.0",
+    "@fontsource-variable/geist-mono": "^5.3.0",
+    "@lucide/vue": "^1.61.0",
+    "echarts": "^6.1.0",
     "pinia": "^4.0.3",
-    "vue": "rc"
+    "vue": "3.5.44",
+    "vue-echarts": "^8.3.2",
+    "vue-router": "^4.6.4"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
+    "@tailwindcss/vite": "^4.3.3",
     "@tsconfig/node24": "^24.0.5",
     "@types/jsdom": "^30.0.0",
     "@types/node": "^24.13.4",
@@ -40,6 +48,7 @@
     "npm-run-all2": "^9.0.3",
     "oxfmt": "^0.67.0",
     "oxlint": "~1.82.0",
+    "tailwindcss": "^4.3.3",
     "typescript": "npm:typescript-native-bridge@latest",
     "vite": "^8.2.2",
     "vite-plugin-vue-devtools": "^8.2.1",
@@ -51,19 +60,6 @@
     "node": "^22.18.0 || >=24.12.0"
   },
   "overrides": {
-    "vue": "rc",
-    "@vue/compiler-core": "rc",
-    "@vue/compiler-dom": "rc",
-    "@vue/compiler-sfc": "rc",
-    "@vue/compiler-ssr": "rc",
-    "@vue/compiler-vapor": "rc",
-    "@vue/reactivity": "rc",
-    "@vue/runtime-core": "rc",
-    "@vue/runtime-dom": "rc",
-    "@vue/runtime-vapor": "rc",
-    "@vue/server-renderer": "rc",
-    "@vue/shared": "rc",
-    "@vue/compat": "rc",
     "typescript": "$typescript"
   }
 }
