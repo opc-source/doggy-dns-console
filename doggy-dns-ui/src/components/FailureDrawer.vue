@@ -59,7 +59,10 @@ function when(ts: number) {
 
 <template>
   <div class="fixed inset-0 z-40 flex justify-end bg-black/40 backdrop-blur-[2px]" @click.self="emit('close')">
-    <aside class="flex h-full w-full max-w-[480px] flex-col border-l border-border bg-surface shadow-2xl" role="dialog" aria-modal="true" aria-label="Failure detail">
+    <aside class="flex h-full w-full max-w-[480px] flex-col border-l border-border bg-surface shadow-2xl" data-testid="failure-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Failure detail">
       <header class="border-b border-border px-4 py-4">
         <div class="flex items-start justify-between gap-3">
           <div class="min-w-0">

@@ -19,10 +19,10 @@ async fn mount_tools_list(server: &MockServer) {
     Mock::given(method("POST"))
         .and(path("/mcp"))
         .and(body_partial_json(json!({"method": "tools/list"})))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(include_str!("fixtures/oo_mcp_tools.json"), "application/json"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            include_str!("fixtures/oo_mcp_tools.json"),
+            "application/json",
+        ))
         .mount(server)
         .await;
 }
@@ -93,7 +93,8 @@ async fn call_tool_uses_tools_call_with_full_detail() {
 
 #[tokio::test]
 async fn rejects_tool_outside_allowlist_before_network() {
-    let client = Arc::new(OoMcpClient::new(test_cfg("http://127.0.0.1:1/mcp".to_string())).unwrap());
+    let client =
+        Arc::new(OoMcpClient::new(test_cfg("http://127.0.0.1:1/mcp".to_string())).unwrap());
     let err = client
         .call_tool("DeleteStream", json!({}))
         .await

@@ -20,3 +20,6 @@ lcov.info
 
 # Superpowers scratch
 .superpowers/
+
+# Local console data
+/data/

@@ -1,4 +1,4 @@
-import { ref, watch } from 'vue'
+import { reactive, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 
 import { apiGet, apiPost } from '@/api/http'
@@ -49,7 +49,7 @@ export const useChatStore = defineStore('chat', () => {
     error.value = null
     const id = await ensureSession()
     messages.value.push({ role: 'user', content })
-    const assistant: ChatMessage = { role: 'assistant', content: '', toolCalls: [] }
+    const assistant = reactive<ChatMessage>({ role: 'assistant', content: '', toolCalls: [] })
     messages.value.push(assistant)
 
     const stopText = watch(stream.text, (value) => {

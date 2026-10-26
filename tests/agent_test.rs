@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use adk_rust::model::{ScriptedLlm, ScriptedResponse};
 use adk_rust::runner::Runner;
@@ -9,7 +9,9 @@ use async_trait::async_trait;
 use doggy_dns_console::agent::build_agent;
 use doggy_dns_console::datasource::fixture::FixtureSource;
 use doggy_dns_console::datasource::{FixedClock, InstanceSource, TelemetrySource};
-use doggy_dns_console::domain::{FailureDetail, FailureFilter, FailureGroup, Overview, SeenInstance, Window};
+use doggy_dns_console::domain::{
+    FailureDetail, FailureFilter, FailureGroup, Overview, SeenInstance, Window,
+};
 use doggy_dns_console::error::DataError;
 use doggy_dns_console::service::ConsoleService;
 use futures::StreamExt;

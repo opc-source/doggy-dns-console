@@ -23,7 +23,8 @@ impl ConsoleService {
     pub async fn overview(&self, window: Window) -> Result<Overview, DataError> {
         let mut overview = self.telemetry.overview(window).await?;
         let instances = self.instances.list().await?;
-        overview.instances_online = instances.iter().filter(|instance| instance.online).count() as u32;
+        overview.instances_online =
+            instances.iter().filter(|instance| instance.online).count() as u32;
         overview.instances_total = instances.len() as u32;
         Ok(overview)
     }

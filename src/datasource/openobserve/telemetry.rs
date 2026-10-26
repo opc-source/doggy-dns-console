@@ -4,7 +4,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::datasource::openobserve::client::{OpenObserveClient, PromSeries};
-use crate::datasource::openobserve::normalize::{normalize_log_row, normalize_span_row, sql_escape};
+use crate::datasource::openobserve::normalize::{
+    normalize_log_row, normalize_span_row, sql_escape,
+};
 use crate::datasource::openobserve::overview::{
     failure_query, failure_series_query, p95_query, seen_query, series_query, total_query,
 };
@@ -88,7 +90,10 @@ impl TelemetrySource for OpenObserveTelemetry {
             let Some(log) = normalize_log_row(&row) else {
                 continue;
             };
-            let code = log.response_code.clone().unwrap_or_else(|| "SERVFAIL".into());
+            let code = log
+                .response_code
+                .clone()
+                .unwrap_or_else(|| "SERVFAIL".into());
             if filter.response_code.is_none() && code == "NXDOMAIN" {
                 continue;
             }
@@ -98,7 +103,10 @@ impl TelemetrySource for OpenObserveTelemetry {
                 continue;
             }
             if let Some(domain) = &filter.domain
-                && !log.query.as_deref().is_some_and(|query| query.contains(domain.as_str()))
+                && !log
+                    .query
+                    .as_deref()
+                    .is_some_and(|query| query.contains(domain.as_str()))
             {
                 continue;
             }
@@ -106,34 +114,36 @@ impl TelemetrySource for OpenObserveTelemetry {
             if trace_id.is_empty() {
                 continue;
             }
-            let entry = groups.entry(trace_id.clone()).or_insert_with(|| FailureGroup {
-                key: format!("trace:{trace_id}"),
-                trace_id: Some(trace_id.clone()),
-                query: log.query.clone().unwrap_or_else(|| "unknown".to_string()),
-                qtype: log.qtype.clone().unwrap_or_else(|| "A".to_string()),
-                instance: log.instance.clone(),
-                authority: log.authority.clone(),
-                response_code: code.clone(),
-                error: log.error.clone(),
-                count: 0,
-                first_seen: log.record.ts,
-                last_seen: log.record.ts,
-                duration_ms: None,
-            });
+            let entry = groups
+                .entry(trace_id.clone())
+                .or_insert_with(|| FailureGroup {
+                    key: format!("trace:{trace_id}"),
+                    trace_id: Some(trace_id.clone()),
+                    query: log.query.clone().unwrap_or_else(|| "unknown".to_string()),
+                    qtype: log.qtype.clone().unwrap_or_else(|| "A".to_string()),
+                    instance: log.instance.clone(),
+                    authority: log.authority.clone(),
+                    response_code: code.clone(),
+                    error: log.error.clone(),
+                    count: 0,
+                    first_seen: log.record.ts,
+                    last_seen: log.record.ts,
+                    duration_ms: None,
+                });
             entry.count += 1;
             entry.first_seen = entry.first_seen.min(log.record.ts);
             entry.last_seen = entry.last_seen.max(log.record.ts);
-            if entry.query == "unknown" {
-                if let Some(query) = log.query {
-                    entry.query = query;
-                }
+            if entry.query == "unknown"
+                && let Some(query) = log.query
+            {
+                entry.query = query;
             }
             if entry.error.is_none() {
                 entry.error = log.error;
             }
         }
         let mut result: Vec<_> = groups.into_values().collect();
-        result.sort_by(|left, right| right.last_seen.cmp(&left.last_seen));
+        result.sort_by_key(|left| std::cmp::Reverse(left.last_seen));
         result.truncate(limit);
         Ok(result)
     }
@@ -155,7 +165,11 @@ impl TelemetrySource for OpenObserveTelemetry {
             return Err(DataError::NotFound(format!("trace {trace_id}")));
         }
         let first = &logs[0];
-        let last_ts = logs.iter().map(|log| log.record.ts).max().unwrap_or(first.record.ts);
+        let last_ts = logs
+            .iter()
+            .map(|log| log.record.ts)
+            .max()
+            .unwrap_or(first.record.ts);
         let group = FailureGroup {
             key: format!("trace:{trace_id}"),
             trace_id: Some(trace_id.to_string()),
@@ -178,7 +192,8 @@ impl TelemetrySource for OpenObserveTelemetry {
             .search_traces(
                 &format!(
                     "SELECT * FROM \"{}\" WHERE trace_id = '{}' ORDER BY start_time ASC LIMIT 200",
-                    self.client.config().trace_stream, escaped
+                    self.client.config().trace_stream,
+                    escaped
                 ),
                 start,
                 end,
@@ -199,10 +214,7 @@ impl TelemetrySource for OpenObserveTelemetry {
     async fn seen_instances(&self, window: Window) -> Result<Vec<SeenInstance>, DataError> {
         let (start, end) = self.range(window);
         let seen = seen_query(&self.client_config().metric_queries);
-        let series = self
-            .client
-            .query_promql(&seen, start, end, 300)
-            .await?;
+        let series = self.client.query_promql(&seen, start, end, 300).await?;
         Ok(series
             .into_iter()
             .filter_map(|item| {

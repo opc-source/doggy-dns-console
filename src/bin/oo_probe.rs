@@ -25,10 +25,7 @@ async fn main() -> Result<()> {
         "SELECT * FROM \"{}\" ORDER BY _timestamp DESC LIMIT 5",
         config.openobserve.log_stream
     );
-    match client
-        .search_logs(&sql, now - 60 * 60 * 1000, now, 5)
-        .await
-    {
+    match client.search_logs(&sql, now - 60 * 60 * 1000, now, 5).await {
         Ok(rows) => {
             println!("recent log rows ({}):", rows.len());
             for row in rows {

@@ -17,11 +17,7 @@ async fn main() -> Result<()> {
     let tools = client.allowed_tools().await?;
     println!("allowlisted tools ({}):", tools.len());
     for tool in tools {
-        println!(
-            "\n- {} ({})",
-            tool.name(),
-            tool.description()
-        );
+        println!("\n- {} ({})", tool.name(), tool.description());
         if let Some(schema) = tool.parameters_schema() {
             println!("{}", serde_json::to_string_pretty(&schema)?);
         }

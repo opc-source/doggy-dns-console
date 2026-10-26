@@ -224,9 +224,7 @@ impl OpenObserveClient {
     fn authorize(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match &self.cfg.auth {
             OoAuth::None => request,
-            OoAuth::Basic { username, password } => {
-                request.basic_auth(username, Some(password))
-            }
+            OoAuth::Basic { username, password } => request.basic_auth(username, Some(password)),
             OoAuth::Bearer(token) => request.bearer_auth(token),
         }
     }

@@ -6,7 +6,9 @@ use axum::http::{Request, StatusCode};
 use doggy_dns_console::api::state::{ApiState, Probe};
 use doggy_dns_console::datasource::fixture::FixtureSource;
 use doggy_dns_console::datasource::{FixedClock, InstanceSource, TelemetrySource};
-use doggy_dns_console::domain::{FailureDetail, FailureFilter, FailureGroup, Overview, SeenInstance, Window};
+use doggy_dns_console::domain::{
+    FailureDetail, FailureFilter, FailureGroup, Overview, SeenInstance, Window,
+};
 use doggy_dns_console::error::DataError;
 use doggy_dns_console::service::ConsoleService;
 use http_body_util::BodyExt;
@@ -68,7 +70,11 @@ async fn json_body(response: axum::response::Response) -> serde_json::Value {
 async fn overview_returns_camel_case_json() {
     let app = app_with(fixture() as Arc<dyn TelemetrySource>);
     let response = app
-        .oneshot(Request::get("/api/overview?windowMinutes=60").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::get("/api/overview?windowMinutes=60")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -94,7 +100,11 @@ async fn overview_maps_upstream_failure_to_502() {
 async fn failures_limit_is_clamped_and_returns_list() {
     let app = app_with(fixture() as Arc<dyn TelemetrySource>);
     let response = app
-        .oneshot(Request::get("/api/failures?limit=9999").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::get("/api/failures?limit=9999")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -106,7 +116,11 @@ async fn failures_limit_is_clamped_and_returns_list() {
 async fn connections_reports_sources() {
     let app = app_with(fixture() as Arc<dyn TelemetrySource>);
     let response = app
-        .oneshot(Request::get("/api/connections").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::get("/api/connections")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);

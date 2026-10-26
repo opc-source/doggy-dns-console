@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ToolCallCard from './ToolCallCard.vue'
 import type { ChatMessage } from '@/stores/chat'
 
 defineProps<{ message: ChatMessage }>()

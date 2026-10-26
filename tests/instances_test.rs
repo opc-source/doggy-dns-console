@@ -12,12 +12,7 @@ struct FakeTransport;
 
 #[async_trait]
 impl InstanceTransport for FakeTransport {
-    async fn call(
-        &self,
-        endpoint: &str,
-        tool: &str,
-        _args: Value,
-    ) -> Result<Value, DataError> {
+    async fn call(&self, endpoint: &str, tool: &str, _args: Value) -> Result<Value, DataError> {
         if endpoint.contains("bad") {
             return Err(DataError::Upstream("connection refused".into()));
         }
@@ -50,10 +45,8 @@ impl InstanceTransport for FakeTransport {
 
 #[tokio::test]
 async fn lists_instances_and_reads_plugins() {
-    let source = McpInstanceSource::new(
-        vec!["http://good/mcp".to_string()],
-        Arc::new(FakeTransport),
-    );
+    let source =
+        McpInstanceSource::new(vec!["http://good/mcp".to_string()], Arc::new(FakeTransport));
     let instances = source.list().await.unwrap();
     assert_eq!(instances[0].id, "dns-node-1");
     assert!(instances[0].mcp_reachable);
@@ -74,6 +67,12 @@ async fn one_unreachable_endpoint_degrades() {
     ));
     let merged = MergedInstanceSource::new(mcp, telemetry, Arc::new(FixedClock(now)));
     let list = merged.list().await.unwrap();
-    assert!(list.iter().any(|item| item.id == "dns-node-1" && item.mcp_reachable));
-    assert!(list.iter().any(|item| item.id == "dns-node-2" && !item.mcp_reachable));
+    assert!(
+        list.iter()
+            .any(|item| item.id == "dns-node-1" && item.mcp_reachable)
+    );
+    assert!(
+        list.iter()
+            .any(|item| item.id == "dns-node-2" && !item.mcp_reachable)
+    );
 }

@@ -23,9 +23,10 @@ async fn search_logs_posts_sql_to_org_endpoint_with_basic_auth() {
         .and(wiremock::matchers::path("/api/default/_search"))
         .and(wiremock::matchers::query_param("type", "logs"))
         .and(wiremock::matchers::header("authorization", "Basic dTpw"))
-        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
-            serde_json::json!({"hits":[{"body":"x","trace_id":"t1"}]}),
-        ))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"hits":[{"body":"x","trace_id":"t1"}]})),
+        )
         .mount(&server)
         .await;
 

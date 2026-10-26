@@ -174,7 +174,9 @@ async fn tool_failure_detail(
     args: Value,
 ) -> Result<Value, AdkError> {
     let args = parse(args)?;
-    get_failure_detail(&state.service, args).await.map_err(to_adk)
+    get_failure_detail(&state.service, args)
+        .await
+        .map_err(to_adk)
 }
 
 async fn tool_list_instances(
@@ -191,11 +193,14 @@ async fn tool_instance_detail(
     args: Value,
 ) -> Result<Value, AdkError> {
     let args = parse(args)?;
-    get_instance_detail(&state.service, args).await.map_err(to_adk)
+    get_instance_detail(&state.service, args)
+        .await
+        .map_err(to_adk)
 }
 
 fn parse<T: for<'de> Deserialize<'de>>(args: Value) -> Result<T, AdkError> {
-    serde_json::from_value(args).map_err(|error| AdkError::tool(format!("invalid arguments: {error}")))
+    serde_json::from_value(args)
+        .map_err(|error| AdkError::tool(format!("invalid arguments: {error}")))
 }
 
 fn to_adk(error: DataError) -> AdkError {

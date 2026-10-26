@@ -52,10 +52,10 @@ async fn failure_list_excludes_nxdomain_and_dedupes_by_trace() {
     Mock::given(method("POST"))
         .and(path("/api/default/_search"))
         .and(query_param("type", "logs"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(include_str!("fixtures/oo_failures_flat.json"), "application/json"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            include_str!("fixtures/oo_failures_flat.json"),
+            "application/json",
+        ))
         .mount(&server)
         .await;
 
@@ -71,7 +71,10 @@ async fn failure_list_excludes_nxdomain_and_dedupes_by_trace() {
         .await
         .unwrap();
     assert!(groups.iter().all(|group| group.response_code != "NXDOMAIN"));
-    let t1 = groups.iter().find(|group| group.trace_id.as_deref() == Some("t1")).unwrap();
+    let t1 = groups
+        .iter()
+        .find(|group| group.trace_id.as_deref() == Some("t1"))
+        .unwrap();
     assert_eq!(t1.count, 2);
     assert_eq!(groups.len(), 3);
 }
@@ -82,10 +85,10 @@ async fn failure_detail_joins_trace_spans() {
     Mock::given(method("POST"))
         .and(path("/api/default/_search"))
         .and(query_param("type", "logs"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(include_str!("fixtures/oo_failures_flat.json"), "application/json"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            include_str!("fixtures/oo_failures_flat.json"),
+            "application/json",
+        ))
         .mount(&server)
         .await;
     Mock::given(method("POST"))

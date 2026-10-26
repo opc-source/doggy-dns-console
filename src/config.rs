@@ -84,10 +84,12 @@ impl Config {
         };
 
         let addr_raw = text("CONSOLE_ADDR").unwrap_or_else(|| "127.0.0.1:8787".to_string());
-        let addr = addr_raw.parse::<SocketAddr>().map_err(|_| ConfigError::Invalid {
-            name: "CONSOLE_ADDR",
-            value: addr_raw.clone(),
-        })?;
+        let addr = addr_raw
+            .parse::<SocketAddr>()
+            .map_err(|_| ConfigError::Invalid {
+                name: "CONSOLE_ADDR",
+                value: addr_raw.clone(),
+            })?;
 
         let oo_base_url = text("OO_BASE_URL");
         if !demo && oo_base_url.is_none() {
@@ -121,11 +123,7 @@ impl Config {
             if oo_base_url.is_empty() {
                 String::new()
             } else {
-                format!(
-                    "{}/api/{}/mcp",
-                    oo_base_url.trim_end_matches('/'),
-                    oo_org
-                )
+                format!("{}/api/{}/mcp", oo_base_url.trim_end_matches('/'), oo_org)
             }
         });
         let oo_mcp_auth = match text("OO_MCP_TOKEN") {
@@ -135,9 +133,8 @@ impl Config {
 
         Ok(Self {
             addr,
-            db_url: text("CONSOLE_DB").unwrap_or_else(|| "sqlite://data/console.db".to_string()),
-            app_name: text("CONSOLE_APP_NAME")
-                .unwrap_or_else(|| "doggy-dns-console".to_string()),
+            db_url: text("CONSOLE_DB").unwrap_or_else(|| "sqlite:data/console.db".to_string()),
+            app_name: text("CONSOLE_APP_NAME").unwrap_or_else(|| "doggy-dns-console".to_string()),
             user_id: text("CONSOLE_USER_ID").unwrap_or_else(|| "local".to_string()),
             demo,
             openobserve: OpenObserveConfig {
@@ -148,9 +145,8 @@ impl Config {
                 trace_stream: text("OO_TRACE_STREAM").unwrap_or_else(|| "doggy-dns".to_string()),
                 metric_queries: text("OO_METRIC_QUERIES")
                     .unwrap_or_else(|| "dns_queries_total".to_string()),
-                metric_duration: text("OO_METRIC_DURATION").unwrap_or_else(|| {
-                    "dns_query_duration_milliseconds_bucket".to_string()
-                }),
+                metric_duration: text("OO_METRIC_DURATION")
+                    .unwrap_or_else(|| "dns_query_duration_milliseconds_bucket".to_string()),
             },
             oo_mcp: OoMcpConfig {
                 url: oo_mcp_url.clone(),

@@ -83,7 +83,11 @@ impl FixtureSource {
                     count,
                     first_seen: now - 30 * 60 * 1000,
                     last_seen: now - 60 * 1000,
-                    duration_ms: if code == "SERVFAIL" { Some(5012) } else { Some(2) },
+                    duration_ms: if code == "SERVFAIL" {
+                        Some(5012)
+                    } else {
+                        Some(2)
+                    },
                 },
             )
             .collect()
@@ -194,7 +198,13 @@ impl InstanceSource for FixtureSource {
             instance("dns-node-1", true, true, now, "0.1.0"),
             instance("dns-node-2", true, true, now - 30_000, "0.1.0"),
             instance("dns-node-3", true, false, now - 4 * 60 * 1000, "0.0.9"),
-            instance("dns-node-4", false, false, now - 3 * 60 * 60 * 1000, "0.0.8"),
+            instance(
+                "dns-node-4",
+                false,
+                false,
+                now - 3 * 60 * 60 * 1000,
+                "0.0.8",
+            ),
         ])
     }
 
@@ -243,7 +253,13 @@ impl InstanceSource for FixtureSource {
     }
 }
 
-fn instance(id: &str, online: bool, mcp_reachable: bool, last_seen: i64, version: &str) -> Instance {
+fn instance(
+    id: &str,
+    online: bool,
+    mcp_reachable: bool,
+    last_seen: i64,
+    version: &str,
+) -> Instance {
     Instance {
         id: id.to_string(),
         host: id.to_string(),

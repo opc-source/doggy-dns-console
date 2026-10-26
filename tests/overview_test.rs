@@ -5,8 +5,8 @@ use doggy_dns_console::datasource::openobserve::client::OpenObserveClient;
 use doggy_dns_console::datasource::openobserve::overview::{
     failure_query, failure_series_query, p95_query, series_query, total_query,
 };
-use doggy_dns_console::datasource::openobserve::telemetry::OpenObserveTelemetry;
 use doggy_dns_console::datasource::openobserve::seen_query;
+use doggy_dns_console::datasource::openobserve::telemetry::OpenObserveTelemetry;
 use doggy_dns_console::datasource::{FixedClock, TelemetrySource};
 use doggy_dns_console::domain::Window;
 use wiremock::matchers::{method, path, query_param};
@@ -49,11 +49,48 @@ async fn overview_computes_success_rate_and_series_from_promql() {
     let server = MockServer::start().await;
     let now = 1_761_436_800_000_i64;
     let window = Window::new(60);
-    mount(&server, &total_query("dns_queries_total", window), matrix(serde_json::json!([[ts(now), "1000"]]), serde_json::json!({}))).await;
-    mount(&server, &failure_query("dns_queries_total", window), matrix(serde_json::json!([[ts(now), "12"]]), serde_json::json!({}))).await;
-    mount(&server, &p95_query("dns_query_duration_milliseconds_bucket", window), matrix(serde_json::json!([[ts(now), "12.4"]]), serde_json::json!({}))).await;
-    mount(&server, &series_query("dns_queries_total", false), matrix(serde_json::json!([[ts(now - 60_000), "10"], [ts(now), "20"]]), serde_json::json!({}))).await;
-    mount(&server, &failure_series_query("dns_queries_total"), matrix(serde_json::json!([[ts(now - 60_000), "1"], [ts(now), "2"]]), serde_json::json!({}))).await;
+    mount(
+        &server,
+        &total_query("dns_queries_total", window),
+        matrix(
+            serde_json::json!([[ts(now), "1000"]]),
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    mount(
+        &server,
+        &failure_query("dns_queries_total", window),
+        matrix(serde_json::json!([[ts(now), "12"]]), serde_json::json!({})),
+    )
+    .await;
+    mount(
+        &server,
+        &p95_query("dns_query_duration_milliseconds_bucket", window),
+        matrix(
+            serde_json::json!([[ts(now), "12.4"]]),
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    mount(
+        &server,
+        &series_query("dns_queries_total", false),
+        matrix(
+            serde_json::json!([[ts(now - 60_000), "10"], [ts(now), "20"]]),
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    mount(
+        &server,
+        &failure_series_query("dns_queries_total"),
+        matrix(
+            serde_json::json!([[ts(now - 60_000), "1"], [ts(now), "2"]]),
+            serde_json::json!({}),
+        ),
+    )
+    .await;
 
     let telemetry = OpenObserveTelemetry::new(
         Arc::new(OpenObserveClient::new(config(server.uri())).unwrap()),
@@ -72,11 +109,36 @@ async fn overview_returns_none_success_rate_when_counter_is_zero() {
     let server = MockServer::start().await;
     let now = 1_761_436_800_000_i64;
     let window = Window::new(60);
-    mount(&server, &total_query("dns_queries_total", window), matrix(serde_json::json!([[ts(now), "0"]]), serde_json::json!({}))).await;
-    mount(&server, &failure_query("dns_queries_total", window), matrix(serde_json::json!([[ts(now), "0"]]), serde_json::json!({}))).await;
-    mount(&server, &p95_query("dns_query_duration_milliseconds_bucket", window), matrix(serde_json::json!([]), serde_json::json!({}))).await;
-    mount(&server, &series_query("dns_queries_total", false), matrix(serde_json::json!([]), serde_json::json!({}))).await;
-    mount(&server, &failure_series_query("dns_queries_total"), matrix(serde_json::json!([]), serde_json::json!({}))).await;
+    mount(
+        &server,
+        &total_query("dns_queries_total", window),
+        matrix(serde_json::json!([[ts(now), "0"]]), serde_json::json!({})),
+    )
+    .await;
+    mount(
+        &server,
+        &failure_query("dns_queries_total", window),
+        matrix(serde_json::json!([[ts(now), "0"]]), serde_json::json!({})),
+    )
+    .await;
+    mount(
+        &server,
+        &p95_query("dns_query_duration_milliseconds_bucket", window),
+        matrix(serde_json::json!([]), serde_json::json!({})),
+    )
+    .await;
+    mount(
+        &server,
+        &series_query("dns_queries_total", false),
+        matrix(serde_json::json!([]), serde_json::json!({})),
+    )
+    .await;
+    mount(
+        &server,
+        &failure_series_query("dns_queries_total"),
+        matrix(serde_json::json!([]), serde_json::json!({})),
+    )
+    .await;
 
     let telemetry = OpenObserveTelemetry::new(
         Arc::new(OpenObserveClient::new(config(server.uri())).unwrap()),

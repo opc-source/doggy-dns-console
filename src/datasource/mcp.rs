@@ -37,8 +37,7 @@ impl InstanceTransport for RmcpTransport {
         if let Some(token) = &self.token {
             config = config.auth_header(format!("Bearer {token}"));
         }
-        let transport =
-            StreamableHttpClientTransport::with_client(reqwest::Client::new(), config);
+        let transport = StreamableHttpClientTransport::with_client(reqwest::Client::new(), config);
         let client_config = ClientConfig::new(
             ClientCapabilities::default(),
             Implementation::new("doggy-dns-console", env!("CARGO_PKG_VERSION")),
@@ -58,7 +57,8 @@ impl InstanceTransport for RmcpTransport {
         let arguments = args.as_object().cloned().unwrap_or_default();
         let result = tokio::time::timeout(
             self.timeout,
-            client.call_tool(CallToolRequestParams::new(tool.to_string()).with_arguments(arguments)),
+            client
+                .call_tool(CallToolRequestParams::new(tool.to_string()).with_arguments(arguments)),
         )
         .await
         .map_err(|_| DataError::Upstream(format!("mcp call timeout: {endpoint}/{tool}")))?
@@ -104,7 +104,9 @@ impl McpInstanceSource {
     }
 
     async fn status_at(&self, endpoint: &str) -> Result<Value, DataError> {
-        self.transport.call(endpoint, "get_status", Value::Object(Default::default())).await
+        self.transport
+            .call(endpoint, "get_status", Value::Object(Default::default()))
+            .await
     }
 }
 
@@ -121,7 +123,9 @@ impl InstanceSource for McpInstanceSource {
             match result {
                 Ok(value) => match instance_from_status(&value) {
                     Some(instance) => instances.push(instance),
-                    None => tracing::warn!(endpoint = %endpoint, "mcp get_status missing instance identity"),
+                    None => {
+                        tracing::warn!(endpoint = %endpoint, "mcp get_status missing instance identity")
+                    }
                 },
                 Err(error) => {
                     tracing::warn!(endpoint = %endpoint, error = %error, "mcp instance unavailable");
@@ -161,7 +165,12 @@ impl InstanceSource for McpInstanceSource {
                 .call(endpoint, "get_config", Value::Object(Default::default()))
                 .await
                 .ok()
-                .and_then(|value| value.get("content").and_then(Value::as_str).map(ToString::to_string));
+                .and_then(|value| {
+                    value
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                });
 
             return Ok(InstanceDetail {
                 instance,
@@ -199,10 +208,7 @@ fn instance_from_status(value: &Value) -> Option<Instance> {
         .get("instanceId")
         .or_else(|| value.get("instance_id"))
         .and_then(Value::as_str)?;
-    let host = value
-        .get("host")
-        .and_then(Value::as_str)
-        .unwrap_or(id);
+    let host = value.get("host").and_then(Value::as_str).unwrap_or(id);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
@@ -231,10 +237,7 @@ fn plugins_from_value(value: &Value) -> Vec<PluginInfo> {
                     Some(PluginInfo {
                         order: item.get("order").and_then(Value::as_u64).unwrap_or(0) as usize,
                         kind: item.get("kind").and_then(Value::as_str)?.to_string(),
-                        enabled: item
-                            .get("enabled")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(true),
+                        enabled: item.get("enabled").and_then(Value::as_bool).unwrap_or(true),
                         details: item
                             .get("details")
                             .cloned()

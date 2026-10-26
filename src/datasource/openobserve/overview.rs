@@ -27,9 +27,7 @@ pub fn series_query(metric: &str, failures: bool) -> String {
 }
 
 pub fn failure_series_query(metric: &str) -> String {
-    format!(
-        "sum(rate({metric}{{dns_response_code=~\"SERVFAIL|REFUSED|FORMERR\"}}[5m])) * 60"
-    )
+    format!("sum(rate({metric}{{dns_response_code=~\"SERVFAIL|REFUSED|FORMERR\"}}[5m])) * 60")
 }
 
 pub fn seen_query(metric: &str) -> String {

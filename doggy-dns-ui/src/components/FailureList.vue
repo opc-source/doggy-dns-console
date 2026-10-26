@@ -23,6 +23,7 @@ function shortName(query: string) {
     <button
       v-for="group in groups.slice(0, 5)"
       :key="group.key"
+      data-testid="failure-row"
       class="focus-ring flex w-full items-center gap-3 border-b border-border/60 px-4 py-3 text-left transition-colors last:border-b-0 hover:bg-surface-2"
       @click="$emit('select', group)"
     >

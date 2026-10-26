@@ -43,14 +43,7 @@ impl OoMcpClient {
 
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
         for (upstream, exposed) in ALLOWED_OO_TOOLS {
-            let definition = list
-                .iter()
-                .find(|tool| tool.name == upstream)
-                .cloned()
-                .or_else(|| {
-                    // OO only exposes pinned tools in tools/list; search for the rest.
-                    None
-                });
+            let definition = list.iter().find(|tool| tool.name == upstream).cloned();
             let definition = match definition {
                 Some(definition) => definition,
                 None => match self.search_tool(upstream).await {
@@ -120,14 +113,12 @@ impl OoMcpClient {
     }
 
     async fn rpc(&self, method: &str, params: Value) -> Result<Value, DataError> {
-        let request = self
-            .authorize(self.http.post(&self.cfg.url))
-            .json(&json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": method,
-                "params": params
-            }));
+        let request = self.authorize(self.http.post(&self.cfg.url)).json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params
+        }));
         let response = request
             .send()
             .await
@@ -155,9 +146,7 @@ impl OoMcpClient {
     fn authorize(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match &self.cfg.auth {
             OoAuth::None => request,
-            OoAuth::Basic { username, password } => {
-                request.basic_auth(username, Some(password))
-            }
+            OoAuth::Basic { username, password } => request.basic_auth(username, Some(password)),
             OoAuth::Bearer(token) => request.bearer_auth(token),
         }
     }
@@ -185,11 +174,7 @@ impl Tool for OoMcpTool {
         Some(self.schema.clone())
     }
 
-    async fn execute(
-        &self,
-        _ctx: Arc<dyn ToolContext>,
-        args: Value,
-    ) -> Result<Value, AdkError> {
+    async fn execute(&self, _ctx: Arc<dyn ToolContext>, args: Value) -> Result<Value, AdkError> {
         self.client
             .call_tool(&self.upstream_name, args)
             .await
