@@ -1,4 +1,5 @@
 pub mod fixture;
+pub mod openobserve;
 
 use crate::domain::{
     FailureDetail, FailureFilter, FailureGroup, Instance, InstanceDetail, Overview, SeenInstance,
