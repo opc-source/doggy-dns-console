@@ -24,7 +24,7 @@ pub fn build_agent(
     service: Arc<ConsoleService>,
     extra_tools: Vec<Arc<dyn Tool>>,
 ) -> anyhow::Result<Arc<dyn Agent>> {
-    let mut builder = LlmAgentBuilder::new("doggy-dns-copilot")
+    let mut builder = LlmAgentBuilder::new("doggy-dns-console")
         .description("Read-only DNS observability copilot for doggy-dns")
         .instruction(prompt::SYSTEM_PROMPT)
         .model(model);
