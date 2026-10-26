@@ -12,3 +12,7 @@ async fn health() -> Json<Value> {
         "version": env!("CARGO_PKG_VERSION"),
     }))
 }
+
+pub async fn console_health() -> Json<Value> {
+    health().await
+}
