@@ -1,0 +1,8 @@
+{"hits":[
+  {"_timestamp":1761436800000000,"body":"upstream forward lookup failed","severity_text":"ERROR","trace_id":"t1","span_id":"s1","query":"a.example.","qtype":"A","response_code":"SERVFAIL","error":"timeout","host_name":"dns-node-1","authority":"forward[8.8.8.8:53]"},
+  {"_timestamp":1761436860000000,"body":"upstream forward lookup failed","severity_text":"ERROR","trace_id":"t1","span_id":"s2","query":"a.example.","qtype":"A","response_code":"SERVFAIL","error":"timeout","host_name":"dns-node-1","authority":"forward[8.8.8.8:53]"},
+  {"_timestamp":1761436920000000,"body":"authority returned error","severity_text":"WARN","trace_id":"t2","span_id":"s3","attributes":{"query":"b.example.","qtype":"AAAA","response_code":"REFUSED","error":"policy"},"host_name":"dns-node-2"},
+  {"_timestamp":1761436980000000,"body":"no authority handled query","severity_text":"INFO","trace_id":"t3","query":"missing.example.","qtype":"A","response_code":"NXDOMAIN","host_name":"dns-node-1"},
+  {"_timestamp":1761437040000000,"body":"orphan error","severity_text":"ERROR","query":"c.example.","qtype":"A","response_code":"SERVFAIL"},
+  {"_timestamp":1761437100000000,"body":"upstream forward lookup failed","severity_text":"ERROR","trace_id":"t4","query":"d.example.","qtype":"A","response_code":"SERVFAIL","error":"refused","host_name":"dns-node-3"}
+]}

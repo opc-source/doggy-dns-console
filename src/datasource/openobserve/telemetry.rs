@@ -4,6 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::datasource::openobserve::client::{OpenObserveClient, PromSeries};
+use crate::datasource::openobserve::normalize::{normalize_log_row, normalize_span_row, sql_escape};
 use crate::datasource::openobserve::overview::{
     failure_query, failure_series_query, p95_query, seen_query, series_query, total_query,
 };
@@ -71,16 +72,128 @@ impl TelemetrySource for OpenObserveTelemetry {
         })
     }
 
-    async fn failures(&self, _filter: FailureFilter) -> Result<Vec<FailureGroup>, DataError> {
-        Err(DataError::NotConfigured(
-            "failure queries are not implemented yet".to_string(),
-        ))
+    async fn failures(&self, filter: FailureFilter) -> Result<Vec<FailureGroup>, DataError> {
+        let (start, end) = self.range(filter.window);
+        let limit = filter.limit.clamp(1, 200);
+        let sql = format!(
+            "SELECT * FROM \"{}\" WHERE severity_text IN ('WARN','ERROR') AND _timestamp >= {} AND _timestamp <= {} ORDER BY _timestamp DESC LIMIT {}",
+            self.client.config().log_stream,
+            start.saturating_mul(1000),
+            end.saturating_mul(1000),
+            limit
+        );
+        let rows = self.client.search_logs(&sql, start, end, limit).await?;
+        let mut groups: BTreeMap<String, FailureGroup> = BTreeMap::new();
+        for row in rows {
+            let Some(log) = normalize_log_row(&row) else {
+                continue;
+            };
+            let code = log.response_code.clone().unwrap_or_else(|| "SERVFAIL".into());
+            if filter.response_code.is_none() && code == "NXDOMAIN" {
+                continue;
+            }
+            if let Some(expected) = &filter.response_code
+                && !code.eq_ignore_ascii_case(expected)
+            {
+                continue;
+            }
+            if let Some(domain) = &filter.domain
+                && !log.query.as_deref().is_some_and(|query| query.contains(domain.as_str()))
+            {
+                continue;
+            }
+            let trace_id = log.record.trace_id.clone().unwrap_or_default();
+            if trace_id.is_empty() {
+                continue;
+            }
+            let entry = groups.entry(trace_id.clone()).or_insert_with(|| FailureGroup {
+                key: format!("trace:{trace_id}"),
+                trace_id: Some(trace_id.clone()),
+                query: log.query.clone().unwrap_or_else(|| "unknown".to_string()),
+                qtype: log.qtype.clone().unwrap_or_else(|| "A".to_string()),
+                instance: log.instance.clone(),
+                authority: log.authority.clone(),
+                response_code: code.clone(),
+                error: log.error.clone(),
+                count: 0,
+                first_seen: log.record.ts,
+                last_seen: log.record.ts,
+                duration_ms: None,
+            });
+            entry.count += 1;
+            entry.first_seen = entry.first_seen.min(log.record.ts);
+            entry.last_seen = entry.last_seen.max(log.record.ts);
+            if entry.query == "unknown" {
+                if let Some(query) = log.query {
+                    entry.query = query;
+                }
+            }
+            if entry.error.is_none() {
+                entry.error = log.error;
+            }
+        }
+        let mut result: Vec<_> = groups.into_values().collect();
+        result.sort_by(|left, right| right.last_seen.cmp(&left.last_seen));
+        result.truncate(limit);
+        Ok(result)
     }
 
-    async fn failure_detail(&self, _trace_id: &str) -> Result<FailureDetail, DataError> {
-        Err(DataError::NotConfigured(
-            "failure queries are not implemented yet".to_string(),
-        ))
+    async fn failure_detail(&self, trace_id: &str) -> Result<FailureDetail, DataError> {
+        let end = self.clock.now_ms();
+        let start = end - 24 * 60 * 60 * 1000;
+        let escaped = sql_escape(trace_id);
+        let sql = format!(
+            "SELECT * FROM \"{}\" WHERE trace_id = '{}' AND _timestamp >= {} AND _timestamp <= {} ORDER BY _timestamp ASC LIMIT 200",
+            self.client.config().log_stream,
+            escaped,
+            start.saturating_mul(1000),
+            end.saturating_mul(1000)
+        );
+        let rows = self.client.search_logs(&sql, start, end, 200).await?;
+        let logs: Vec<_> = rows.iter().filter_map(normalize_log_row).collect();
+        if logs.is_empty() {
+            return Err(DataError::NotFound(format!("trace {trace_id}")));
+        }
+        let first = &logs[0];
+        let last_ts = logs.iter().map(|log| log.record.ts).max().unwrap_or(first.record.ts);
+        let group = FailureGroup {
+            key: format!("trace:{trace_id}"),
+            trace_id: Some(trace_id.to_string()),
+            query: first.query.clone().unwrap_or_else(|| "unknown".to_string()),
+            qtype: first.qtype.clone().unwrap_or_else(|| "A".to_string()),
+            instance: first.instance.clone(),
+            authority: first.authority.clone(),
+            response_code: first
+                .response_code
+                .clone()
+                .unwrap_or_else(|| "SERVFAIL".to_string()),
+            error: first.error.clone(),
+            count: logs.len() as u64,
+            first_seen: first.record.ts,
+            last_seen: last_ts,
+            duration_ms: None,
+        };
+        let spans = self
+            .client
+            .search_traces(
+                &format!(
+                    "SELECT * FROM \"{}\" WHERE trace_id = '{}' ORDER BY start_time ASC LIMIT 200",
+                    self.client.config().trace_stream, escaped
+                ),
+                start,
+                end,
+                200,
+            )
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter_map(normalize_span_row)
+            .collect();
+        Ok(FailureDetail {
+            group,
+            logs: logs.into_iter().map(|log| log.record).collect(),
+            spans,
+        })
     }
 
     async fn seen_instances(&self, window: Window) -> Result<Vec<SeenInstance>, DataError> {
