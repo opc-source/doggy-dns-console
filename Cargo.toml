@@ -5,11 +5,28 @@ edition = "2024"
 license = "Apache-2.0"
 
 [dependencies]
-serde = { workspace = true }
-toml = { workspace = true }
-anyhow = { workspace = true }
-async-trait = { workspace = true }
-tracing = { workspace = true }
-arc-swap = { workspace = true }
-tokio = { workspace = true }
-dashmap = { workspace = true }
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["fs", "trace"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+dotenvy = "0.15"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+async-trait = "0.1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+anyhow = "1"
+uuid = { version = "1", features = ["v4"] }
+url = "2"
+rmcp = { version = "3.7", features = ["client", "transport-streamable-http-client-reqwest"] }
+adk-rust = { git = "https://github.com/zavora-ai/adk-rust", rev = "791f6aafa32723f132375084385530ab7f039465", default-features = false, features = ["agents", "models", "openai", "deepseek", "tools", "runner", "sessions", "server"] }
+adk-session = { git = "https://github.com/zavora-ai/adk-rust", rev = "791f6aafa32723f132375084385530ab7f039465", features = ["sqlite"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+wiremock = "0.6"
+tempfile = "3"
+http-body-util = "0.1"
+futures = "0.3"
