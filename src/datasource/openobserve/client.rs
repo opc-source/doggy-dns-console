@@ -27,6 +27,10 @@ impl OpenObserveClient {
         Ok(Self { http, cfg })
     }
 
+    pub fn config(&self) -> &OpenObserveConfig {
+        &self.cfg
+    }
+
     pub async fn search_logs(
         &self,
         sql: &str,
