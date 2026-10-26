@@ -1,0 +1,15 @@
+@theme {
+  --color-bg: #08090b;
+  --color-surface: #101218;
+  --color-surface-2: #161922;
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-text: #e8eaf0;
+  --color-muted: #8b90a0;
+  --color-accent: #c8ff4d;
+  --color-ok: #34d399;
+  --color-warn: #fbbf24;
+  --color-error: #fb7185;
+  --color-info: #5eead4;
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, monospace;
+}

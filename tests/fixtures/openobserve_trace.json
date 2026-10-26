@@ -1,0 +1,4 @@
+{"hits":[
+  {"trace_id":"t1","span_id":"s1","operation_name":"dns.request","duration":5000000,"status_code":"ERROR","attributes":{"dns.question.name":"a.example."}},
+  {"trace_id":"t1","span_id":"s2","operation_name":"dns.error","duration":4000000,"status_code":"ERROR","attributes":{"error.message":"timeout"}}
+]}

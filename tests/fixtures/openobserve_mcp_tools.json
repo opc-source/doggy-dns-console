@@ -1,0 +1,11 @@
+{"jsonrpc":"2.0","id":1,"result":{"tools":[
+  {"name":"StreamList","description":"List streams","inputSchema":{"type":"object","properties":{}}},
+  {"name":"StreamSchema","description":"Stream schema","inputSchema":{"type":"object","properties":{"stream":{"type":"string"}},"required":["stream"]}},
+  {"name":"SearchSQL","description":"Search SQL","inputSchema":{"type":"object","properties":{"org_id":{"type":"string"},"request_body":{"type":"object"}},"required":["org_id","request_body"]}},
+  {"name":"PrometheusRangeQuery","description":"PromQL range","inputSchema":{"type":"object","properties":{"org_id":{"type":"string"},"query":{"type":"string"}},"required":["org_id","query"]}},
+  {"name":"GetLatestTraces","description":"Latest traces","inputSchema":{"type":"object","properties":{}}},
+  {"name":"DeleteStream","description":"Delete a stream","inputSchema":{"type":"object"}},
+  {"name":"DeleteAlert","description":"Delete an alert","inputSchema":{"type":"object"}},
+  {"name":"tool_search","description":"Search tools","inputSchema":{"type":"object"}},
+  {"name":"tools_call","description":"Call a tool","inputSchema":{"type":"object"}}
+]}}
