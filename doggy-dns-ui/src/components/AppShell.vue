@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { RouterView } from 'vue-router'
 
+import AiPanel from './AiPanel.vue'
 import SideRail from './SideRail.vue'
+import { useConnections } from '@/composables/useConnections'
+const { telemetryDown, rawQueryDown } = useConnections()
 </script>
 
 <template>
@@ -11,9 +14,7 @@ import SideRail from './SideRail.vue'
       <RouterView />
     </main>
     <aside class="hidden w-[420px] shrink-0 border-l border-border bg-surface/40 xl:block">
-      <slot name="ai">
-        <div class="p-6 text-sm text-muted">AI Copilot</div>
-      </slot>
+      <AiPanel :telemetry-down="telemetryDown" :raw-query-down="rawQueryDown" />
     </aside>
   </div>
 </template>
