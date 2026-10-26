@@ -1,3 +1,4 @@
+pub mod oo_mcp;
 pub mod prompt;
 pub mod tools;
 
