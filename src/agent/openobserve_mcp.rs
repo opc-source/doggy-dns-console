@@ -8,30 +8,30 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{Value, json};
 
-use crate::config::{OoAuth, OoMcpConfig};
+use crate::config::{OpenObserveAuth, OpenObserveMcpConfig};
 use crate::error::DataError;
 
 /// (upstream MCP tool name, exposed tool name). The exposed name is what the model sees.
-pub const ALLOWED_OO_TOOLS: [(&str, &str); 8] = [
-    ("StreamList", "oo_stream_list"),
-    ("StreamSchema", "oo_stream_schema"),
-    ("SearchSQL", "oo_search_sql"),
-    ("PrometheusQuery", "oo_promql_query"),
-    ("PrometheusRangeQuery", "oo_promql_range"),
-    ("GetLatestTraces", "oo_latest_traces"),
-    ("GetTraceDAG", "oo_trace_dag"),
-    ("SearchAround", "oo_search_around"),
+pub const ALLOWED_OPENOBSERVE_TOOLS: [(&str, &str); 8] = [
+    ("StreamList", "openobserve_stream_list"),
+    ("StreamSchema", "openobserve_stream_schema"),
+    ("SearchSQL", "openobserve_search_sql"),
+    ("PrometheusQuery", "openobserve_promql_query"),
+    ("PrometheusRangeQuery", "openobserve_promql_range"),
+    ("GetLatestTraces", "openobserve_latest_traces"),
+    ("GetTraceDAG", "openobserve_trace_dag"),
+    ("SearchAround", "openobserve_search_around"),
 ];
 
-pub struct OoMcpClient {
+pub struct OpenObserveMcpClient {
     http: Client,
-    cfg: OoMcpConfig,
+    cfg: OpenObserveMcpConfig,
     session: Mutex<Option<String>>,
     initialized: AtomicBool,
 }
 
-impl OoMcpClient {
-    pub fn new(cfg: OoMcpConfig) -> Result<Self, DataError> {
+impl OpenObserveMcpClient {
+    pub fn new(cfg: OpenObserveMcpConfig) -> Result<Self, DataError> {
         let http = Client::builder()
             .timeout(std::time::Duration::from_secs(5))
             .build()
@@ -54,7 +54,7 @@ impl OoMcpClient {
         };
 
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
-        for (upstream, exposed) in ALLOWED_OO_TOOLS {
+        for (upstream, exposed) in ALLOWED_OPENOBSERVE_TOOLS {
             let definition = list.iter().find(|tool| tool.name == upstream).cloned();
             let definition = match definition {
                 Some(definition) => definition,
@@ -71,7 +71,7 @@ impl OoMcpClient {
                 },
             };
             let schema = strip_org_id(definition.schema);
-            tools.push(Arc::new(OoMcpTool {
+            tools.push(Arc::new(OpenObserveMcpTool {
                 exposed_name: exposed.to_string(),
                 upstream_name: upstream.to_string(),
                 description: definition.description,
@@ -99,7 +99,7 @@ impl OoMcpClient {
     }
 
     pub async fn call_tool(&self, tool: &str, args: Value) -> Result<Value, DataError> {
-        if !ALLOWED_OO_TOOLS
+        if !ALLOWED_OPENOBSERVE_TOOLS
             .iter()
             .any(|(upstream, _)| *upstream == tool)
         {
@@ -231,23 +231,25 @@ impl OoMcpClient {
 
     fn authorize(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match &self.cfg.auth {
-            OoAuth::None => request,
-            OoAuth::Basic { username, password } => request.basic_auth(username, Some(password)),
-            OoAuth::Bearer(token) => request.bearer_auth(token),
+            OpenObserveAuth::None => request,
+            OpenObserveAuth::Basic { username, password } => {
+                request.basic_auth(username, Some(password))
+            }
+            OpenObserveAuth::Bearer(token) => request.bearer_auth(token),
         }
     }
 }
 
-pub struct OoMcpTool {
+pub struct OpenObserveMcpTool {
     exposed_name: String,
     upstream_name: String,
     description: String,
     schema: Value,
-    client: Arc<OoMcpClient>,
+    client: Arc<OpenObserveMcpClient>,
 }
 
 #[async_trait]
-impl Tool for OoMcpTool {
+impl Tool for OpenObserveMcpTool {
     fn name(&self) -> &str {
         &self.exposed_name
     }
@@ -269,7 +271,7 @@ impl Tool for OoMcpTool {
 }
 
 #[async_trait]
-impl crate::api::state::Probe for OoMcpClient {
+impl crate::api::state::Probe for OpenObserveMcpClient {
     async fn probe(&self) -> Result<(), DataError> {
         self.rpc_with_handshake("tools/list", json!({}))
             .await

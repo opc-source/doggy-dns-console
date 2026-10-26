@@ -28,7 +28,7 @@ cd .. && CONSOLE_DEMO=1 cargo run
 ## Real deployment
 
 1. Copy `.env.example` to `.env` and fill it in.
-2. Set `OO_BASE_URL`, `OO_ORG`, and either `OO_USER`/`OO_PASSWORD` or `OO_TOKEN`.
+2. Set `OPENOBSERVE_BASE_URL`, `OPENOBSERVE_ORG`, and either `OPENOBSERVE_USER`/`OPENOBSERVE_PASSWORD` or `OPENOBSERVE_TOKEN`.
 3. Set `MODEL_*` for any OpenAI-compatible endpoint.
 4. Set `MCP_ENDPOINTS` to the doggy-dns MCP URLs (for example
    `http://127.0.0.1:19090/mcp`).
@@ -44,8 +44,8 @@ RBAC for MCP, so use a dedicated account and network restrictions.
 Run the probes after upgrading OpenObserve:
 
 ```bash
-cargo run --bin oo_probe       # REST streams, sample logs and metrics
-cargo run --bin oo_mcp_probe  # MCP tools and allowlisted schemas
+cargo run --bin openobserve_probe       # REST streams, sample logs and metrics
+cargo run --bin openobserve_mcp_probe  # MCP tools and allowlisted schemas
 ```
 
 ## Development

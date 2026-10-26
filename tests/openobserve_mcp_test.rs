@@ -1,16 +1,16 @@
 use std::sync::Arc;
 
-use doggy_dns_console::agent::oo_mcp::OoMcpClient;
-use doggy_dns_console::config::{OoAuth, OoMcpConfig};
+use doggy_dns_console::agent::openobserve_mcp::OpenObserveMcpClient;
+use doggy_dns_console::config::{OpenObserveAuth, OpenObserveMcpConfig};
 use serde_json::json;
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn test_cfg(base_url: String) -> OoMcpConfig {
-    OoMcpConfig {
+fn test_cfg(base_url: String) -> OpenObserveMcpConfig {
+    OpenObserveMcpConfig {
         url: base_url,
         org: "default".to_string(),
-        auth: OoAuth::None,
+        auth: OpenObserveAuth::None,
         enabled: true,
     }
 }
@@ -20,7 +20,7 @@ async fn mount_tools_list(server: &MockServer) {
         .and(path("/mcp"))
         .and(body_partial_json(json!({"method": "tools/list"})))
         .respond_with(ResponseTemplate::new(200).set_body_raw(
-            include_str!("fixtures/oo_mcp_tools.json"),
+            include_str!("fixtures/openobserve_mcp_tools.json"),
             "application/json",
         ))
         .mount(server)
@@ -46,13 +46,13 @@ async fn filters_tools_list_to_read_only_allowlist() {
         .mount(&server)
         .await;
 
-    let client = Arc::new(OoMcpClient::new(test_cfg(server.uri() + "/mcp")).unwrap());
+    let client = Arc::new(OpenObserveMcpClient::new(test_cfg(server.uri() + "/mcp")).unwrap());
     let tools = client.allowed_tools().await.unwrap();
     let names: Vec<_> = tools.iter().map(|tool| tool.name()).collect();
     assert_eq!(names.len(), 8);
-    assert!(names.contains(&"oo_search_sql"));
-    assert!(names.contains(&"oo_promql_range"));
-    assert!(names.contains(&"oo_trace_dag"));
+    assert!(names.contains(&"openobserve_search_sql"));
+    assert!(names.contains(&"openobserve_promql_range"));
+    assert!(names.contains(&"openobserve_trace_dag"));
     assert!(!names.contains(&"SearchSQL"));
     assert!(!names.contains(&"DeleteStream"));
     assert!(!names.contains(&"tool_search"));
@@ -83,7 +83,7 @@ async fn call_tool_uses_tools_call_with_full_detail() {
         .mount(&server)
         .await;
 
-    let client = Arc::new(OoMcpClient::new(test_cfg(server.uri() + "/mcp")).unwrap());
+    let client = Arc::new(OpenObserveMcpClient::new(test_cfg(server.uri() + "/mcp")).unwrap());
     let value = client
         .call_tool("SearchSQL", json!({"sql": "SELECT 1"}))
         .await
@@ -100,7 +100,7 @@ async fn tools_list_failure_degrades_without_scanning_every_tool() {
         .mount(&server)
         .await;
 
-    let client = Arc::new(OoMcpClient::new(test_cfg(server.uri() + "/mcp")).unwrap());
+    let client = Arc::new(OpenObserveMcpClient::new(test_cfg(server.uri() + "/mcp")).unwrap());
     let tools = client.allowed_tools().await.unwrap();
     assert!(tools.is_empty());
     assert!(server.received_requests().await.unwrap().len() <= 2);
@@ -121,7 +121,7 @@ async fn call_tool_parses_an_sse_response() {
         .mount(&server)
         .await;
 
-    let client = Arc::new(OoMcpClient::new(test_cfg(server.uri() + "/mcp")).unwrap());
+    let client = Arc::new(OpenObserveMcpClient::new(test_cfg(server.uri() + "/mcp")).unwrap());
     let value = client
         .call_tool("SearchSQL", json!({"sql": "SELECT 1"}))
         .await
@@ -149,7 +149,7 @@ async fn attempts_initialize_when_tools_list_fails() {
         .mount(&server)
         .await;
 
-    let client = Arc::new(OoMcpClient::new(test_cfg(server.uri() + "/mcp")).unwrap());
+    let client = Arc::new(OpenObserveMcpClient::new(test_cfg(server.uri() + "/mcp")).unwrap());
     let tools = client.allowed_tools().await.unwrap();
     assert!(tools.is_empty());
     let requests = server.received_requests().await.unwrap();
@@ -160,8 +160,9 @@ async fn attempts_initialize_when_tools_list_fails() {
 
 #[tokio::test]
 async fn rejects_tool_outside_allowlist_before_network() {
-    let client =
-        Arc::new(OoMcpClient::new(test_cfg("http://127.0.0.1:1/mcp".to_string())).unwrap());
+    let client = Arc::new(
+        OpenObserveMcpClient::new(test_cfg("http://127.0.0.1:1/mcp".to_string())).unwrap(),
+    );
     let err = client
         .call_tool("DeleteStream", json!({}))
         .await
@@ -177,7 +178,7 @@ async fn tool_error_is_explicit() {
         .respond_with(ResponseTemplate::new(500).set_body_string("upstream exploded"))
         .mount(&server)
         .await;
-    let client = Arc::new(OoMcpClient::new(test_cfg(server.uri() + "/mcp")).unwrap());
+    let client = Arc::new(OpenObserveMcpClient::new(test_cfg(server.uri() + "/mcp")).unwrap());
     let err = client
         .call_tool("SearchSQL", json!({"sql": "SELECT 1"}))
         .await

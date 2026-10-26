@@ -54,7 +54,7 @@ describe('useAgUiStream', () => {
         sse({
           type: 'TOOL_CALL_CHUNK',
           toolCallId: 'c2',
-          toolCallName: 'oo_search_sql',
+          toolCallName: 'openobserve_search_sql',
           delta: '{"sql":',
         }),
         sse({ type: 'TOOL_CALL_CHUNK', toolCallId: 'c2', delta: '"SELECT 1"}' }),
@@ -64,7 +64,7 @@ describe('useAgUiStream', () => {
     const stream = useAgUiStream()
     await stream.send(request)
     expect(stream.text.value).toBe('你好')
-    expect(stream.toolCalls.value[0]?.name).toBe('oo_search_sql')
+    expect(stream.toolCalls.value[0]?.name).toBe('openobserve_search_sql')
     expect(stream.toolCalls.value[0]?.args).toBe('{"sql":"SELECT 1"}')
   })
 

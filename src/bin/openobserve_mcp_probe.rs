@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use doggy_dns_console::agent::oo_mcp::OoMcpClient;
+use doggy_dns_console::agent::openobserve_mcp::OpenObserveMcpClient;
 use doggy_dns_console::config::Config;
 
 #[tokio::main]
@@ -12,8 +12,8 @@ async fn main() -> Result<()> {
         .init();
 
     let config = Config::from_env()?;
-    println!("OpenObserve MCP: {}", config.oo_mcp.url);
-    let client = Arc::new(OoMcpClient::new(config.oo_mcp)?);
+    println!("OpenObserve MCP: {}", config.openobserve_mcp.url);
+    let client = Arc::new(OpenObserveMcpClient::new(config.openobserve_mcp)?);
     let tools = client.allowed_tools().await?;
     println!("allowlisted tools ({}):", tools.len());
     for tool in tools {

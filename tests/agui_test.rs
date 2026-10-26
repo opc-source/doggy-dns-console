@@ -57,7 +57,7 @@ async fn spawn_test_app_with_dist(dist: Option<PathBuf>) -> (String, tokio::task
 
 async fn spawn_test_app_with_mcp(
     dist: Option<PathBuf>,
-    oo_mcp_health: Option<Arc<dyn Probe>>,
+    openobserve_mcp_health: Option<Arc<dyn Probe>>,
 ) -> (String, tokio::task::JoinHandle<()>) {
     let fixture = Arc::new(FixtureSource::new(Arc::new(FixedClock(1_761_436_800_000))));
     let telemetry = fixture.clone() as Arc<dyn TelemetrySource>;
@@ -74,7 +74,7 @@ async fn spawn_test_app_with_mcp(
         sessions,
         extra_tools: Vec::new(),
         openobserve_health: Arc::new(Healthy),
-        oo_mcp_health,
+        openobserve_mcp_health,
         model_configured: true,
     };
     let _ = agent;
@@ -151,7 +151,7 @@ async fn run_sse_emits_ag_ui_events() {
 }
 
 #[tokio::test]
-async fn overview_works_when_oo_mcp_is_down() {
+async fn overview_works_when_openobserve_mcp_is_down() {
     let (base, handle) = spawn_test_app_with_mcp(None, Some(Arc::new(FailingProbe))).await;
     let response = reqwest::get(format!("{base}/api/overview")).await.unwrap();
     assert!(response.status().is_success());

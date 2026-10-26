@@ -1,4 +1,4 @@
-pub mod oo_mcp;
+pub mod openobserve_mcp;
 pub mod prompt;
 pub mod tools;
 

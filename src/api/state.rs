@@ -23,6 +23,6 @@ pub struct ApiState {
     pub service: Arc<ConsoleService>,
     pub instances: Arc<dyn InstanceSource>,
     pub openobserve_health: Arc<dyn Probe>,
-    pub oo_mcp_health: Option<Arc<dyn Probe>>,
+    pub openobserve_mcp_health: Option<Arc<dyn Probe>>,
     pub model_configured: bool,
 }

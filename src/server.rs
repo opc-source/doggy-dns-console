@@ -27,7 +27,7 @@ pub struct AppDeps {
     pub sessions: Arc<dyn SessionService>,
     pub extra_tools: Vec<Arc<dyn Tool>>,
     pub openobserve_health: Arc<dyn Probe>,
-    pub oo_mcp_health: Option<Arc<dyn Probe>>,
+    pub openobserve_mcp_health: Option<Arc<dyn Probe>>,
     pub model_configured: bool,
 }
 
@@ -40,7 +40,7 @@ pub async fn build_app(config: Config, deps: AppDeps) -> anyhow::Result<Router> 
         service: deps.service,
         instances: deps.instances,
         openobserve_health: deps.openobserve_health,
-        oo_mcp_health: deps.oo_mcp_health,
+        openobserve_mcp_health: deps.openobserve_mcp_health,
         model_configured: deps.model_configured,
     };
     let mut builder =
@@ -58,63 +58,65 @@ pub async fn build_app(config: Config, deps: AppDeps) -> anyhow::Result<Router> 
 
 pub async fn run(config: Config) -> anyhow::Result<()> {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-    let (service, instances, openobserve_health, oo_mcp_health, model, extra_tools) = if config.demo
-    {
-        let fixture = Arc::new(FixtureSource::new(clock.clone()));
-        let telemetry = fixture.clone() as Arc<dyn TelemetrySource>;
-        let instances = fixture as Arc<dyn InstanceSource>;
-        let service = Arc::new(ConsoleService::new(telemetry, instances.clone()));
-        (
-            service,
-            instances,
-            Arc::new(AlwaysHealthy) as Arc<dyn Probe>,
-            None,
-            demo_model(),
-            Vec::new(),
-        )
-    } else {
-        let oo = Arc::new(OpenObserveClient::new(config.openobserve.clone())?);
-        let telemetry: Arc<dyn TelemetrySource> =
-            Arc::new(OpenObserveTelemetry::new(oo.clone(), clock.clone()));
-        let mcp = Arc::new(McpInstanceSource::new(
-            config.mcp.endpoints.clone(),
-            Arc::new(RmcpTransport::new(
-                config.mcp.token.clone(),
-                config.mcp.timeout,
-            )),
-        ));
-        let instances: Arc<dyn InstanceSource> = Arc::new(MergedInstanceSource::new(
-            mcp,
-            telemetry.clone(),
-            clock.clone(),
-        ));
-        let service = Arc::new(ConsoleService::new(telemetry, instances.clone()));
-
-        let (oo_mcp_health, extra_tools) = if config.oo_mcp.enabled {
-            let client = Arc::new(crate::agent::oo_mcp::OoMcpClient::new(
-                config.oo_mcp.clone(),
-            )?);
-            let tools = match client.allowed_tools().await {
-                Ok(tools) => tools,
-                Err(error) => {
-                    tracing::warn!(error = %error, "openobserve mcp tools unavailable");
-                    Vec::new()
-                }
-            };
-            (Some(client as Arc<dyn Probe>), tools)
+    let (service, instances, openobserve_health, openobserve_mcp_health, model, extra_tools) =
+        if config.demo {
+            let fixture = Arc::new(FixtureSource::new(clock.clone()));
+            let telemetry = fixture.clone() as Arc<dyn TelemetrySource>;
+            let instances = fixture as Arc<dyn InstanceSource>;
+            let service = Arc::new(ConsoleService::new(telemetry, instances.clone()));
+            (
+                service,
+                instances,
+                Arc::new(AlwaysHealthy) as Arc<dyn Probe>,
+                None,
+                demo_model(),
+                Vec::new(),
+            )
         } else {
-            (None, Vec::new())
-        };
+            let openobserve = Arc::new(OpenObserveClient::new(config.openobserve.clone())?);
+            let telemetry: Arc<dyn TelemetrySource> = Arc::new(OpenObserveTelemetry::new(
+                openobserve.clone(),
+                clock.clone(),
+            ));
+            let mcp = Arc::new(McpInstanceSource::new(
+                config.mcp.endpoints.clone(),
+                Arc::new(RmcpTransport::new(
+                    config.mcp.token.clone(),
+                    config.mcp.timeout,
+                )),
+            ));
+            let instances: Arc<dyn InstanceSource> = Arc::new(MergedInstanceSource::new(
+                mcp,
+                telemetry.clone(),
+                clock.clone(),
+            ));
+            let service = Arc::new(ConsoleService::new(telemetry, instances.clone()));
 
-        (
-            service,
-            instances,
-            oo as Arc<dyn Probe>,
-            oo_mcp_health,
-            build_model(&config.model)?,
-            extra_tools,
-        )
-    };
+            let (openobserve_mcp_health, extra_tools) = if config.openobserve_mcp.enabled {
+                let client = Arc::new(crate::agent::openobserve_mcp::OpenObserveMcpClient::new(
+                    config.openobserve_mcp.clone(),
+                )?);
+                let tools = match client.allowed_tools().await {
+                    Ok(tools) => tools,
+                    Err(error) => {
+                        tracing::warn!(error = %error, "openobserve mcp tools unavailable");
+                        Vec::new()
+                    }
+                };
+                (Some(client as Arc<dyn Probe>), tools)
+            } else {
+                (None, Vec::new())
+            };
+
+            (
+                service,
+                instances,
+                openobserve as Arc<dyn Probe>,
+                openobserve_mcp_health,
+                build_model(&config.model)?,
+                extra_tools,
+            )
+        };
 
     ensure_sqlite_parent(&config.db_url)?;
     let sqlite = SqliteSessionService::new(&config.db_url).await?;
@@ -128,7 +130,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         sessions,
         extra_tools,
         openobserve_health,
-        oo_mcp_health,
+        openobserve_mcp_health,
         model_configured,
     };
     let app = build_app(config.clone(), deps).await?;

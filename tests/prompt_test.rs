@@ -8,8 +8,8 @@ fn prompt_states_nxdomain_is_not_failure() {
 }
 
 #[test]
-fn prompt_routes_raw_drilldown_to_oo_tools() {
-    assert!(SYSTEM_PROMPT.contains("oo_stream_schema"));
-    assert!(SYSTEM_PROMPT.contains("oo_search_sql"));
+fn prompt_routes_raw_drilldown_to_openobserve_tools() {
+    assert!(SYSTEM_PROMPT.contains("openobserve_stream_schema"));
+    assert!(SYSTEM_PROMPT.contains("openobserve_search_sql"));
     assert!(SYSTEM_PROMPT.contains("先用 DNS 语义工具"));
 }

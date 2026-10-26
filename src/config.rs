@@ -5,7 +5,7 @@ use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum OoAuth {
+pub enum OpenObserveAuth {
     None,
     Basic { username: String, password: String },
     Bearer(String),
@@ -15,7 +15,7 @@ pub enum OoAuth {
 pub struct OpenObserveConfig {
     pub base_url: String,
     pub org: String,
-    pub auth: OoAuth,
+    pub auth: OpenObserveAuth,
     pub log_stream: String,
     pub trace_stream: String,
     pub metric_queries: String,
@@ -23,10 +23,10 @@ pub struct OpenObserveConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct OoMcpConfig {
+pub struct OpenObserveMcpConfig {
     pub url: String,
     pub org: String,
-    pub auth: OoAuth,
+    pub auth: OpenObserveAuth,
     pub enabled: bool,
 }
 
@@ -53,7 +53,7 @@ pub struct Config {
     pub demo: bool,
     pub ui_dist: Option<PathBuf>,
     pub openobserve: OpenObserveConfig,
-    pub oo_mcp: OoMcpConfig,
+    pub openobserve_mcp: OpenObserveMcpConfig,
     pub mcp: McpConfig,
     pub model: ModelConfig,
 }
@@ -93,17 +93,21 @@ impl Config {
                 value: addr_raw.clone(),
             })?;
 
-        let oo_base_url = text("OO_BASE_URL");
-        if !demo && oo_base_url.is_none() {
-            return Err(ConfigError::Missing("OO_BASE_URL"));
+        let openobserve_base_url = text("OPENOBSERVE_BASE_URL");
+        if !demo && openobserve_base_url.is_none() {
+            return Err(ConfigError::Missing("OPENOBSERVE_BASE_URL"));
         }
-        let oo_base_url = oo_base_url.unwrap_or_default();
-        let oo_org = text("OO_ORG").unwrap_or_else(|| "default".to_string());
+        let openobserve_base_url = openobserve_base_url.unwrap_or_default();
+        let openobserve_org = text("OPENOBSERVE_ORG").unwrap_or_else(|| "default".to_string());
 
-        let oo_auth = match (text("OO_TOKEN"), text("OO_USER"), text("OO_PASSWORD")) {
-            (Some(token), _, _) => OoAuth::Bearer(token),
-            (None, Some(username), Some(password)) => OoAuth::Basic { username, password },
-            _ => OoAuth::None,
+        let openobserve_auth = match (
+            text("OPENOBSERVE_TOKEN"),
+            text("OPENOBSERVE_USER"),
+            text("OPENOBSERVE_PASSWORD"),
+        ) {
+            (Some(token), _, _) => OpenObserveAuth::Bearer(token),
+            (None, Some(username), Some(password)) => OpenObserveAuth::Basic { username, password },
+            _ => OpenObserveAuth::None,
         };
 
         let model_api_key = text("MODEL_API_KEY");
@@ -121,16 +125,20 @@ impl Config {
             })
             .unwrap_or_default();
 
-        let oo_mcp_url = text("OO_MCP_URL").unwrap_or_else(|| {
-            if oo_base_url.is_empty() {
+        let openobserve_mcp_url = text("OPENOBSERVE_MCP_URL").unwrap_or_else(|| {
+            if openobserve_base_url.is_empty() {
                 String::new()
             } else {
-                format!("{}/api/{}/mcp", oo_base_url.trim_end_matches('/'), oo_org)
+                format!(
+                    "{}/api/{}/mcp",
+                    openobserve_base_url.trim_end_matches('/'),
+                    openobserve_org
+                )
             }
         });
-        let oo_mcp_auth = match text("OO_MCP_TOKEN") {
-            Some(token) => OoAuth::Bearer(token),
-            None => oo_auth.clone(),
+        let openobserve_mcp_auth = match text("OPENOBSERVE_MCP_TOKEN") {
+            Some(token) => OpenObserveAuth::Bearer(token),
+            None => openobserve_auth.clone(),
         };
 
         Ok(Self {
@@ -143,21 +151,23 @@ impl Config {
                 text("DOGGY_DNS_UI_DIST").unwrap_or_else(|| "doggy-dns-ui/dist".to_string()),
             )),
             openobserve: OpenObserveConfig {
-                base_url: oo_base_url,
-                org: oo_org.clone(),
-                auth: oo_auth,
-                log_stream: text("OO_LOG_STREAM").unwrap_or_else(|| "doggy-dns".to_string()),
-                trace_stream: text("OO_TRACE_STREAM").unwrap_or_else(|| "doggy-dns".to_string()),
-                metric_queries: text("OO_METRIC_QUERIES")
+                base_url: openobserve_base_url,
+                org: openobserve_org.clone(),
+                auth: openobserve_auth,
+                log_stream: text("OPENOBSERVE_LOG_STREAM")
+                    .unwrap_or_else(|| "doggy-dns".to_string()),
+                trace_stream: text("OPENOBSERVE_TRACE_STREAM")
+                    .unwrap_or_else(|| "doggy-dns".to_string()),
+                metric_queries: text("OPENOBSERVE_METRIC_QUERIES")
                     .unwrap_or_else(|| "dns_queries_total".to_string()),
-                metric_duration: text("OO_METRIC_DURATION")
+                metric_duration: text("OPENOBSERVE_METRIC_DURATION")
                     .unwrap_or_else(|| "dns_query_duration_milliseconds_bucket".to_string()),
             },
-            oo_mcp: OoMcpConfig {
-                url: oo_mcp_url.clone(),
-                org: oo_org,
-                auth: oo_mcp_auth,
-                enabled: !demo && !oo_mcp_url.is_empty(),
+            openobserve_mcp: OpenObserveMcpConfig {
+                url: openobserve_mcp_url.clone(),
+                org: openobserve_org,
+                auth: openobserve_mcp_auth,
+                enabled: !demo && !openobserve_mcp_url.is_empty(),
             },
             mcp: McpConfig {
                 endpoints: mcp_endpoints,

@@ -6,9 +6,9 @@ use tokio::time::Instant;
 use crate::api::state::ApiState;
 
 pub async fn connections(State(state): State<ApiState>) -> Json<Value> {
-    let oo_start = Instant::now();
-    let oo_result = state.openobserve_health.probe().await;
-    let oo_ms = oo_start.elapsed().as_millis();
+    let openobserve_start = Instant::now();
+    let openobserve_result = state.openobserve_health.probe().await;
+    let openobserve_ms = openobserve_start.elapsed().as_millis();
 
     let mcp_result = state.instances.list().await;
     let (mcp_reachable, mcp_total) = match mcp_result {
@@ -22,7 +22,7 @@ pub async fn connections(State(state): State<ApiState>) -> Json<Value> {
         }
     };
 
-    let oo_mcp = match &state.oo_mcp_health {
+    let openobserve_mcp = match &state.openobserve_mcp_health {
         Some(probe) => {
             let started = Instant::now();
             let result = probe.probe().await;
@@ -32,8 +32,8 @@ pub async fn connections(State(state): State<ApiState>) -> Json<Value> {
     };
 
     Json(json!({
-        "openobserve": { "ok": oo_result.is_ok(), "latencyMs": oo_ms },
-        "openobserveMcp": oo_mcp,
+        "openobserve": { "ok": openobserve_result.is_ok(), "latencyMs": openobserve_ms },
+        "openobserveMcp": openobserve_mcp,
         "mcp": { "reachable": mcp_reachable, "total": mcp_total },
         "model": { "configured": state.model_configured },
     }))

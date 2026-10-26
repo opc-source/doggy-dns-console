@@ -1,11 +1,11 @@
-use doggy_dns_console::config::{OoAuth, OpenObserveConfig};
+use doggy_dns_console::config::{OpenObserveAuth, OpenObserveConfig};
 use doggy_dns_console::datasource::openobserve::OpenObserveClient;
 
 fn test_config(base_url: String) -> OpenObserveConfig {
     OpenObserveConfig {
         base_url,
         org: "default".to_string(),
-        auth: OoAuth::Basic {
+        auth: OpenObserveAuth::Basic {
             username: "u".to_string(),
             password: "p".to_string(),
         },
@@ -45,10 +45,10 @@ async fn query_promql_parses_result_matrix() {
         .and(wiremock::matchers::path(
             "/api/default/prometheus/api/v1/query_range",
         ))
-        .respond_with(
-            wiremock::ResponseTemplate::new(200)
-                .set_body_raw(include_str!("fixtures/oo_prom.json"), "application/json"),
-        )
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_raw(
+            include_str!("fixtures/openobserve_prom.json"),
+            "application/json",
+        ))
         .mount(&server)
         .await;
 

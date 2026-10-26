@@ -5,12 +5,12 @@ import type { ToolCall } from '@/composables/useAgUiStream'
 
 const props = defineProps<{ call: ToolCall }>()
 
-const accent = computed(() => (props.call.name.startsWith('oo_') ? 'text-info' : 'text-accent'))
+const accent = computed(() => (props.call.name.startsWith('openobserve_') ? 'text-info' : 'text-accent'))
 const summary = computed(() => {
   const raw = props.call.args || props.call.result || ''
   return raw.length > 220 ? `${raw.slice(0, 217)}…` : raw || 'no arguments'
 })
-const label = computed(() => (props.call.name.startsWith('oo_') ? 'raw telemetry' : 'dns semantics'))
+const label = computed(() => (props.call.name.startsWith('openobserve_') ? 'raw telemetry' : 'dns semantics'))
 </script>
 
 <template>

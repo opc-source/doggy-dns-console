@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use doggy_dns_console::config::{OoAuth, OpenObserveConfig};
+use doggy_dns_console::config::{OpenObserveAuth, OpenObserveConfig};
 use doggy_dns_console::datasource::openobserve::client::OpenObserveClient;
 use doggy_dns_console::datasource::openobserve::normalize::normalize_log_row;
 use doggy_dns_console::datasource::openobserve::telemetry::OpenObserveTelemetry;
@@ -13,7 +13,7 @@ fn config(base_url: String) -> OpenObserveConfig {
     OpenObserveConfig {
         base_url,
         org: "default".to_string(),
-        auth: OoAuth::None,
+        auth: OpenObserveAuth::None,
         log_stream: "doggy-dns".to_string(),
         trace_stream: "doggy-dns".to_string(),
         metric_queries: "dns_queries_total".to_string(),
@@ -53,7 +53,7 @@ async fn failure_list_excludes_nxdomain_and_dedupes_by_trace() {
         .and(path("/api/default/_search"))
         .and(query_param("type", "logs"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(
-            include_str!("fixtures/oo_failures_flat.json"),
+            include_str!("fixtures/openobserve_failures_flat.json"),
             "application/json",
         ))
         .mount(&server)
@@ -92,7 +92,7 @@ async fn failure_detail_joins_trace_spans() {
         .and(path("/api/default/_search"))
         .and(query_param("type", "logs"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(
-            include_str!("fixtures/oo_failures_flat.json"),
+            include_str!("fixtures/openobserve_failures_flat.json"),
             "application/json",
         ))
         .mount(&server)
@@ -100,10 +100,10 @@ async fn failure_detail_joins_trace_spans() {
     Mock::given(method("POST"))
         .and(path("/api/default/_search"))
         .and(query_param("type", "traces"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(include_str!("fixtures/oo_trace.json"), "application/json"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            include_str!("fixtures/openobserve_trace.json"),
+            "application/json",
+        ))
         .mount(&server)
         .await;
 

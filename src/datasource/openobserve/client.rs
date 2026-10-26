@@ -4,7 +4,7 @@ use std::time::Duration;
 use reqwest::Client;
 use serde_json::Value;
 
-use crate::config::{OoAuth, OpenObserveConfig};
+use crate::config::{OpenObserveAuth, OpenObserveConfig};
 use crate::error::DataError;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -223,9 +223,11 @@ impl OpenObserveClient {
 
     fn authorize(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match &self.cfg.auth {
-            OoAuth::None => request,
-            OoAuth::Basic { username, password } => request.basic_auth(username, Some(password)),
-            OoAuth::Bearer(token) => request.bearer_auth(token),
+            OpenObserveAuth::None => request,
+            OpenObserveAuth::Basic { username, password } => {
+                request.basic_auth(username, Some(password))
+            }
+            OpenObserveAuth::Bearer(token) => request.bearer_auth(token),
         }
     }
 }

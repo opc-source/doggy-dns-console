@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use doggy_dns_console::config::{OoAuth, OpenObserveConfig};
+use doggy_dns_console::config::{OpenObserveAuth, OpenObserveConfig};
 use doggy_dns_console::datasource::openobserve::client::OpenObserveClient;
 use doggy_dns_console::datasource::openobserve::overview::{
     failure_query, failure_series_query, p95_query, series_query, total_query,
@@ -16,7 +16,7 @@ fn config(base_url: String) -> OpenObserveConfig {
     OpenObserveConfig {
         base_url,
         org: "default".to_string(),
-        auth: OoAuth::None,
+        auth: OpenObserveAuth::None,
         log_stream: "doggy-dns".to_string(),
         trace_stream: "doggy-dns".to_string(),
         metric_queries: "dns_queries_total".to_string(),
