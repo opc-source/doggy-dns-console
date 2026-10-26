@@ -31,7 +31,7 @@ pub struct AppDeps {
     pub model_configured: bool,
 }
 
-pub async fn build_app(_config: Config, deps: AppDeps) -> anyhow::Result<Router> {
+pub async fn build_app(config: Config, deps: AppDeps) -> anyhow::Result<Router> {
     let agent: Arc<dyn Agent> = build_agent(deps.model, deps.service.clone(), deps.extra_tools)?;
     let loader = Arc::new(SingleAgentLoader::new(agent));
     let server_config =
@@ -45,13 +45,12 @@ pub async fn build_app(_config: Config, deps: AppDeps) -> anyhow::Result<Router>
     };
     let mut builder =
         ServerBuilder::new(server_config).add_root_routes(crate::api::business_router(state));
-    let dist =
-        std::env::var("DOGGY_DNS_UI_DIST").unwrap_or_else(|_| "doggy-dns-ui/dist".to_string());
-    if std::path::Path::new(&dist).is_dir() {
-        let index = std::path::Path::new(&dist).join("index.html");
+    if let Some(dist) = &config.ui_dist
+        && dist.is_dir()
+    {
+        let index = dist.join("index.html");
         builder = builder.add_root_routes(
-            Router::new()
-                .fallback_service(ServeDir::new(&dist).not_found_service(ServeFile::new(index))),
+            Router::new().fallback_service(ServeDir::new(dist).fallback(ServeFile::new(index))),
         );
     }
     Ok(builder.build())
@@ -173,6 +172,7 @@ fn ensure_sqlite_parent(db_url: &str) -> anyhow::Result<()> {
     if path.starts_with(":memory:") {
         return Ok(());
     }
+    let path = path.split('?').next().unwrap_or(path);
     let file = std::path::Path::new(path);
     if let Some(parent) = file.parent()
         && !parent.as_os_str().is_empty()

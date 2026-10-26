@@ -1,4 +1,7 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use tokio::sync::Mutex;
 
 use adk_rust::prelude::{AdkError, Tool, ToolContext};
 use async_trait::async_trait;
@@ -23,6 +26,8 @@ pub const ALLOWED_OO_TOOLS: [(&str, &str); 8] = [
 pub struct OoMcpClient {
     http: Client,
     cfg: OoMcpConfig,
+    session: Mutex<Option<String>>,
+    initialized: AtomicBool,
 }
 
 impl OoMcpClient {
@@ -31,15 +36,22 @@ impl OoMcpClient {
             .timeout(std::time::Duration::from_secs(5))
             .build()
             .map_err(|error| DataError::Upstream(format!("openobserve mcp client: {error}")))?;
-        Ok(Self { http, cfg })
+        Ok(Self {
+            http,
+            cfg,
+            session: Mutex::new(None),
+            initialized: AtomicBool::new(false),
+        })
     }
 
     pub async fn allowed_tools(self: &Arc<Self>) -> Result<Vec<Arc<dyn Tool>>, DataError> {
-        let list = self
-            .rpc("tools/list", json!({}))
-            .await
-            .map(|value| tools_from_list(&value))
-            .unwrap_or_default();
+        let list = match self.rpc_with_handshake("tools/list", json!({})).await {
+            Ok(value) => tools_from_list(&value),
+            Err(error) => {
+                tracing::warn!(error = %error, "openobserve mcp tools/list failed; disabling raw tools");
+                return Ok(Vec::new());
+            }
+        };
 
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
         for (upstream, exposed) in ALLOWED_OO_TOOLS {
@@ -72,7 +84,7 @@ impl OoMcpClient {
 
     async fn search_tool(&self, name: &str) -> Result<Option<ToolDefinition>, DataError> {
         let result = self
-            .rpc(
+            .rpc_with_handshake(
                 "tools/call",
                 json!({
                     "name": "tool_search",
@@ -80,6 +92,7 @@ impl OoMcpClient {
                 }),
             )
             .await?;
+        let result = extract_tool_result(&result)?;
         Ok(tools_from_list(&result)
             .into_iter()
             .find(|tool| tool.name == name))
@@ -93,11 +106,9 @@ impl OoMcpClient {
             return Err(DataError::Invalid(format!("tool not allowed: {tool}")));
         }
         let mut arguments = args.as_object().cloned().unwrap_or_default();
-        arguments
-            .entry("org_id")
-            .or_insert_with(|| Value::String(self.cfg.org.clone()));
+        arguments.insert("org_id".to_string(), Value::String(self.cfg.org.clone()));
         let result = self
-            .rpc(
+            .rpc_with_handshake(
                 "tools/call",
                 json!({
                     "name": "tools_call",
@@ -112,35 +123,110 @@ impl OoMcpClient {
         extract_tool_result(&result)
     }
 
-    async fn rpc(&self, method: &str, params: Value) -> Result<Value, DataError> {
-        let request = self.authorize(self.http.post(&self.cfg.url)).json(&json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": method,
-            "params": params
-        }));
-        let response = request
-            .send()
-            .await
-            .map_err(|error| DataError::Upstream(format!("openobserve mcp: {error}")))?;
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+    async fn rpc_with_handshake(&self, method: &str, params: Value) -> Result<Value, DataError> {
+        match self.rpc(method, params.clone()).await {
+            Ok(value) => Ok(value),
+            Err(first) => {
+                if self.ensure_initialized().await.is_ok() {
+                    self.rpc(method, params).await
+                } else {
+                    Err(first)
+                }
+            }
+        }
+    }
+
+    async fn ensure_initialized(&self) -> Result<(), DataError> {
+        if self.initialized.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let (value, session) = self
+            .post(json!({
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {
+                        "name": "doggy-dns-console",
+                        "version": env!("CARGO_PKG_VERSION")
+                    }
+                }
+            }))
+            .await?;
+        if let Some(error) = value.get("error") {
             return Err(DataError::Upstream(format!(
-                "openobserve mcp returned {status}: {}",
-                preview(&body)
+                "openobserve mcp initialize: {error}"
             )));
         }
-        let value: Value = response
-            .json()
-            .await
-            .map_err(|error| DataError::Upstream(format!("openobserve mcp json: {error}")))?;
+        if let Some(session) = session {
+            *self.session.lock().await = Some(session);
+        }
+        let _ = self
+            .post(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+            .await;
+        self.initialized.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn rpc(&self, method: &str, params: Value) -> Result<Value, DataError> {
+        let (value, _) = self
+            .post(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": method,
+                "params": params
+            }))
+            .await?;
         if let Some(error) = value.get("error") {
             return Err(DataError::Upstream(format!(
                 "openobserve mcp error: {error}"
             )));
         }
         Ok(value.get("result").cloned().unwrap_or(Value::Null))
+    }
+
+    async fn post(&self, body: Value) -> Result<(Value, Option<String>), DataError> {
+        let mut request = self
+            .authorize(self.http.post(&self.cfg.url))
+            .header("accept", "application/json, text/event-stream")
+            .json(&body);
+        if let Some(session) = self.session.lock().await.as_deref() {
+            request = request.header("mcp-session-id", session);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| DataError::Upstream(format!("openobserve mcp: {error}")))?;
+        let session = response
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .map(ToString::to_string);
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(DataError::Upstream(format!(
+                "openobserve mcp returned {status}: {}",
+                preview(&text)
+            )));
+        }
+        let value = if content_type.contains("text/event-stream") {
+            parse_sse_json(&text).ok_or_else(|| {
+                DataError::Upstream("openobserve mcp returned an invalid SSE stream".to_string())
+            })?
+        } else {
+            serde_json::from_str(&text)
+                .map_err(|error| DataError::Upstream(format!("openobserve mcp json: {error}")))?
+        };
+        Ok((value, session))
     }
 
     fn authorize(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -185,7 +271,9 @@ impl Tool for OoMcpTool {
 #[async_trait]
 impl crate::api::state::Probe for OoMcpClient {
     async fn probe(&self) -> Result<(), DataError> {
-        self.rpc("tools/list", json!({})).await.map(|_| ())
+        self.rpc_with_handshake("tools/list", json!({}))
+            .await
+            .map(|_| ())
     }
 }
 
@@ -273,6 +361,27 @@ fn extract_tool_result(result: &Value) -> Result<Value, DataError> {
         Ok(value) => Ok(value),
         Err(_) => Ok(Value::String(text.to_string())),
     }
+}
+
+fn parse_sse_json(text: &str) -> Option<Value> {
+    let mut last = None;
+    for block in text.replace("\r\n", "\n").split("\n\n") {
+        let data = block
+            .lines()
+            .filter(|line| line.starts_with("data:"))
+            .map(|line| line[5..].trim_start())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if data.is_empty() {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(&data)
+            && (value.get("result").is_some() || value.get("error").is_some())
+        {
+            last = Some(value);
+        }
+    }
+    last
 }
 
 fn preview(value: &str) -> String {

@@ -22,8 +22,8 @@ const list = ref<HTMLElement | null>(null)
 async function send() {
   const content = draft.value.trim()
   if (!content || chat.running || props.telemetryDown) return
-  draft.value = ''
-  await chat.send(content)
+  const sent = await chat.send(content)
+  if (sent) draft.value = ''
 }
 
 function onKeydown(event: KeyboardEvent) {

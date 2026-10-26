@@ -47,7 +47,7 @@ impl Overview {
         if queries == 0 {
             return None;
         }
-        let rate = 1.0 - failures as f64 / queries as f64;
+        let rate = (1.0 - failures as f64 / queries as f64).clamp(0.0, 1.0);
         Some((rate * 1_000_000.0).round() / 1_000_000.0)
     }
 }

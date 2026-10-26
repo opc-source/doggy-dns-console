@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, toRef } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, toRef } from 'vue'
 import { Copy, Sparkles, X } from '@lucide/vue'
 
 import { useFailureDetail } from '@/composables/useFailures'
@@ -11,6 +11,9 @@ const chat = useChatStore()
 const trace = toRef(props, 'traceId')
 const { detail, error, loading } = useFailureDetail(trace)
 const copied = ref(false)
+const closeButton = ref<HTMLButtonElement | null>(null)
+const dialog = ref<HTMLElement | null>(null)
+let previousFocus: Element | null = null
 
 const title = computed(() => detail.value?.group.query ?? props.traceId)
 const prompt = computed(() => {
@@ -31,11 +34,38 @@ const prompt = computed(() => {
 })
 
 function onKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape') emit('close')
+  if (event.key === 'Escape') {
+    emit('close')
+    return
+  }
+  if (event.key !== 'Tab' || !dialog.value) return
+  const focusable = Array.from(
+    dialog.value.querySelectorAll<HTMLElement>(
+      'button, [href], input, textarea, select, [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((element) => !element.hasAttribute('disabled'))
+  if (focusable.length === 0) return
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  if (!first || !last) return
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
 }
 
-onMounted(() => window.addEventListener('keydown', onKeydown))
-onUnmounted(() => window.removeEventListener('keydown', onKeydown))
+onMounted(() => {
+  previousFocus = document.activeElement
+  window.addEventListener('keydown', onKeydown)
+  void nextTick(() => closeButton.value?.focus())
+})
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeydown)
+  if (previousFocus instanceof HTMLElement) previousFocus.focus()
+})
 
 async function copyTrace() {
   try {
@@ -48,8 +78,8 @@ async function copyTrace() {
 }
 
 async function analyze() {
-  await chat.send(prompt.value)
-  emit('close')
+  const sent = await chat.send(prompt.value)
+  if (sent) emit('close')
 }
 
 function when(ts: number) {
@@ -69,7 +99,7 @@ function when(ts: number) {
             <p class="mono text-[10px] uppercase tracking-[0.16em] text-error">failure trace</p>
             <h2 class="mono mt-1 truncate text-sm text-text">{{ title }}</h2>
           </div>
-          <button class="focus-ring grid h-8 w-8 place-items-center rounded-xl border border-border text-muted hover:text-text" aria-label="Close" @click="emit('close')">
+          <button ref="closeButton" class="focus-ring grid h-8 w-8 place-items-center rounded-xl border border-border text-muted hover:text-text" aria-label="Close" @click="emit('close')">
             <X :size="15" />
           </button>
         </div>

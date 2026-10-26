@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +51,7 @@ pub struct Config {
     pub app_name: String,
     pub user_id: String,
     pub demo: bool,
+    pub ui_dist: Option<PathBuf>,
     pub openobserve: OpenObserveConfig,
     pub oo_mcp: OoMcpConfig,
     pub mcp: McpConfig,
@@ -137,6 +139,9 @@ impl Config {
             app_name: text("CONSOLE_APP_NAME").unwrap_or_else(|| "doggy-dns-console".to_string()),
             user_id: text("CONSOLE_USER_ID").unwrap_or_else(|| "local".to_string()),
             demo,
+            ui_dist: Some(PathBuf::from(
+                text("DOGGY_DNS_UI_DIST").unwrap_or_else(|| "doggy-dns-ui/dist".to_string()),
+            )),
             openobserve: OpenObserveConfig {
                 base_url: oo_base_url,
                 org: oo_org.clone(),

@@ -44,8 +44,19 @@ function select(instance: Instance) {
       <InstanceCard v-for="instance in instances" :key="instance.id" :instance="instance" @select="select" />
     </section>
 
-    <div v-if="selected" class="fixed inset-0 z-40 flex justify-end bg-black/40 backdrop-blur-[2px]" @click.self="selected = null">
-      <aside class="flex h-full w-full max-w-[560px] flex-col border-l border-border bg-surface shadow-2xl">
+    <div
+      v-if="selected"
+      class="fixed inset-0 z-40 flex justify-end bg-black/40 backdrop-blur-[2px]"
+      tabindex="-1"
+      @click.self="selected = null"
+      @keydown.esc="selected = null"
+    >
+      <aside
+        class="flex h-full w-full max-w-[560px] flex-col border-l border-border bg-surface shadow-2xl"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Instance detail"
+      >
         <header class="flex items-start justify-between border-b border-border px-4 py-4">
           <div>
             <p class="mono text-[10px] uppercase tracking-[0.16em] text-accent">instance</p>

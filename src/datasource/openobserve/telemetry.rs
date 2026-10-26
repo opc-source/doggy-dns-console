@@ -90,10 +90,9 @@ impl TelemetrySource for OpenObserveTelemetry {
             let Some(log) = normalize_log_row(&row) else {
                 continue;
             };
-            let code = log
-                .response_code
-                .clone()
-                .unwrap_or_else(|| "SERVFAIL".into());
+            let Some(code) = log.response_code.clone() else {
+                continue;
+            };
             if filter.response_code.is_none() && code == "NXDOMAIN" {
                 continue;
             }
@@ -143,7 +142,12 @@ impl TelemetrySource for OpenObserveTelemetry {
             }
         }
         let mut result: Vec<_> = groups.into_values().collect();
-        result.sort_by_key(|left| std::cmp::Reverse(left.last_seen));
+        result.sort_by(|left, right| {
+            right
+                .count
+                .cmp(&left.count)
+                .then_with(|| right.last_seen.cmp(&left.last_seen))
+        });
         result.truncate(limit);
         Ok(result)
     }
@@ -180,7 +184,7 @@ impl TelemetrySource for OpenObserveTelemetry {
             response_code: first
                 .response_code
                 .clone()
-                .unwrap_or_else(|| "SERVFAIL".to_string()),
+                .unwrap_or_else(|| "UNKNOWN".to_string()),
             error: first.error.clone(),
             count: logs.len() as u64,
             first_seen: first.record.ts,
@@ -214,7 +218,7 @@ impl TelemetrySource for OpenObserveTelemetry {
     async fn seen_instances(&self, window: Window) -> Result<Vec<SeenInstance>, DataError> {
         let (start, end) = self.range(window);
         let seen = seen_query(&self.client_config().metric_queries);
-        let series = self.client.query_promql(&seen, start, end, 300).await?;
+        let series = self.client.query_promql(&seen, start, end, 60).await?;
         Ok(series
             .into_iter()
             .filter_map(|item| {

@@ -37,11 +37,11 @@ async fn filters_tools_list_to_read_only_allowlist() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "result": {"tools": [
+            "result": {"content": [{"type": "text", "text": serde_json::to_string(&json!({"tools": [
                 {"name":"GetTraceDAG","description":"Trace DAG","inputSchema":{"type":"object","properties":{"trace_id":{"type":"string"}},"required":["trace_id"]}},
                 {"name":"PrometheusQuery","description":"PromQL instant","inputSchema":{"type":"object","properties":{"org_id":{"type":"string"},"query":{"type":"string"}},"required":["org_id","query"]}},
                 {"name":"SearchAround","description":"Search around","inputSchema":{"type":"object","properties":{"stream":{"type":"string"}},"required":["stream"]}}
-            ]}
+            ]})).unwrap()}]}
         })))
         .mount(&server)
         .await;
@@ -89,6 +89,73 @@ async fn call_tool_uses_tools_call_with_full_detail() {
         .await
         .unwrap();
     assert_eq!(value["hits"], json!([]));
+}
+
+#[tokio::test]
+async fn tools_list_failure_degrades_without_scanning_every_tool() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("down"))
+        .mount(&server)
+        .await;
+
+    let client = Arc::new(OoMcpClient::new(test_cfg(server.uri() + "/mcp")).unwrap());
+    let tools = client.allowed_tools().await.unwrap();
+    assert!(tools.is_empty());
+    assert!(server.received_requests().await.unwrap().len() <= 2);
+}
+
+#[tokio::test]
+async fn call_tool_parses_an_sse_response() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .and(body_partial_json(json!({"method": "tools/call"})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(
+                "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"hits\\\":[]}\"}]}}\n\n",
+                "text/event-stream",
+            ),
+        )
+        .mount(&server)
+        .await;
+
+    let client = Arc::new(OoMcpClient::new(test_cfg(server.uri() + "/mcp")).unwrap());
+    let value = client
+        .call_tool("SearchSQL", json!({"sql": "SELECT 1"}))
+        .await
+        .unwrap();
+    assert_eq!(value["hits"], json!([]));
+}
+
+#[tokio::test]
+async fn attempts_initialize_when_tools_list_fails() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .and(body_partial_json(json!({"method": "tools/list"})))
+        .respond_with(ResponseTemplate::new(400).set_body_string("need initialize"))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .and(body_partial_json(json!({"method": "initialize"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "result": {"protocolVersion": "2025-11-25", "capabilities": {}}
+        })))
+        .mount(&server)
+        .await;
+
+    let client = Arc::new(OoMcpClient::new(test_cfg(server.uri() + "/mcp")).unwrap());
+    let tools = client.allowed_tools().await.unwrap();
+    assert!(tools.is_empty());
+    let requests = server.received_requests().await.unwrap();
+    assert!(requests.iter().any(|request| {
+        String::from_utf8_lossy(&request.body).contains("\"method\":\"initialize\"")
+    }));
 }
 
 #[tokio::test]

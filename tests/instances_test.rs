@@ -5,6 +5,9 @@ use doggy_dns_console::datasource::fixture::FixtureSource;
 use doggy_dns_console::datasource::instances::MergedInstanceSource;
 use doggy_dns_console::datasource::mcp::{InstanceTransport, McpInstanceSource};
 use doggy_dns_console::datasource::{FixedClock, InstanceSource, TelemetrySource};
+use doggy_dns_console::domain::{
+    FailureDetail, FailureFilter, FailureGroup, Overview, SeenInstance, Window,
+};
 use doggy_dns_console::error::DataError;
 use serde_json::{Value, json};
 
@@ -41,6 +44,52 @@ impl InstanceTransport for FakeTransport {
             other => Err(DataError::Invalid(format!("unexpected tool {other}"))),
         }
     }
+}
+
+struct SeenOnly(Vec<SeenInstance>);
+
+#[async_trait]
+impl TelemetrySource for SeenOnly {
+    async fn overview(&self, _window: Window) -> Result<Overview, DataError> {
+        Err(DataError::NotConfigured("unused".into()))
+    }
+    async fn failures(&self, _filter: FailureFilter) -> Result<Vec<FailureGroup>, DataError> {
+        Err(DataError::NotConfigured("unused".into()))
+    }
+    async fn failure_detail(&self, _trace_id: &str) -> Result<FailureDetail, DataError> {
+        Err(DataError::NotConfigured("unused".into()))
+    }
+    async fn seen_instances(&self, _window: Window) -> Result<Vec<SeenInstance>, DataError> {
+        Ok(self.0.clone())
+    }
+}
+
+#[tokio::test]
+async fn telemetry_only_instance_detail_is_degraded_not_not_found() {
+    let now = 1_761_436_800_000;
+    let fixture = Arc::new(FixtureSource::new(Arc::new(FixedClock(now))));
+    let telemetry = fixture.clone() as Arc<dyn TelemetrySource>;
+    let mcp = Arc::new(McpInstanceSource::new(Vec::new(), Arc::new(FakeTransport)));
+    let merged = MergedInstanceSource::new(mcp, telemetry, Arc::new(FixedClock(now)));
+    let detail = merged.detail("dns-node-2").await.unwrap();
+    assert_eq!(detail.instance.id, "dns-node-2");
+    assert!(detail.plugins.is_empty());
+    assert!(!detail.instance.mcp_reachable);
+}
+
+#[tokio::test]
+async fn telemetry_only_node_is_online_inside_the_three_minute_window() {
+    let now = 1_761_436_800_000;
+    let telemetry: Arc<dyn TelemetrySource> = Arc::new(SeenOnly(vec![SeenInstance {
+        id: "node-a".to_string(),
+        host: "node-a".to_string(),
+        last_seen: now - 150_000,
+    }]));
+    let mcp = Arc::new(McpInstanceSource::new(Vec::new(), Arc::new(FakeTransport)));
+    let merged = MergedInstanceSource::new(mcp, telemetry, Arc::new(FixedClock(now)));
+    let list = merged.list().await.unwrap();
+    assert_eq!(list[0].id, "node-a");
+    assert!(list[0].online);
 }
 
 #[tokio::test]

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use axum::body::Body;
@@ -20,6 +21,28 @@ struct AlwaysHealthy;
 impl Probe for AlwaysHealthy {
     async fn probe(&self) -> Result<(), DataError> {
         Ok(())
+    }
+}
+
+struct RecordingTelemetry {
+    inner: FixtureSource,
+    limit: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl TelemetrySource for RecordingTelemetry {
+    async fn overview(&self, window: Window) -> Result<Overview, DataError> {
+        self.inner.overview(window).await
+    }
+    async fn failures(&self, filter: FailureFilter) -> Result<Vec<FailureGroup>, DataError> {
+        self.limit.store(filter.limit, Ordering::SeqCst);
+        self.inner.failures(filter).await
+    }
+    async fn failure_detail(&self, trace_id: &str) -> Result<FailureDetail, DataError> {
+        self.inner.failure_detail(trace_id).await
+    }
+    async fn seen_instances(&self, window: Window) -> Result<Vec<SeenInstance>, DataError> {
+        self.inner.seen_instances(window).await
     }
 }
 
@@ -110,6 +133,26 @@ async fn failures_limit_is_clamped_and_returns_list() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_body(response).await;
     assert!(body.as_array().unwrap().len() <= 200);
+}
+
+#[tokio::test]
+async fn failures_limit_is_forwarded_as_200() {
+    let limit = Arc::new(AtomicUsize::new(0));
+    let telemetry = Arc::new(RecordingTelemetry {
+        inner: FixtureSource::new(Arc::new(FixedClock(1_761_436_800_000))),
+        limit: limit.clone(),
+    });
+    let app = app_with(telemetry);
+    let response = app
+        .oneshot(
+            Request::get("/api/failures?limit=9999")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(limit.load(Ordering::SeqCst), 200);
 }
 
 #[tokio::test]

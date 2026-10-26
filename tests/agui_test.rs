@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -16,6 +17,15 @@ struct Healthy;
 impl Probe for Healthy {
     async fn probe(&self) -> Result<(), DataError> {
         Ok(())
+    }
+}
+
+struct FailingProbe;
+
+#[async_trait]
+impl Probe for FailingProbe {
+    async fn probe(&self) -> Result<(), DataError> {
+        Err(DataError::Upstream("mcp down".to_string()))
     }
 }
 
@@ -41,13 +51,21 @@ fn demo_model() -> Arc<dyn adk_rust::prelude::Llm> {
     Arc::new(ScriptedLlm::new("demo", script))
 }
 
-async fn spawn_test_app() -> (String, tokio::task::JoinHandle<()>) {
+async fn spawn_test_app_with_dist(dist: Option<PathBuf>) -> (String, tokio::task::JoinHandle<()>) {
+    spawn_test_app_with_mcp(dist, None).await
+}
+
+async fn spawn_test_app_with_mcp(
+    dist: Option<PathBuf>,
+    oo_mcp_health: Option<Arc<dyn Probe>>,
+) -> (String, tokio::task::JoinHandle<()>) {
     let fixture = Arc::new(FixtureSource::new(Arc::new(FixedClock(1_761_436_800_000))));
     let telemetry = fixture.clone() as Arc<dyn TelemetrySource>;
     let instances = fixture as Arc<dyn InstanceSource>;
     let service = Arc::new(ConsoleService::new(telemetry, instances.clone()));
     let sessions = Arc::new(adk_rust::session::InMemorySessionService::new());
-    let cfg = config();
+    let mut cfg = config();
+    cfg.ui_dist = dist;
     let agent = build_agent(demo_model(), service.clone(), Vec::new()).unwrap();
     let deps = AppDeps {
         service,
@@ -56,7 +74,7 @@ async fn spawn_test_app() -> (String, tokio::task::JoinHandle<()>) {
         sessions,
         extra_tools: Vec::new(),
         openobserve_health: Arc::new(Healthy),
-        oo_mcp_health: None,
+        oo_mcp_health,
         model_configured: true,
     };
     let _ = agent;
@@ -68,6 +86,25 @@ async fn spawn_test_app() -> (String, tokio::task::JoinHandle<()>) {
         axum::serve(listener, app).await.unwrap();
     });
     (format!("http://{addr}"), handle)
+}
+
+async fn spawn_test_app() -> (String, tokio::task::JoinHandle<()>) {
+    spawn_test_app_with_dist(None).await
+}
+
+#[tokio::test]
+async fn spa_deep_link_falls_back_to_index() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("index.html"),
+        "<html><body><div id=\"app\"></div></body></html>",
+    )
+    .unwrap();
+    let (base, handle) = spawn_test_app_with_dist(Some(dir.path().to_path_buf())).await;
+    let response = reqwest::get(format!("{base}/instances")).await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(response.text().await.unwrap().contains("id=\"app\""));
+    handle.abort();
 }
 
 #[tokio::test]
@@ -115,8 +152,15 @@ async fn run_sse_emits_ag_ui_events() {
 
 #[tokio::test]
 async fn overview_works_when_oo_mcp_is_down() {
-    let (base, handle) = spawn_test_app().await;
+    let (base, handle) = spawn_test_app_with_mcp(None, Some(Arc::new(FailingProbe))).await;
     let response = reqwest::get(format!("{base}/api/overview")).await.unwrap();
     assert!(response.status().is_success());
+    let connections: serde_json::Value = reqwest::get(format!("{base}/api/connections"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(connections["openobserveMcp"]["ok"], false);
     handle.abort();
 }

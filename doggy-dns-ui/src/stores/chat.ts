@@ -45,9 +45,15 @@ export const useChatStore = defineStore('chat', () => {
     return created.id
   }
 
-  async function send(content: string) {
+  async function send(content: string): Promise<boolean> {
     error.value = null
-    const id = await ensureSession()
+    let id: string
+    try {
+      id = await ensureSession()
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+      return false
+    }
     messages.value.push({ role: 'user', content })
     const assistant = reactive<ChatMessage>({ role: 'assistant', content: '', toolCalls: [] })
     messages.value.push(assistant)
@@ -72,6 +78,7 @@ export const useChatStore = defineStore('chat', () => {
       stopText()
       stopTools()
     }
+    return true
   }
 
   function stop() {

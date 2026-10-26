@@ -6,6 +6,10 @@ function encoder() {
   return new TextEncoder()
 }
 
+function sse(value: unknown) {
+  return `data: ${JSON.stringify(value)}\n\n`
+}
+
 function streamingFetch(chunks: string[]) {
   return vi.fn(async () => {
     const body = new ReadableStream<Uint8Array>({
@@ -39,6 +43,29 @@ describe('useAgUiStream', () => {
     expect(stream.toolCalls.value[0]?.name).toBe('get_overview')
     expect(stream.toolCalls.value[0]?.status).toBe('done')
     expect(stream.running.value).toBe(false)
+  })
+
+  it('parses streaming chunk events from a real model', async () => {
+    vi.stubGlobal(
+      'fetch',
+      streamingFetch([
+        sse({ type: 'TEXT_MESSAGE_CHUNK', delta: '你' }),
+        sse({ type: 'TEXT_MESSAGE_CHUNK', delta: '好' }),
+        sse({
+          type: 'TOOL_CALL_CHUNK',
+          toolCallId: 'c2',
+          toolCallName: 'oo_search_sql',
+          delta: '{"sql":',
+        }),
+        sse({ type: 'TOOL_CALL_CHUNK', toolCallId: 'c2', delta: '"SELECT 1"}' }),
+        sse({ type: 'RUN_FINISHED' }),
+      ]),
+    )
+    const stream = useAgUiStream()
+    await stream.send(request)
+    expect(stream.text.value).toBe('你好')
+    expect(stream.toolCalls.value[0]?.name).toBe('oo_search_sql')
+    expect(stream.toolCalls.value[0]?.args).toBe('{"sql":"SELECT 1"}')
   })
 
   it('abort keeps partial text', async () => {

@@ -125,7 +125,8 @@ export function useAgUiStream() {
 
   function apply(event: AgUiEvent) {
     switch (event.type) {
-      case 'TEXT_MESSAGE_CONTENT': {
+      case 'TEXT_MESSAGE_CONTENT':
+      case 'TEXT_MESSAGE_CHUNK': {
         const delta = typeof event.delta === 'string' ? event.delta : ''
         text.value += delta
         break
@@ -134,6 +135,18 @@ export function useAgUiStream() {
         const id = String(event.toolCallId ?? event.tool_call_id ?? '')
         const name = String(event.toolCallName ?? event.tool_call_name ?? 'tool')
         toolCalls.value.push({ id, name, args: '', status: 'running' })
+        break
+      }
+      case 'TOOL_CALL_CHUNK': {
+        const id = String(event.toolCallId ?? event.tool_call_id ?? '')
+        const name = String(event.toolCallName ?? event.tool_call_name ?? 'tool')
+        const delta = String(event.delta ?? '')
+        let call = toolCalls.value.find((item) => item.id === id)
+        if (!call) {
+          call = { id, name, args: '', status: 'running' }
+          toolCalls.value.push(call)
+        }
+        call.args += delta
         break
       }
       case 'TOOL_CALL_ARGS': {

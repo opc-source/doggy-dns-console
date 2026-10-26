@@ -56,7 +56,7 @@ impl InstanceSource for MergedInstanceSource {
                     id: instance.id,
                     host: instance.host,
                     version: None,
-                    online: instance.last_seen >= now - 120_000,
+                    online: instance.last_seen >= now - 180_000,
                     last_seen: instance.last_seen,
                     mcp_reachable: false,
                 });
@@ -72,6 +72,26 @@ impl InstanceSource for MergedInstanceSource {
     }
 
     async fn detail(&self, id: &str) -> Result<InstanceDetail, DataError> {
-        self.mcp.detail(id).await
+        match self.mcp.detail(id).await {
+            Ok(detail) => Ok(detail),
+            Err(DataError::NotFound(_)) | Err(DataError::Upstream(_)) => {
+                let instances = self.list().await?;
+                let instance = instances
+                    .into_iter()
+                    .find(|instance| instance.id == id || instance.host == id)
+                    .ok_or_else(|| DataError::NotFound(format!("instance {id}")))?;
+                Ok(InstanceDetail {
+                    instance,
+                    uptime_seconds: None,
+                    started_at: None,
+                    listen_addr: None,
+                    protocols: Vec::new(),
+                    plugins: Vec::new(),
+                    config_toml: None,
+                    recent_failures: 0,
+                })
+            }
+            Err(error) => Err(error),
+        }
     }
 }

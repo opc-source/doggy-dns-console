@@ -41,10 +41,13 @@ describe('FailureDrawer', () => {
     const wrapper = mount(FailureDrawer, {
       props: { traceId: 't1' },
       global: { plugins: [pinia] },
+      attachTo: document.body,
     })
     await flushPromises()
     expect(wrapper.text()).toContain('t1')
     expect(wrapper.text()).toContain('upstream forward lookup failed')
+    await wrapper.vm.$nextTick()
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Close')
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await wrapper.vm.$nextTick()
     expect(wrapper.emitted('close')).toBeTruthy()
@@ -55,10 +58,11 @@ describe('FailureDrawer', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const chat = useChatStore()
-    const send = vi.spyOn(chat, 'send').mockResolvedValue(undefined)
+    const send = vi.spyOn(chat, 'send').mockResolvedValue(true)
     const wrapper = mount(FailureDrawer, {
       props: { traceId: 't1' },
       global: { plugins: [pinia] },
+      attachTo: document.body,
     })
     await flushPromises()
     await wrapper.find('[data-test="analyze"]').trigger('click')

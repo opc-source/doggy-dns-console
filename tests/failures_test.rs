@@ -76,7 +76,13 @@ async fn failure_list_excludes_nxdomain_and_dedupes_by_trace() {
         .find(|group| group.trace_id.as_deref() == Some("t1"))
         .unwrap();
     assert_eq!(t1.count, 2);
+    assert_eq!(groups[0].trace_id.as_deref(), Some("t1"));
     assert_eq!(groups.len(), 3);
+    assert!(
+        !groups
+            .iter()
+            .any(|group| group.trace_id.as_deref() == Some("t5"))
+    );
 }
 
 #[tokio::test]

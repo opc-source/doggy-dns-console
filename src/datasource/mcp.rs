@@ -129,6 +129,7 @@ impl InstanceSource for McpInstanceSource {
                 },
                 Err(error) => {
                     tracing::warn!(endpoint = %endpoint, error = %error, "mcp instance unavailable");
+                    instances.push(unreachable_instance(endpoint));
                 }
             }
         }
@@ -200,6 +201,21 @@ impl InstanceSource for McpInstanceSource {
             });
         }
         Err(DataError::NotFound(format!("instance {id}")))
+    }
+}
+
+fn unreachable_instance(endpoint: &str) -> Instance {
+    let host = url::Url::parse(endpoint)
+        .ok()
+        .and_then(|url| url.host_str().map(ToString::to_string))
+        .unwrap_or_else(|| endpoint.to_string());
+    Instance {
+        id: host.clone(),
+        host,
+        version: None,
+        online: false,
+        last_seen: 0,
+        mcp_reachable: false,
     }
 }
 
