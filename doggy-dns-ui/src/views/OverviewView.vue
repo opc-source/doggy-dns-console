@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 
 import ErrorBanner from '@/components/ErrorBanner.vue'
+import FailureDrawer from '@/components/FailureDrawer.vue'
 import FailureList from '@/components/FailureList.vue'
 import KpiCard from '@/components/KpiCard.vue'
 import TrendChart from '@/components/TrendChart.vue'
@@ -108,5 +109,7 @@ const errorMessage = computed(() => {
         </ul>
       </div>
     </section>
+
+    <FailureDrawer v-if="ui.drawerTraceId" :trace-id="ui.drawerTraceId" @close="ui.closeFailure()" />
   </div>
 </template>

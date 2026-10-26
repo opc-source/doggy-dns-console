@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 import AiPanel from '@/components/AiPanel.vue'
 
-function mountPanel(props: Record<string, unknown>) {
+function mountPanel(props: { telemetryDown: boolean; rawQueryDown?: boolean }) {
   return mount(AiPanel, {
     props,
     global: { plugins: [createPinia()] },
