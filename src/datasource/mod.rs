@@ -1,4 +1,6 @@
 pub mod fixture;
+pub mod instances;
+pub mod mcp;
 pub mod openobserve;
 
 use crate::domain::{

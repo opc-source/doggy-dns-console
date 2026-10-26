@@ -20,6 +20,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
 url = "2"
+futures = "0.3"
 rmcp = { version = "3.7", features = ["client", "transport-streamable-http-client-reqwest"] }
 adk-rust = { git = "https://github.com/zavora-ai/adk-rust", rev = "791f6aafa32723f132375084385530ab7f039465", default-features = false, features = ["agents", "models", "openai", "deepseek", "tools", "runner", "sessions", "server"] }
 adk-session = { git = "https://github.com/zavora-ai/adk-rust", rev = "791f6aafa32723f132375084385530ab7f039465", features = ["sqlite"] }
@@ -29,4 +30,3 @@ tower = { version = "0.5", features = ["util"] }
 wiremock = "0.6"
 tempfile = "3"
 http-body-util = "0.1"
-futures = "0.3"
