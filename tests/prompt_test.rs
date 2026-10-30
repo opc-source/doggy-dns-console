@@ -13,3 +13,9 @@ fn prompt_routes_raw_drilldown_to_openobserve_tools() {
     assert!(SYSTEM_PROMPT.contains("openobserve_search_sql"));
     assert!(SYSTEM_PROMPT.contains("先用 DNS 语义工具"));
 }
+
+#[test]
+fn prompt_points_runtime_signals_at_instance_detail() {
+    assert!(SYSTEM_PROMPT.contains("runtime signals"));
+    assert!(SYSTEM_PROMPT.contains("get_instance_detail"));
+}

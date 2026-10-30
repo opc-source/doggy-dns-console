@@ -139,7 +139,7 @@ pub fn build_tools(service: Arc<ConsoleService>) -> Vec<Arc<dyn Tool>> {
         Arc::new(
             StatefulTool::new(
                 "get_instance_detail",
-                "Return one instance's uptime, protocols, plugins and redacted TOML config.",
+                "Return one instance's pid, status, uptime, protocols, plugins, redacted TOML config and live runtime signals (Nacos cache/push freshness, XDP fast path state).",
                 state.clone(),
                 tool_instance_detail,
             )

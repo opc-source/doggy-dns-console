@@ -217,6 +217,8 @@ impl InstanceSource for FixtureSource {
             .ok_or_else(|| DataError::NotFound(format!("instance {id}")))?;
         Ok(InstanceDetail {
             instance,
+            pid: Some(4242),
+            status: Some("running".to_string()),
             uptime_seconds: Some(86_400),
             started_at: Some("2026-10-25T09:00:00Z".to_string()),
             listen_addr: Some("0.0.0.0:15353".to_string()),
@@ -248,6 +250,13 @@ impl InstanceSource for FixtureSource {
                 "[server]\nlisten_addr = \"0.0.0.0\"\nport = 15353\n\n[mcp]\nenabled = true\nport = 19090\n"
                     .to_string(),
             ),
+            redacted_keys: vec!["observability.basic_auth.password".to_string()],
+            runtime: Some(json!({
+                "signals": {
+                    "nacos.nacos.local": {"cachedServices": 42, "lastPushSecondsAgo": 3},
+                    "xdp": {"attached": true}
+                }
+            })),
             recent_failures: 0,
         })
     }

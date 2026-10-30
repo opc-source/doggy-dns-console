@@ -69,14 +69,22 @@ export interface PluginInfo {
   details: Record<string, unknown>
 }
 
+export interface RuntimeStatus {
+  signals: Record<string, unknown>
+}
+
 export interface InstanceDetail {
   instance: Instance
+  pid: number | null
+  status: string | null
   uptimeSeconds: number | null
   startedAt: string | null
   listenAddr: string | null
   protocols: string[]
   plugins: PluginInfo[]
   configToml: string | null
+  redactedKeys: string[]
+  runtime: RuntimeStatus | null
   recentFailures: number
 }
 

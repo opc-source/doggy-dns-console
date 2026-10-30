@@ -90,6 +90,32 @@ async fn json_body(response: axum::response::Response) -> serde_json::Value {
 }
 
 #[tokio::test]
+async fn instance_detail_exposes_runtime_signals_and_redactions() {
+    let app = app_with(fixture() as Arc<dyn TelemetrySource>);
+    let response = app
+        .oneshot(
+            Request::get("/api/instances/dns-node-1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["pid"], 4242);
+    assert_eq!(body["status"], "running");
+    assert_eq!(
+        body["runtime"]["signals"]["nacos.nacos.local"]["cachedServices"],
+        42
+    );
+    assert!(
+        body["redactedKeys"]
+            .as_array()
+            .is_some_and(|keys| !keys.is_empty())
+    );
+}
+
+#[tokio::test]
 async fn overview_returns_camel_case_json() {
     let app = app_with(fixture() as Arc<dyn TelemetrySource>);
     let response = app

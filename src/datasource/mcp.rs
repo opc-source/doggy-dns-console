@@ -5,18 +5,39 @@ use async_trait::async_trait;
 use rmcp::model::{
     CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation, ProtocolVersion,
 };
+use rmcp::service::RunningService;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-use rmcp::{ClientLifecycleMode, ClientServiceExt};
+use rmcp::{ClientLifecycleMode, ClientServiceExt, RoleClient};
 use serde_json::Value;
 
 use crate::datasource::InstanceSource;
 use crate::domain::{Instance, InstanceDetail, PluginInfo};
 use crate::error::DataError;
 
+type McpClient = RunningService<RoleClient, ClientConfig>;
+
 #[async_trait]
 pub trait InstanceTransport: Send + Sync {
     async fn call(&self, endpoint: &str, tool: &str, args: Value) -> Result<Value, DataError>;
+
+    /// Call several no-argument tools on one endpoint. The default keeps the
+    /// per-call behavior; real transports reuse a single MCP session so a
+    /// detail view costs one handshake instead of one per tool.
+    async fn call_tools(
+        &self,
+        endpoint: &str,
+        tools: &[&'static str],
+    ) -> Vec<Result<Value, DataError>> {
+        let mut results = Vec::with_capacity(tools.len());
+        for tool in tools {
+            results.push(
+                self.call(endpoint, tool, Value::Object(Default::default()))
+                    .await,
+            );
+        }
+        results
+    }
 }
 
 pub struct RmcpTransport {
@@ -28,14 +49,12 @@ impl RmcpTransport {
     pub fn new(token: Option<String>, timeout: Duration) -> Self {
         Self { token, timeout }
     }
-}
 
-#[async_trait]
-impl InstanceTransport for RmcpTransport {
-    async fn call(&self, endpoint: &str, tool: &str, args: Value) -> Result<Value, DataError> {
+    async fn connect(&self, endpoint: &str) -> Result<McpClient, String> {
         let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint);
         if let Some(token) = &self.token {
-            config = config.auth_header(format!("Bearer {token}"));
+            // rmcp adds the `Bearer ` prefix itself (reqwest `bearer_auth`).
+            config = config.auth_header(token.clone());
         }
         let transport = StreamableHttpClientTransport::with_client(reqwest::Client::new(), config);
         let client_config = ClientConfig::new(
@@ -49,11 +68,19 @@ impl InstanceTransport for RmcpTransport {
                 legacy_version: Some(ProtocolVersion::V_2025_11_25),
             },
         );
-        let client = tokio::time::timeout(self.timeout, connect)
+        tokio::time::timeout(self.timeout, connect)
             .await
-            .map_err(|_| DataError::Upstream(format!("mcp connect timeout: {endpoint}")))?
-            .map_err(|error| DataError::Upstream(format!("mcp connect {endpoint}: {error}")))?;
+            .map_err(|_| format!("mcp connect timeout: {endpoint}"))?
+            .map_err(|error| format!("mcp connect {endpoint}: {error}"))
+    }
 
+    async fn call_on(
+        &self,
+        client: &McpClient,
+        endpoint: &str,
+        tool: &str,
+        args: &Value,
+    ) -> Result<Value, DataError> {
         let arguments = args.as_object().cloned().unwrap_or_default();
         let result = tokio::time::timeout(
             self.timeout,
@@ -63,7 +90,6 @@ impl InstanceTransport for RmcpTransport {
         .await
         .map_err(|_| DataError::Upstream(format!("mcp call timeout: {endpoint}/{tool}")))?
         .map_err(|error| DataError::Upstream(format!("mcp call {endpoint}/{tool}: {error}")))?;
-        let _ = client.cancel().await;
 
         if result.is_error == Some(true) {
             let message = result
@@ -87,6 +113,39 @@ impl InstanceTransport for RmcpTransport {
             Ok(value) => Ok(value),
             Err(_) => Ok(Value::String(text)),
         }
+    }
+}
+
+#[async_trait]
+impl InstanceTransport for RmcpTransport {
+    async fn call(&self, endpoint: &str, tool: &str, args: Value) -> Result<Value, DataError> {
+        let client = self.connect(endpoint).await.map_err(DataError::Upstream)?;
+        let result = self.call_on(&client, endpoint, tool, &args).await;
+        let _ = client.cancel().await;
+        result
+    }
+
+    async fn call_tools(
+        &self,
+        endpoint: &str,
+        tools: &[&'static str],
+    ) -> Vec<Result<Value, DataError>> {
+        let client = match self.connect(endpoint).await {
+            Ok(client) => client,
+            Err(reason) => {
+                return tools
+                    .iter()
+                    .map(|_| Err(DataError::Upstream(reason.clone())))
+                    .collect();
+            }
+        };
+        let empty = Value::Object(Default::default());
+        let mut results = Vec::with_capacity(tools.len());
+        for tool in tools {
+            results.push(self.call_on(&client, endpoint, tool, &empty).await);
+        }
+        let _ = client.cancel().await;
+        results
     }
 }
 
@@ -154,27 +213,40 @@ impl InstanceSource for McpInstanceSource {
             instance.mcp_reachable = true;
             instance.online = true;
 
-            let plugins = self
+            let mut auxiliary = self
                 .transport
-                .call(endpoint, "list_plugins", Value::Object(Default::default()))
+                .call_tools(
+                    endpoint,
+                    &["list_plugins", "get_config", "get_runtime_status"],
+                )
                 .await
-                .ok()
+                .into_iter();
+            let plugins = auxiliary
+                .next()
+                .and_then(Result::ok)
                 .map(|value| plugins_from_value(&value))
                 .unwrap_or_default();
-            let config_toml = self
-                .transport
-                .call(endpoint, "get_config", Value::Object(Default::default()))
-                .await
-                .ok()
-                .and_then(|value| {
-                    value
-                        .get("content")
-                        .and_then(Value::as_str)
-                        .map(ToString::to_string)
-                });
+            let config = auxiliary.next().and_then(Result::ok);
+            let config_toml = config
+                .as_ref()
+                .and_then(|value| value.get("content").and_then(Value::as_str))
+                .map(ToString::to_string);
+            let redacted_keys = config
+                .as_ref()
+                .map(|value| string_array(value, "redactedKeys"))
+                .unwrap_or_default();
+            let runtime = auxiliary.next().and_then(Result::ok);
 
             return Ok(InstanceDetail {
                 instance,
+                pid: status
+                    .get("pid")
+                    .and_then(Value::as_u64)
+                    .and_then(|pid| u32::try_from(pid).ok()),
+                status: status
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
                 uptime_seconds: status.get("uptimeSeconds").and_then(Value::as_u64),
                 started_at: status
                     .get("startedAt")
@@ -197,6 +269,8 @@ impl InstanceSource for McpInstanceSource {
                     .unwrap_or_default(),
                 plugins,
                 config_toml,
+                redacted_keys,
+                runtime,
                 recent_failures: 0,
             });
         }
@@ -240,6 +314,20 @@ fn instance_from_status(value: &Value) -> Option<Instance> {
         last_seen: now,
         mcp_reachable: true,
     })
+}
+
+fn string_array(value: &Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn plugins_from_value(value: &Value) -> Vec<PluginInfo> {

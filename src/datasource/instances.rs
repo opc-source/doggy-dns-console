@@ -82,12 +82,16 @@ impl InstanceSource for MergedInstanceSource {
                     .ok_or_else(|| DataError::NotFound(format!("instance {id}")))?;
                 Ok(InstanceDetail {
                     instance,
+                    pid: None,
+                    status: None,
                     uptime_seconds: None,
                     started_at: None,
                     listen_addr: None,
                     protocols: Vec::new(),
                     plugins: Vec::new(),
                     config_toml: None,
+                    redacted_keys: Vec::new(),
+                    runtime: None,
                     recent_failures: 0,
                 })
             }
