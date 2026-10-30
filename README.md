@@ -31,8 +31,14 @@ cd .. && CONSOLE_DEMO=1 cargo run
 2. Set `OPENOBSERVE_BASE_URL`, `OPENOBSERVE_ORG`, and either `OPENOBSERVE_USER`/`OPENOBSERVE_PASSWORD` or `OPENOBSERVE_TOKEN`.
 3. Set `MODEL_*` for any OpenAI-compatible endpoint.
 4. Set `MCP_ENDPOINTS` to the doggy-dns MCP URLs (for example
-   `http://127.0.0.1:19090/mcp`).
+   `http://127.0.0.1:19090/mcp`) and `MCP_TOKEN` to the control-plane token, if set.
 5. `cargo run`.
+
+The console consumes all four read-only tools from each instance's control plane: `get_status`,
+`list_plugins`, `get_config` and `get_runtime_status`. The instance drawer shows pid/status,
+plugins, the redacted TOML (with the masked keys listed) and live signals such as Nacos cache
+size/push freshness and XDP attachment. `MCP_TOKEN` is sent as a bearer token to every endpoint;
+per-node tokens are not supported yet.
 
 OpenObserve MCP is optional but recommended. If `/api/{org}/mcp` returns 404, enable it on the
 OpenObserve instance (`O2_AI_ENABLED=true`, and `O2_TOOL_API_URL` where required). The console

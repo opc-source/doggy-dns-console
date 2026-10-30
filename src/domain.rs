@@ -139,12 +139,18 @@ pub struct PluginInfo {
 #[serde(rename_all = "camelCase")]
 pub struct InstanceDetail {
     pub instance: Instance,
+    pub pid: Option<u32>,
+    pub status: Option<String>,
     pub uptime_seconds: Option<u64>,
     pub started_at: Option<String>,
     pub listen_addr: Option<String>,
     pub protocols: Vec<String>,
     pub plugins: Vec<PluginInfo>,
     pub config_toml: Option<String>,
+    pub redacted_keys: Vec<String>,
+    /// Raw `get_runtime_status` payload (`{"signals": {...}}`); absent when
+    /// the instance's MCP build predates the tool or the call failed.
+    pub runtime: Option<Value>,
     pub recent_failures: u64,
 }
 

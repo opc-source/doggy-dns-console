@@ -19,6 +19,21 @@ const online = computed(() => instances.value.filter((item) => item.online).leng
 function select(instance: Instance) {
   selected.value = instance.id
 }
+
+function describeSignal(signal: unknown): string | null {
+  if (!signal || typeof signal !== 'object') return null
+  const value = signal as Record<string, unknown>
+  if (typeof value.cachedServices === 'number') {
+    const push = value.lastPushSecondsAgo
+    return `cached services ${value.cachedServices} · ${
+      typeof push === 'number' ? `last push ${push}s ago` : 'no push yet'
+    }`
+  }
+  if (typeof value.attached === 'boolean') {
+    return value.attached ? 'fast path attached' : 'fast path detached'
+  }
+  return null
+}
 </script>
 
 <template>
@@ -84,6 +99,39 @@ function select(instance: Instance) {
                 <p class="text-[10px] uppercase tracking-wide text-muted">protocols</p>
                 <p class="mono mt-1 text-sm">{{ detail.protocols.join(' · ') || '—' }}</p>
               </div>
+              <div class="panel p-3">
+                <p class="text-[10px] uppercase tracking-wide text-muted">status</p>
+                <p class="mono mt-1 text-sm">{{ detail.status ?? '—' }}</p>
+              </div>
+              <div class="panel p-3">
+                <p class="text-[10px] uppercase tracking-wide text-muted">pid</p>
+                <p class="mono mt-1 text-sm">{{ detail.pid ?? '—' }}</p>
+              </div>
+            </section>
+
+            <section>
+              <h3 class="mb-2 text-[11px] uppercase tracking-[0.14em] text-muted">Live signals</h3>
+              <div
+                v-if="detail.runtime && Object.keys(detail.runtime.signals).length"
+                class="space-y-2"
+              >
+                <article
+                  v-for="(signal, name) in detail.runtime.signals"
+                  :key="name"
+                  class="rounded-xl border border-border bg-surface-2/50 p-3"
+                >
+                  <p class="mono text-xs">{{ name }}</p>
+                  <p v-if="describeSignal(signal)" class="mt-1 text-[11px] text-muted">
+                    {{ describeSignal(signal) }}
+                  </p>
+                  <pre
+                    v-else
+                    class="mono mt-1 whitespace-pre-wrap break-all text-[10px] text-muted"
+                  >{{ JSON.stringify(signal) }}</pre>
+                </article>
+              </div>
+              <p v-else-if="detail.runtime" class="text-xs text-muted">No live signals registered.</p>
+              <p v-else class="text-xs text-muted">MCP did not return runtime signals.</p>
             </section>
 
             <section>
@@ -101,6 +149,10 @@ function select(instance: Instance) {
 
             <section>
               <h3 class="mb-2 text-[11px] uppercase tracking-[0.14em] text-muted">Config (read-only)</h3>
+              <p v-if="detail.redactedKeys.length" class="mb-2 text-[11px] text-muted">
+                {{ detail.redactedKeys.length }} sensitive value(s) redacted:
+                <span class="mono">{{ detail.redactedKeys.join(', ') }}</span>
+              </p>
               <ConfigPanel v-if="detail.configToml" :toml="detail.configToml" />
               <p v-else class="text-xs text-muted">MCP did not return config.</p>
             </section>
