@@ -34,6 +34,7 @@ const activeTab = ref<TabKey>('logs')
 const highlightedId = ref<string | null>(null)
 const evidenceFailed = ref(false)
 let highlightTimer: ReturnType<typeof setTimeout> | null = null
+let loadSeq = 0
 let previousFocus: Element | null = null
 
 const title = computed(() => evidence.value?.group.query ?? props.traceId)
@@ -99,11 +100,23 @@ const findingSections = computed(() => {
 
 const evidenceError = computed(() => (evidenceFailed.value ? (error.value ?? '取证失败') : null))
 
+const failedSnapshot = computed(
+  () => analysis.value?.status === 'failed' || analysis.value?.status === 'invalid',
+)
+
 const analysisError = computed(() => {
-  const snapshot = analysis.value
-  const failedSnapshot = snapshot?.status === 'failed' || snapshot?.status === 'invalid'
-  if (state.value !== 'analysisUnavailable' && !failedSnapshot) return null
-  return snapshot?.error ?? error.value ?? '分析失败，请稍后重试'
+  if (state.value !== 'analysisUnavailable' && !failedSnapshot.value) return null
+  return analysis.value?.error ?? error.value ?? '分析失败，请稍后重试'
+})
+
+// A 429/transient start failure settles on `evidenceReady`, and a failed poll
+// leaves `analysisRunning`; both keep `error` set but have no dedicated banner.
+// Reload states are excluded so an old error cannot flash over fresh evidence.
+const genericAnalysisError = computed(() => {
+  if (error.value === null || evidenceFailed.value) return null
+  if (state.value === 'analysisUnavailable' || failedSnapshot.value) return null
+  if (state.value === 'evidenceLoading' || state.value === 'idle') return null
+  return error.value
 })
 
 const MISSING_LABELS: Record<MissingEvidence, string> = {
@@ -152,14 +165,14 @@ function onKeydown(event: KeyboardEvent) {
 }
 
 async function investigate() {
+  const seq = ++loadSeq
   evidenceFailed.value = false
   const ok = await loadEvidence()
+  // A stale invocation (trace/window changed or a reload started meanwhile) must
+  // not paint its own outcome over the newest one.
+  if (seq !== loadSeq) return
   evidenceFailed.value = !ok
   if (ok && state.value === 'evidenceReady') await startAnalysis()
-}
-
-async function reloadEvidence() {
-  evidenceFailed.value = !(await loadEvidence())
 }
 
 onMounted(() => {
@@ -303,7 +316,7 @@ function revealEvidence(id: string) {
           <button
             data-test="reload-evidence"
             class="focus-ring shrink-0 rounded-lg border border-error/40 px-2 py-1 text-[11px] hover:bg-error/10"
-            @click="reloadEvidence()"
+            @click="investigate()"
           >
             重新取证
           </button>
@@ -356,6 +369,21 @@ function revealEvidence(id: string) {
         >
           <TriangleAlert :size="14" class="mt-0.5 shrink-0" />
           <span class="min-w-0 flex-1 break-all">{{ analysisError }}</span>
+          <button
+            data-test="retry-analysis"
+            class="focus-ring shrink-0 rounded-lg border border-error/40 px-2 py-1 text-[11px] hover:bg-error/10"
+            @click="startAnalysis()"
+          >
+            重试分析
+          </button>
+        </p>
+
+        <p
+          v-if="genericAnalysisError"
+          class="flex items-start gap-2 rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error"
+        >
+          <TriangleAlert :size="14" class="mt-0.5 shrink-0" />
+          <span class="min-w-0 flex-1 break-all">{{ genericAnalysisError }}</span>
           <button
             data-test="retry-analysis"
             class="focus-ring shrink-0 rounded-lg border border-error/40 px-2 py-1 text-[11px] hover:bg-error/10"
@@ -428,7 +456,7 @@ function revealEvidence(id: string) {
               <div class="flex flex-wrap items-center gap-2 text-[10px] text-muted">
                 <span class="tabular-nums">共 {{ logs.total }} 条</span>
                 <span v-if="logs.omitted" class="rounded bg-surface-2 px-1.5 py-0.5">已省略 {{ logs.omitted }} 条</span>
-                <span v-if="logs.truncated" class="rounded bg-warn/15 px-1.5 py-0.5 text-warn">已截断</span>
+                <span v-if="logs.truncated" data-test="logs-truncated" class="rounded bg-warn/15 px-1.5 py-0.5 text-warn">已截断</span>
               </div>
               <article
                 v-for="log in logs.items"
@@ -525,7 +553,13 @@ function revealEvidence(id: string) {
                 <div class="rounded-xl border border-border bg-surface-2/50 p-3">
                   <p class="text-[10px] uppercase tracking-[0.12em] text-muted">插件</p>
                   <ul class="mt-1 space-y-1">
-                    <li v-for="plugin in instance.plugins" :key="plugin.id" class="text-[11px] text-muted">
+                    <li
+                      v-for="plugin in instance.plugins"
+                      :key="plugin.id"
+                      :data-evidence-id="plugin.id"
+                      class="rounded-lg border px-2 py-1 text-[11px] text-muted transition-colors"
+                      :class="rowClass(plugin.id)"
+                    >
                       <span class="mono text-text">{{ plugin.id }}</span>
                       <span class="ml-1">
                         #{{ plugin.order }} {{ plugin.kind }} · {{ plugin.enabled ? 'enabled' : 'disabled' }}

@@ -271,6 +271,75 @@ describe('FailureDrawer investigation panel', () => {
     expect(investigation.startAnalysis).not.toHaveBeenCalled()
   })
 
+  it('resumes the analysis after a successful evidence reload', async () => {
+    const investigation = createInvestigation({ state: 'idle' })
+    investigation.loadEvidence.mockImplementation(async () => {
+      investigation.error.value = 'evidence boom'
+      return false
+    })
+    current = investigation
+
+    const wrapper = mountDrawer()
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="reload-evidence"]').exists()).toBe(true)
+
+    investigation.loadEvidence.mockImplementation(async () => {
+      investigation.evidence.value = bundle()
+      investigation.error.value = null
+      investigation.state.value = 'evidenceReady'
+      return true
+    })
+
+    await wrapper.find('[data-test="reload-evidence"]').trigger('click')
+    await flushPromises()
+
+    expect(investigation.loadEvidence).toHaveBeenCalledTimes(2)
+    expect(investigation.startAnalysis).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores a superseded evidence load instead of showing a stale failure banner', async () => {
+    const investigation = createInvestigation({ state: 'idle' })
+    let resolveFirst!: (value: boolean) => void
+    let resolveSecond!: (value: boolean) => void
+    investigation.loadEvidence
+      .mockImplementationOnce(
+        () =>
+          new Promise<boolean>((resolve) => {
+            resolveFirst = resolve
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<boolean>((resolve) => {
+            resolveSecond = resolve
+          }),
+      )
+    current = investigation
+
+    const wrapper = mountDrawer()
+    await flushPromises()
+    expect(investigation.loadEvidence).toHaveBeenCalledTimes(1)
+
+    await wrapper.setProps({ traceId: 't2' })
+    await flushPromises()
+    expect(investigation.loadEvidence).toHaveBeenCalledTimes(2)
+
+    // The newest load wins and resolves first.
+    investigation.evidence.value = bundle()
+    investigation.state.value = 'evidenceReady'
+    resolveSecond(true)
+    await flushPromises()
+
+    // The superseded load resolves last and must be ignored.
+    resolveFirst(false)
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="reload-evidence"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('取证失败')
+    expect(investigation.startAnalysis).toHaveBeenCalledTimes(1)
+  })
+
   it('renders the conclusion card and observed/inferred findings with evidence refs', async () => {
     current = createInvestigation({
       state: 'analysisDone',
@@ -334,6 +403,31 @@ describe('FailureDrawer investigation panel', () => {
     expect(wrapper.find('[data-test="tab-instance"]').attributes('aria-selected')).toBe('true')
   })
 
+  it('highlights the plugin row when a plugin evidence ref is clicked', async () => {
+    current = createInvestigation({
+      state: 'analysisDone',
+      evidence: bundle(),
+      analysis: snapshot({
+        result: result({
+          findings: [
+            { claim: '缓存插件可能异常', evidenceIds: ['plugin:cache'], kind: 'observed' },
+          ],
+        }),
+      }),
+    })
+
+    const wrapper = mountDrawer()
+    await flushPromises()
+
+    await refButton(wrapper, 'plugin:cache').trigger('click')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-test="tab-instance"]').attributes('aria-selected')).toBe('true')
+    const pluginRow = wrapper.find('li[data-evidence-id="plugin:cache"]')
+    expect(pluginRow.exists()).toBe(true)
+    expect(pluginRow.classes()).toContain('is-cited')
+  })
+
   it('renders logs, spans, instance and metrics evidence tabs', async () => {
     current = createInvestigation({
       state: 'analysisDone',
@@ -383,6 +477,27 @@ describe('FailureDrawer investigation panel', () => {
     expect(wrapper.text()).toContain('指标不可用')
   })
 
+  it('shows the in-tab logs truncation badge independently of the missing chip', async () => {
+    const base = bundle()
+    current = createInvestigation({
+      state: 'analysisDone',
+      evidence: bundle({
+        missing: [],
+        logs: { items: base.logs.items, total: 5, truncated: true, omitted: 0 },
+      }),
+      analysis: snapshot(),
+    })
+
+    const wrapper = mountDrawer()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('共 5 条')
+    expect(wrapper.text()).not.toContain('日志已截断')
+    const badge = wrapper.find('[data-test="logs-truncated"]')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toBe('已截断')
+  })
+
   it('offers a non-forced retry when the analysis is unavailable', async () => {
     const investigation = createInvestigation({
       state: 'analysisUnavailable',
@@ -399,6 +514,50 @@ describe('FailureDrawer investigation panel', () => {
     const retry = wrapper.find('[data-test="retry-analysis"]')
     expect(retry.exists()).toBe(true)
     await retry.trigger('click')
+
+    expect(investigation.startAnalysis).toHaveBeenCalledTimes(1)
+    expect(investigation.startAnalysis).toHaveBeenCalledWith()
+  })
+
+  it('shows a retryable analysis error banner after a transient start failure', async () => {
+    const investigation = createInvestigation({
+      state: 'evidenceReady',
+      evidence: bundle(),
+      error: 'rate limited (429)',
+    })
+    current = investigation
+
+    const wrapper = mountDrawer()
+    await flushPromises()
+
+    const banners = wrapper.findAll('[data-test="retry-analysis"]')
+    expect(banners).toHaveLength(1)
+    expect(wrapper.text()).toContain('rate limited (429)')
+
+    investigation.startAnalysis.mockClear()
+    await banners[0]!.trigger('click')
+
+    expect(investigation.startAnalysis).toHaveBeenCalledTimes(1)
+    expect(investigation.startAnalysis).toHaveBeenCalledWith()
+  })
+
+  it('shows a retryable analysis error banner while polling has failed', async () => {
+    const investigation = createInvestigation({
+      state: 'analysisRunning',
+      evidence: bundle(),
+      error: 'poll timed out',
+    })
+    current = investigation
+
+    const wrapper = mountDrawer()
+    await flushPromises()
+
+    const banners = wrapper.findAll('[data-test="retry-analysis"]')
+    expect(banners).toHaveLength(1)
+    expect(wrapper.text()).toContain('poll timed out')
+
+    investigation.startAnalysis.mockClear()
+    await banners[0]!.trigger('click')
 
     expect(investigation.startAnalysis).toHaveBeenCalledTimes(1)
     expect(investigation.startAnalysis).toHaveBeenCalledWith()
@@ -473,6 +632,22 @@ describe('FailureDrawer investigation panel', () => {
     expect(message).toContain('upstream_timeout')
     expect(message).toContain('上游转发超时导致 SERVFAIL')
     expect(message).toContain('an-1')
+    expect(wrapper.emitted('close')).toBeTruthy()
+  })
+
+  it('keeps dialog semantics: close button focused on mount and Escape closes', async () => {
+    const wrapper = mountDrawer()
+    await flushPromises()
+    await wrapper.vm.$nextTick()
+
+    const dialog = wrapper.find('[role="dialog"]')
+    expect(dialog.exists()).toBe(true)
+    expect(dialog.attributes('aria-modal')).toBe('true')
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Close')
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await wrapper.vm.$nextTick()
+
     expect(wrapper.emitted('close')).toBeTruthy()
   })
 
