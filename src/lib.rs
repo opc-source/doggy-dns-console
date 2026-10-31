@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod analysis;
 pub mod api;
 pub mod config;
 pub mod datasource;
