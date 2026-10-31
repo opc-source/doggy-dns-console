@@ -53,7 +53,7 @@ function describeSignal(signal: unknown): string | null {
 
     <div v-if="instances.length === 0" class="panel p-10 text-center">
       <p class="text-sm text-text">还没有发现 doggy-dns 实例</p>
-      <p class="mt-1 text-xs text-muted">配置 MCP_ENDPOINTS，或确认 OpenObserve 已收到 host.name。</p>
+      <p class="mt-1 text-xs text-muted">确认 OpenObserve 已收到 host.name 与 doggy_dns.ip_addr/control.port，或配置 MCP_ENDPOINTS 兜底。</p>
     </div>
     <section v-else class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
       <InstanceCard v-for="instance in instances" :key="instance.id" :instance="instance" @select="select" />

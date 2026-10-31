@@ -136,6 +136,18 @@ impl OpenObserveClient {
             .json()
             .await
             .map_err(|error| DataError::Upstream(format!("openobserve promql json: {error}")))?;
+        // Prometheus reports query failures as HTTP 200 with a `status` of
+        // `error`; without this check a bad query would look like "no data".
+        if value.get("status").and_then(Value::as_str) == Some("error") {
+            let message = value
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("prometheus query failed");
+            return Err(DataError::Upstream(format!(
+                "openobserve promql: {}",
+                truncate(message, 200)
+            )));
+        }
 
         let mut series = Vec::new();
         for item in value

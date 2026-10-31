@@ -135,7 +135,7 @@ async fn telemetry_only_instance_detail_is_degraded_not_not_found() {
         Vec::new(),
         Arc::new(FakeTransport::ok()),
     ));
-    let merged = MergedInstanceSource::new(mcp, telemetry, Arc::new(FixedClock(now)));
+    let merged = MergedInstanceSource::new(mcp, telemetry, 19090, Arc::new(FixedClock(now)));
     let detail = merged.detail("dns-node-2").await.unwrap();
     assert_eq!(detail.instance.id, "dns-node-2");
     assert!(detail.plugins.is_empty());
@@ -149,15 +149,19 @@ async fn telemetry_only_node_is_online_inside_the_three_minute_window() {
         id: "node-a".to_string(),
         host: "node-a".to_string(),
         last_seen: now - 150_000,
+        endpoint: None,
     }]));
     let mcp = Arc::new(McpInstanceSource::new(
         Vec::new(),
         Arc::new(FakeTransport::ok()),
     ));
-    let merged = MergedInstanceSource::new(mcp, telemetry, Arc::new(FixedClock(now)));
+    let merged = MergedInstanceSource::new(mcp, telemetry, 19090, Arc::new(FixedClock(now)));
     let list = merged.list().await.unwrap();
-    assert_eq!(list[0].id, "node-a");
-    assert!(list[0].online);
+    let node = list
+        .iter()
+        .find(|instance| instance.host == "node-a")
+        .expect("node-a listed");
+    assert!(node.online);
 }
 
 #[tokio::test]
@@ -221,7 +225,7 @@ async fn one_unreachable_endpoint_degrades() {
         vec!["http://bad/mcp".to_string(), "http://good/mcp".to_string()],
         Arc::new(FakeTransport::ok()),
     ));
-    let merged = MergedInstanceSource::new(mcp, telemetry, Arc::new(FixedClock(now)));
+    let merged = MergedInstanceSource::new(mcp, telemetry, 19090, Arc::new(FixedClock(now)));
     let list = merged.list().await.unwrap();
     assert!(
         list.iter()
@@ -230,5 +234,273 @@ async fn one_unreachable_endpoint_degrades() {
     assert!(
         list.iter()
             .any(|item| item.id == "dns-node-2" && !item.mcp_reachable)
+    );
+}
+
+#[derive(Default)]
+struct FailingTransport;
+
+#[async_trait]
+impl InstanceTransport for FailingTransport {
+    async fn call(&self, endpoint: &str, _tool: &str, _args: Value) -> Result<Value, DataError> {
+        Err(DataError::Upstream(format!(
+            "connection refused: {endpoint}"
+        )))
+    }
+}
+
+#[derive(Default)]
+struct RecordingTransport {
+    calls: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl InstanceTransport for RecordingTransport {
+    async fn call(&self, endpoint: &str, tool: &str, _args: Value) -> Result<Value, DataError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("{endpoint} {tool}"));
+        let host = if endpoint.contains("node-b") {
+            "node-b"
+        } else {
+            "node-a"
+        };
+        match tool {
+            "get_status" => Ok(json!({
+                "instanceId": format!("{host}-42"),
+                "host": host,
+                "version": "0.2.0"
+            })),
+            "list_plugins" => Ok(json!({"plugins": []})),
+            "get_config" => Ok(json!({"format": "toml", "content": "", "redactedKeys": []})),
+            "get_runtime_status" => Ok(json!({"signals": {}})),
+            other => Err(DataError::Invalid(format!("unexpected tool {other}"))),
+        }
+    }
+}
+
+fn recording() -> Arc<RecordingTransport> {
+    Arc::new(RecordingTransport::default())
+}
+
+#[tokio::test]
+async fn detail_uses_the_endpoint_advertised_in_telemetry() {
+    let now = 1_761_436_800_000;
+    let telemetry: Arc<dyn TelemetrySource> = Arc::new(SeenOnly(vec![SeenInstance {
+        id: "node-a".to_string(),
+        host: "node-a".to_string(),
+        last_seen: now,
+        endpoint: Some("http://node-a.internal:19999/mcp".to_string()),
+    }]));
+    let transport = recording();
+    let mcp = Arc::new(McpInstanceSource::new(Vec::new(), transport.clone()));
+    let merged = MergedInstanceSource::new(mcp, telemetry, 19090, Arc::new(FixedClock(now)));
+
+    let detail = merged.detail("node-a").await.unwrap();
+    assert!(detail.instance.mcp_reachable);
+    let calls = transport.calls.lock().unwrap();
+    assert!(!calls.is_empty());
+    assert!(
+        calls
+            .iter()
+            .all(|call| call.starts_with("http://node-a.internal:19999/mcp "))
+    );
+}
+
+#[tokio::test]
+async fn nodes_without_an_advertised_endpoint_fall_back_to_the_control_port() {
+    let now = 1_761_436_800_000;
+    let telemetry: Arc<dyn TelemetrySource> = Arc::new(SeenOnly(vec![SeenInstance {
+        id: "node-a".to_string(),
+        host: "node-a".to_string(),
+        last_seen: now,
+        endpoint: None,
+    }]));
+    let transport = recording();
+    let mcp = Arc::new(McpInstanceSource::new(Vec::new(), transport.clone()));
+    let merged = MergedInstanceSource::new(mcp, telemetry, 19191, Arc::new(FixedClock(now)));
+
+    let list = merged.list().await.unwrap();
+    assert_eq!(list.len(), 1);
+    assert!(list[0].mcp_reachable);
+    let calls = transport.calls.lock().unwrap();
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.starts_with("http://node-a:19191/mcp "))
+    );
+}
+
+#[tokio::test]
+async fn unknown_hosts_are_not_probed() {
+    let now = 1_761_436_800_000;
+    let telemetry: Arc<dyn TelemetrySource> = Arc::new(SeenOnly(vec![SeenInstance {
+        id: "unknown".to_string(),
+        host: "unknown".to_string(),
+        last_seen: now,
+        endpoint: None,
+    }]));
+    let transport = recording();
+    let mcp = Arc::new(McpInstanceSource::new(Vec::new(), transport.clone()));
+    let merged = MergedInstanceSource::new(mcp, telemetry, 19090, Arc::new(FixedClock(now)));
+
+    let list = merged.list().await.unwrap();
+    assert_eq!(list[0].host, "unknown");
+    assert!(!list[0].mcp_reachable);
+    assert!(transport.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn static_endpoints_are_probed_alongside_discovered_ones() {
+    let now = 1_761_436_800_000;
+    let telemetry: Arc<dyn TelemetrySource> = Arc::new(SeenOnly(vec![SeenInstance {
+        id: "node-a".to_string(),
+        host: "node-a".to_string(),
+        last_seen: now,
+        endpoint: None,
+    }]));
+    let transport = recording();
+    let mcp = Arc::new(McpInstanceSource::new(
+        vec!["http://127.0.0.1:19090/mcp".to_string()],
+        transport.clone(),
+    ));
+    let merged = MergedInstanceSource::new(mcp, telemetry, 19090, Arc::new(FixedClock(now)));
+
+    merged.list().await.unwrap();
+    let calls = transport.calls.lock().unwrap();
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.starts_with("http://127.0.0.1:19090/mcp "))
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.starts_with("http://node-a:19090/mcp "))
+    );
+}
+
+#[tokio::test]
+async fn failed_discovered_probe_merges_with_its_telemetry_instance() {
+    let now = 1_761_436_800_000;
+    let telemetry: Arc<dyn TelemetrySource> = Arc::new(SeenOnly(vec![SeenInstance {
+        id: "node-a".to_string(),
+        host: "node-a".to_string(),
+        last_seen: now - 30_000,
+        endpoint: Some("http://10.0.0.9:19090/mcp".to_string()),
+    }]));
+    let mcp = Arc::new(McpInstanceSource::new(
+        Vec::new(),
+        Arc::new(FailingTransport),
+    ));
+    let merged = MergedInstanceSource::new(mcp, telemetry, 19090, Arc::new(FixedClock(now)));
+
+    let list = merged.list().await.unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].id, "node-a");
+    assert_eq!(list[0].host, "node-a");
+    assert_eq!(list[0].last_seen, now - 30_000);
+    assert!(list[0].online);
+    assert!(!list[0].mcp_reachable);
+}
+
+#[tokio::test]
+async fn failed_fallback_probe_keeps_telemetry_recency() {
+    let now = 1_761_436_800_000;
+    let telemetry: Arc<dyn TelemetrySource> = Arc::new(SeenOnly(vec![SeenInstance {
+        id: "node-a".to_string(),
+        host: "node-a".to_string(),
+        last_seen: now - 10_000,
+        endpoint: None,
+    }]));
+    let mcp = Arc::new(McpInstanceSource::new(
+        Vec::new(),
+        Arc::new(FailingTransport),
+    ));
+    let merged = MergedInstanceSource::new(mcp, telemetry, 19090, Arc::new(FixedClock(now)));
+
+    let list = merged.list().await.unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].host, "node-a");
+    assert_eq!(list[0].last_seen, now - 10_000);
+    assert!(list[0].online);
+    assert!(!list[0].mcp_reachable);
+}
+
+#[tokio::test]
+async fn unreachable_discovered_endpoint_degrades_detail_with_telemetry_identity() {
+    let now = 1_761_436_800_000;
+    let telemetry: Arc<dyn TelemetrySource> = Arc::new(SeenOnly(vec![SeenInstance {
+        id: "node-a".to_string(),
+        host: "node-a".to_string(),
+        last_seen: now - 10_000,
+        endpoint: Some("http://10.0.0.9:19090/mcp".to_string()),
+    }]));
+    let mcp = Arc::new(McpInstanceSource::new(
+        Vec::new(),
+        Arc::new(FailingTransport),
+    ));
+    let merged = MergedInstanceSource::new(mcp, telemetry, 19090, Arc::new(FixedClock(now)));
+
+    let detail = merged.detail("node-a").await.unwrap();
+    assert_eq!(detail.instance.id, "node-a");
+    assert_eq!(detail.instance.host, "node-a");
+    assert!(detail.instance.online);
+    assert!(!detail.instance.mcp_reachable);
+}
+
+#[tokio::test]
+async fn detail_probes_only_endpoints_matching_the_requested_instance() {
+    let now = 1_761_436_800_000;
+    let telemetry: Arc<dyn TelemetrySource> = Arc::new(SeenOnly(vec![
+        SeenInstance {
+            id: "node-b".to_string(),
+            host: "node-b".to_string(),
+            last_seen: now,
+            endpoint: Some("http://node-b.internal:19090/mcp".to_string()),
+        },
+        SeenInstance {
+            id: "node-a".to_string(),
+            host: "node-a".to_string(),
+            last_seen: now,
+            endpoint: Some("http://node-a.internal:19090/mcp".to_string()),
+        },
+    ]));
+    let transport = recording();
+    let mcp = Arc::new(McpInstanceSource::new(Vec::new(), transport.clone()));
+    let merged = MergedInstanceSource::new(mcp, telemetry, 19090, Arc::new(FixedClock(now)));
+
+    let detail = merged.detail("node-a").await.unwrap();
+    assert!(detail.instance.mcp_reachable);
+    let calls = transport.calls.lock().unwrap();
+    assert!(!calls.is_empty());
+    assert!(
+        calls
+            .iter()
+            .all(|call| call.starts_with("http://node-a.internal:19090/mcp "))
+    );
+}
+
+#[tokio::test]
+async fn detail_by_instance_id_probes_the_publishing_host() {
+    let now = 1_761_436_800_000;
+    let telemetry: Arc<dyn TelemetrySource> = Arc::new(SeenOnly(vec![SeenInstance {
+        id: "node-a".to_string(),
+        host: "node-a".to_string(),
+        last_seen: now,
+        endpoint: Some("http://node-a.internal:19090/mcp".to_string()),
+    }]));
+    let transport = recording();
+    let mcp = Arc::new(McpInstanceSource::new(Vec::new(), transport.clone()));
+    let merged = MergedInstanceSource::new(mcp, telemetry, 19090, Arc::new(FixedClock(now)));
+
+    let detail = merged.detail("node-a-42").await.unwrap();
+    assert_eq!(detail.instance.id, "node-a-42");
+    let calls = transport.calls.lock().unwrap();
+    assert!(
+        calls
+            .iter()
+            .all(|call| call.starts_with("http://node-a.internal:19090/mcp "))
     );
 }

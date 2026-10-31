@@ -219,21 +219,61 @@ impl TelemetrySource for OpenObserveTelemetry {
         let (start, end) = self.range(window);
         let seen = seen_query(&self.client_config().metric_queries);
         let series = self.client.query_promql(&seen, start, end, 60).await?;
-        Ok(series
+
+        let mut last_seen_by_host: BTreeMap<String, i64> = BTreeMap::new();
+        let mut endpoint_by_host: BTreeMap<String, (i64, String)> = BTreeMap::new();
+        for item in series {
+            let Some(host) = item
+                .labels
+                .get("host_name")
+                .map(|host| host.trim())
+                .filter(|host| !host.is_empty())
+            else {
+                continue;
+            };
+            // A live node keeps exporting samples even when it handled no
+            // queries in the window, so `increase` can be 0 at the newest
+            // sample; recency comes from the sample time, not its value.
+            let Some(latest) = item.points.iter().map(|(ts, _)| *ts).max() else {
+                continue;
+            };
+            last_seen_by_host
+                .entry(host.to_string())
+                .and_modify(|previous| *previous = (*previous).max(latest))
+                .or_insert(latest);
+            // A node that was restarted may appear as several series with
+            // different attributes; keep the newest advertised endpoint.
+            if let Some(endpoint) = item
+                .labels
+                .get("doggy_dns_ip_addr")
+                .zip(
+                    item.labels
+                        .get("doggy_dns_control_port")
+                        .and_then(|port| port.trim().parse::<u16>().ok())
+                        .filter(|port| *port > 0),
+                )
+                .and_then(|(ip, port)| control_endpoint(ip, port))
+            {
+                endpoint_by_host
+                    .entry(host.to_string())
+                    .and_modify(|entry| {
+                        if latest > entry.0 {
+                            *entry = (latest, endpoint.clone());
+                        }
+                    })
+                    .or_insert_with(|| (latest, endpoint));
+            }
+        }
+
+        Ok(last_seen_by_host
             .into_iter()
-            .filter_map(|item| {
-                let host = item.labels.get("host_name")?.clone();
-                let last_seen = item
-                    .points
-                    .iter()
-                    .rev()
-                    .find(|(_, value)| *value > 0.0)
-                    .map(|(ts, _)| *ts)?;
-                Some(SeenInstance {
-                    id: host.clone(),
-                    host,
-                    last_seen,
-                })
+            .map(|(host, last_seen)| SeenInstance {
+                endpoint: endpoint_by_host
+                    .get(&host)
+                    .map(|(_, endpoint)| endpoint.clone()),
+                id: host.clone(),
+                host,
+                last_seen,
             })
             .collect())
     }
@@ -243,6 +283,19 @@ impl OpenObserveTelemetry {
     fn client_config(&self) -> &crate::config::OpenObserveConfig {
         self.client.config()
     }
+}
+
+/// Join the node's published address with its control port into an MCP
+/// endpoint. A wildcard address is not dialable and is dropped.
+fn control_endpoint(ip: &str, port: u16) -> Option<String> {
+    let ip: std::net::IpAddr = ip.trim().parse().ok()?;
+    if ip.is_unspecified() {
+        return None;
+    }
+    Some(format!(
+        "http://{}:{port}/mcp",
+        crate::datasource::bracketed(&ip.to_string())
+    ))
 }
 
 fn last_value(series: &[PromSeries]) -> Option<f64> {

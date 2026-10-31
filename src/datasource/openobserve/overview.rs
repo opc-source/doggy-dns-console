@@ -31,5 +31,7 @@ pub fn failure_series_query(metric: &str) -> String {
 }
 
 pub fn seen_query(metric: &str) -> String {
-    format!("sum by (host_name) (increase({metric}[5m]))")
+    format!(
+        "sum by (host_name, doggy_dns_ip_addr, doggy_dns_control_port) (increase({metric}[5m]))"
+    )
 }

@@ -32,7 +32,12 @@ pub struct OpenObserveMcpConfig {
 
 #[derive(Debug, Clone)]
 pub struct McpConfig {
+    /// Static endpoints; probed first as an explicit override, then endpoints
+    /// discovered from telemetry are appended as an escape hatch.
     pub endpoints: Vec<String>,
+    /// Port used to derive `http://{host}:{port}/mcp` when a node publishes no
+    /// `doggy_dns.ip_addr`/`doggy_dns.control.port`.
+    pub control_port: u16,
     pub token: Option<String>,
     pub timeout: Duration,
 }
@@ -125,6 +130,18 @@ impl Config {
             })
             .unwrap_or_default();
 
+        let mcp_control_port = match text("MCP_CONTROL_PORT") {
+            None => 19090,
+            Some(raw) => raw
+                .parse::<u16>()
+                .ok()
+                .filter(|port| *port > 0)
+                .ok_or_else(|| ConfigError::Invalid {
+                    name: "MCP_CONTROL_PORT",
+                    value: raw.clone(),
+                })?,
+        };
+
         let openobserve_mcp_url = text("OPENOBSERVE_MCP_URL").unwrap_or_else(|| {
             if openobserve_base_url.is_empty() {
                 String::new()
@@ -159,9 +176,9 @@ impl Config {
                 trace_stream: text("OPENOBSERVE_TRACE_STREAM")
                     .unwrap_or_else(|| "doggy-dns".to_string()),
                 metric_queries: text("OPENOBSERVE_METRIC_QUERIES")
-                    .unwrap_or_else(|| "dns_queries_total".to_string()),
+                    .unwrap_or_else(|| "dns_queries".to_string()),
                 metric_duration: text("OPENOBSERVE_METRIC_DURATION")
-                    .unwrap_or_else(|| "dns_query_duration_milliseconds_bucket".to_string()),
+                    .unwrap_or_else(|| "dns_query_duration_bucket".to_string()),
             },
             openobserve_mcp: OpenObserveMcpConfig {
                 url: openobserve_mcp_url.clone(),
@@ -171,6 +188,7 @@ impl Config {
             },
             mcp: McpConfig {
                 endpoints: mcp_endpoints,
+                control_port: mcp_control_port,
                 token: text("MCP_TOKEN"),
                 timeout: Duration::from_secs(2),
             },

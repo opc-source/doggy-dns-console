@@ -124,6 +124,10 @@ pub struct SeenInstance {
     pub id: String,
     pub host: String,
     pub last_seen: i64,
+    /// MCP endpoint joined from the node's published address and control port
+    /// (`doggy_dns.ip_addr`/`doggy_dns.control.port`). `None` for older nodes
+    /// or when the listener was not exported.
+    pub endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

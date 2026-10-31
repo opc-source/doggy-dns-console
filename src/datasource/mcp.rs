@@ -17,6 +17,31 @@ use crate::error::DataError;
 
 type McpClient = RunningService<RoleClient, ClientConfig>;
 
+/// One endpoint to probe. `host` is the telemetry identity that published the
+/// endpoint, so a failed probe still merges with its telemetry row instead of
+/// appearing as a separate instance named after the address.
+#[derive(Debug, Clone)]
+pub struct Probe {
+    pub endpoint: String,
+    pub host: Option<String>,
+}
+
+impl Probe {
+    pub fn new(endpoint: impl Into<String>) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            host: None,
+        }
+    }
+
+    pub fn discovered(endpoint: impl Into<String>, host: impl Into<String>) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            host: Some(host.into()),
+        }
+    }
+}
+
 #[async_trait]
 pub trait InstanceTransport: Send + Sync {
     async fn call(&self, endpoint: &str, tool: &str, args: Value) -> Result<Value, DataError>;
@@ -43,11 +68,17 @@ pub trait InstanceTransport: Send + Sync {
 pub struct RmcpTransport {
     token: Option<String>,
     timeout: Duration,
+    // Reused across probes so an instance sweep keeps connections warm.
+    http: reqwest::Client,
 }
 
 impl RmcpTransport {
     pub fn new(token: Option<String>, timeout: Duration) -> Self {
-        Self { token, timeout }
+        Self {
+            token,
+            timeout,
+            http: reqwest::Client::new(),
+        }
     }
 
     async fn connect(&self, endpoint: &str) -> Result<McpClient, String> {
@@ -56,7 +87,7 @@ impl RmcpTransport {
             // rmcp adds the `Bearer ` prefix itself (reqwest `bearer_auth`).
             config = config.auth_header(token.clone());
         }
-        let transport = StreamableHttpClientTransport::with_client(reqwest::Client::new(), config);
+        let transport = StreamableHttpClientTransport::with_client(self.http.clone(), config);
         let client_config = ClientConfig::new(
             ClientCapabilities::default(),
             Implementation::new("doggy-dns-console", env!("CARGO_PKG_VERSION")),
@@ -162,49 +193,51 @@ impl McpInstanceSource {
         }
     }
 
+    /// Statically configured endpoints (manual override / escape hatch).
+    pub fn endpoints(&self) -> &[String] {
+        &self.endpoints
+    }
+
     async fn status_at(&self, endpoint: &str) -> Result<Value, DataError> {
         self.transport
             .call(endpoint, "get_status", Value::Object(Default::default()))
             .await
     }
-}
 
-#[async_trait]
-impl InstanceSource for McpInstanceSource {
-    async fn list(&self) -> Result<Vec<Instance>, DataError> {
-        let futures = self
-            .endpoints
-            .iter()
-            .map(|endpoint| self.status_at(endpoint));
+    /// Query each endpoint's `get_status`. Unreachable endpoints degrade to an
+    /// offline instance instead of failing the whole list.
+    pub async fn list_endpoints(&self, probes: &[Probe]) -> Vec<Instance> {
+        let futures = probes.iter().map(|probe| self.status_at(&probe.endpoint));
         let results = futures::future::join_all(futures).await;
         let mut instances = Vec::new();
-        for (endpoint, result) in self.endpoints.iter().zip(results) {
+        for (probe, result) in probes.iter().zip(results) {
             match result {
                 Ok(value) => match instance_from_status(&value) {
                     Some(instance) => instances.push(instance),
                     None => {
-                        tracing::warn!(endpoint = %endpoint, "mcp get_status missing instance identity")
+                        tracing::warn!(endpoint = %probe.endpoint, "mcp get_status missing instance identity")
                     }
                 },
                 Err(error) => {
-                    tracing::warn!(endpoint = %endpoint, error = %error, "mcp instance unavailable");
-                    instances.push(unreachable_instance(endpoint));
+                    tracing::warn!(endpoint = %probe.endpoint, error = %error, "mcp instance unavailable");
+                    instances.push(unreachable_instance(&probe.endpoint, probe.host.as_deref()));
                 }
             }
         }
-        Ok(instances)
+        instances
     }
 
-    async fn detail(&self, id: &str) -> Result<InstanceDetail, DataError> {
-        for endpoint in &self.endpoints {
-            let status = match self.status_at(endpoint).await {
+    pub async fn detail_at(&self, probes: &[Probe], id: &str) -> Result<InstanceDetail, DataError> {
+        for probe in probes {
+            let status = match self.status_at(&probe.endpoint).await {
                 Ok(status) => status,
                 Err(error) => {
-                    tracing::warn!(endpoint = %endpoint, error = %error, "mcp detail unavailable");
+                    tracing::warn!(endpoint = %probe.endpoint, error = %error, "mcp detail unavailable");
                     continue;
                 }
             };
             let Some(mut instance) = instance_from_status(&status) else {
+                tracing::warn!(endpoint = %probe.endpoint, "mcp get_status missing instance identity");
                 continue;
             };
             if instance.id != id && instance.host != id {
@@ -216,7 +249,7 @@ impl InstanceSource for McpInstanceSource {
             let mut auxiliary = self
                 .transport
                 .call_tools(
-                    endpoint,
+                    &probe.endpoint,
                     &["list_plugins", "get_config", "get_runtime_status"],
                 )
                 .await
@@ -278,10 +311,31 @@ impl InstanceSource for McpInstanceSource {
     }
 }
 
-fn unreachable_instance(endpoint: &str) -> Instance {
-    let host = url::Url::parse(endpoint)
-        .ok()
-        .and_then(|url| url.host_str().map(ToString::to_string))
+#[async_trait]
+impl InstanceSource for McpInstanceSource {
+    async fn list(&self) -> Result<Vec<Instance>, DataError> {
+        Ok(self.list_endpoints(&self.static_probes()).await)
+    }
+
+    async fn detail(&self, id: &str) -> Result<InstanceDetail, DataError> {
+        self.detail_at(&self.static_probes(), id).await
+    }
+}
+
+impl McpInstanceSource {
+    fn static_probes(&self) -> Vec<Probe> {
+        self.endpoints.iter().cloned().map(Probe::new).collect()
+    }
+}
+
+fn unreachable_instance(endpoint: &str, host: Option<&str>) -> Instance {
+    let host = host
+        .map(str::to_string)
+        .or_else(|| {
+            url::Url::parse(endpoint)
+                .ok()
+                .and_then(|url| url.host_str().map(ToString::to_string))
+        })
         .unwrap_or_else(|| endpoint.to_string());
     Instance {
         id: host.clone(),

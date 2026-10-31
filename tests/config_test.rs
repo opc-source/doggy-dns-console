@@ -21,6 +21,28 @@ fn defaults_are_loopback_and_local_sqlite() {
     assert_eq!(cfg.user_id, "local");
     assert!(!cfg.demo);
     assert!(cfg.openobserve_mcp.enabled);
+    assert_eq!(cfg.openobserve.metric_queries, "dns_queries");
+    assert_eq!(cfg.openobserve.metric_duration, "dns_query_duration_bucket");
+    assert_eq!(cfg.mcp.control_port, 19090);
+}
+
+#[test]
+fn mcp_control_port_overrides_the_discovery_fallback() {
+    let cfg = Config::from_env_with(env(&[("CONSOLE_DEMO", "1"), ("MCP_CONTROL_PORT", "19191")]))
+        .unwrap();
+    assert_eq!(cfg.mcp.control_port, 19191);
+}
+
+#[test]
+fn invalid_mcp_control_port_is_rejected() {
+    for raw in ["not-a-port", "0", "70000"] {
+        let err = Config::from_env_with(env(&[("CONSOLE_DEMO", "1"), ("MCP_CONTROL_PORT", raw)]))
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("MCP_CONTROL_PORT"),
+            "unexpected error for {raw}: {err}"
+        );
+    }
 }
 
 #[test]
