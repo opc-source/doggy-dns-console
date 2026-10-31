@@ -1,13 +1,16 @@
 # Failure analysis golden cases
 
 This is a **manual, live-model evaluation runbook** for the failure investigation
-feature (design §12.4). It is **not part of CI** and nothing in this document is
-a recorded result: run the cases against a real console, real OpenObserve data
-and a real model, then fill in the report template yourself.
+feature (design §12.4). It sits outside the repository's automated tests, and
+nothing in this document is a recorded result: run the cases against a real
+console, real OpenObserve data and a real model, then fill in the report template
+yourself.
 
-CI already pins the deterministic behaviour (see
-[Deterministic coverage](#deterministic-coverage)); what it cannot pin is whether
-the model picks the right cause from real telemetry, cites only real evidence and
+The deterministic suites in this repository pin the deterministic behaviour (see
+[Deterministic coverage](#deterministic-coverage)). This repository ships no CI
+pipeline configuration, so whether those suites run in CI depends on external
+wiring; nothing here claims CI coverage. What the tests cannot pin is whether the
+model picks the right cause from real telemetry, cites only real evidence and
 finishes inside the budget. That is what these eight cases measure.
 
 ## Prerequisites
@@ -15,14 +18,17 @@ finishes inside the budget. That is what these eight cases measure.
 - A real console (not `CONSOLE_DEMO=1`): `OPENOBSERVE_BASE_URL`,
   `OPENOBSERVE_ORG` and credentials set; at least one doggy-dns instance
   reachable from the console through its control-plane MCP endpoint.
-- A non-empty `MODEL_API_KEY` (and `MODEL_NAME`) for an OpenAI-compatible
-  endpoint that supports tool calling. The model name is part of the cache key,
-  so keep it fixed for the whole run.
-- `CONSOLE_ANALYSIS_ENABLED=true`. Defaults: 10 starts/minute, 60 s deadline,
-  6 drill-down calls, 30 day retention. Leave them at the defaults unless a case
-  says otherwise; record any change.
+- A model API key (`MODEL_API_KEY`, falling back to `QWEN_API_KEY` then
+  `OPENAI_API_KEY`) and `MODEL_NAME` for an OpenAI-compatible endpoint that
+  supports tool calling. The model name is part of the cache key, so keep it
+  fixed for the whole run.
+- `CONSOLE_ANALYSIS_ENABLED=true`. Leave the other `CONSOLE_ANALYSIS_*` values
+  at their documented defaults (see the README's
+  [configuration](../README.md#configuration)) unless a case says otherwise,
+  and record any change.
 - OpenObserve MCP enabled if you want drill-down. Without it the analysis is
-  evidence-only (`NoDrilldown`); cases still run, but tool-call metrics are 0.
+  evidence-only (no drill-down tools); cases still run, but tool-call metrics
+  are 0.
 - Ability to create the evidence conditions: a resolvable upstream that times
   out, a closed upstream port, a policy plugin that refuses, a stopped
   doggy-dns process, a failing trace stream, and a trace with more than 200 log
@@ -59,16 +65,22 @@ finishes inside the budget. That is what these eight cases measure.
    Record the fingerprint, `missing`, `instance.reachable`/`matchQuality` and the
    log/span counts. These define the case.
 
-4. Run the case from the drawer (auto-analysis or "重新分析") or through the API:
+4. **First observation — no `force`.** The drawer already sent this request when
+   it opened; repeat it to observe the cache for the captured evidence:
 
    ```bash
    curl -s -i -X POST \
-     'http://127.0.0.1:8787/api/failures/<traceId>/analysis?windowMinutes=60&force=true'
-   # 200 = cache hit (a previous attempt for this fingerprint/model/prompt);
+     'http://127.0.0.1:8787/api/failures/<traceId>/analysis?windowMinutes=60'
+   # 200 = cached snapshot of an earlier succeeded attempt for this evidence,
+   #       model and prompt version (cache hit, no model call)
    # 202 = new or in-flight job, body {"analysisId":"..."}
    ```
 
-   Poll until terminal:
+   For a fingerprint analyzed for the first time, the drawer's request queued the
+   job, so expect `202`; for evidence already analyzed with the same model and
+   prompt version it is a `200` cache hit. Record which one you got — this POST
+   is the cache-hit measurement for the case. On `202`, poll the returned id
+   until terminal:
 
    ```bash
    curl -s 'http://127.0.0.1:8787/api/failures/<traceId>/analysis?analysis=<analysisId>' \
@@ -81,13 +93,24 @@ finishes inside the budget. That is what these eight cases measure.
    in the captured evidence snapshot (or produced by a drill-down call in this
    attempt; the server enforces this before storing). Count findings by `kind`
    and mark any claim that is not supported by its cited IDs.
-6. Fill one row of the [results template](#results-template). Use
-   `force=true` for repeated runs of the same case and note which attempt you
-   report.
+6. **Explicit re-run — `force=true`.** Skips the cache and creates a new attempt:
 
-If analysis answers `503`, the run is invalid: the service is disabled by
-config, demo mode, an empty model key or an unopened store. If it answers `429`,
-wait for the token bucket to refill (default one token every 6 s) and retry.
+   ```bash
+   curl -s -i -X POST \
+     'http://127.0.0.1:8787/api/failures/<traceId>/analysis?windowMinutes=60&force=true'
+   # 202 with the new attempt id (or the already in-flight attempt for the key)
+   ```
+
+   Poll the new id as in step 4 and state which attempt you report. A forced
+   POST is never a cache hit, so it is excluded from the cache-hit rate.
+7. Fill one row of the [results template](#results-template).
+
+Status and cache rules (which code is `200`/`202`/`429`/`503` and when the cache
+or the rate limit applies) are documented once, in the README's
+[Analysis API](../README.md#analysis-api); do not re-derive them here. A status
+other than `200`/`202` means the case cannot be scored as run in this
+deployment — retry a rate-limited request later, and mark any case whose
+deployment cannot serve analysis **not run** rather than passed.
 
 ## Cases
 
@@ -153,27 +176,39 @@ cannot support the case.
 
 ### 4. NXDOMAIN is never a failure cause
 
-- **ID / expected behaviour:** validation rejects an NXDOMAIN attribution;
-  NXDOMAIN-only traces are not failures at all.
-- **Evidence condition / reproduce:** two checks.
-  1. Request a window with `responseCode=NXDOMAIN` in the failure list, and ask
-     the evidence endpoint for a trace whose only answer is NXDOMAIN. The list
-     and detail must exclude it and evidence must answer `404`.
-  2. Open a real failure (cases 1–3, 5–7) and check that the verdict is not
-     attributed to NXDOMAIN. To exercise the rejection path deliberately, use a
-     model/prompt variant that emits NXDOMAIN (or rely on CI validation tests);
-     the first submission is rejected with `NXDOMAIN is not a failure cause`,
-     and after two rejections the job is `invalid` with no result.
+- **ID / scored behaviour:** no verdict category is expected. This case is a
+  pass/fail check on exclusion plus rejection, and it is scored with its own
+  criterion (see [Metrics](#metrics)).
+- **Evidence condition / reproduce:** two checks, both required.
+  1. **Exclusion.** Ask the failure list for a window with
+     `responseCode=NXDOMAIN`, and ask the evidence endpoint for a trace whose
+     only answer is NXDOMAIN. The list and detail must not contain that trace
+     and evidence must answer `404`.
+  2. **Rejection.** Point `MODEL_BASE_URL`/`MODEL_NAME` at a model or an
+     OpenAI-compatible stub that submits `submit_failure_analysis` with the
+     failure attributed to NXDOMAIN in its summary, a finding or a next step
+     (a deployment change only). Restart the console, POST to a real failure
+     trace with `force=true` and poll it. The first submission is rejected with
+     `NXDOMAIN is not a failure cause` in the tool reply; after the single
+     repair attempt the job ends `invalid` with `result = null`. The stored
+     `error` is the capped raw submission payload (a diagnostic), not the
+     rejection reason, which is only returned to the model.
+- **Pass criterion:** check 1 passes when an NXDOMAIN-only trace is absent from
+  the list and detail and evidence returns `404` for it; check 2 passes when
+  the NXDOMAIN attribution is rejected and the job stores no conclusion
+  (`invalid`, `result = null`). Both checks must pass for a hit; a stored `ok`
+  result that mentions NXDOMAIN fails the case outright. If check 2 cannot be
+  produced, mark the case **not run**, not passed.
 - **Expected:** no stored `ok` result mentions NXDOMAIN in the verdict summary,
   a finding claim or a next step; a genuinely NXDOMAIN-only trace produces no
-  bundle and no analysis. A repaired result must state the real cause with real
-  citations.
-- **Mandatory citation:** whatever real failure evidence supports the verdict;
-  NXDOMAIN must never appear as an evidence ID, category or next step.
+  bundle and no analysis.
+- **Mandatory citation:** not applicable; the expected outcome is that no
+  NXDOMAIN conclusion or citation is stored at all.
 - **Failure signs:** evidence returns a bundle for an NXDOMAIN trace; the
   failure list shows NXDOMAIN; a succeeded result's summary/findings/next steps
   contain NXDOMAIN (the server should have rejected it); the model treats a
-  negative answer as an outage.
+  negative answer as an outage; the rejection run stores a result or a
+  non-`invalid` status.
 
 ### 5. Instance unreachable
 
@@ -258,19 +293,25 @@ cannot support the case.
 
 ## Metrics
 
+All **eight** cases are scored, so the denominator is 8: a case that could not
+be produced is recorded **not run** and counts as a miss, not as a silent
+exclusion. Cases 1–3 and 5–7 are scored on the verdict, case 8 on the observed
+stale behaviour, and case 4 on its own two-part pass criterion (exclusion plus
+rejection, no verdict category). `≥ 80%` therefore means at least 7 of 8.
+
 Measured over the eight cases, using the snapshot fields (`status`,
 `verdictCategory`, `result.status`, `findings[].kind`, `findings[].evidenceIds`,
 `toolCallCount`, `startedAt`, `finishedAt`):
 
 | Metric | Target | How to measure |
 | --- | --- | --- |
-| Verdict accuracy | ≥ 80% (≥ 7 of 8) | A case is a hit when the stored verdict has the expected category with valid citations, or — for a case whose evidence cannot support a verdict — result status `insufficient_evidence`/`unavailable` with the expected gap in `notDeterminable` and no invented fact. Case 8 hits when the stale behaviour is observed. |
-| Citation validity | 100% | Server-enforced: a succeeded result cannot contain an unknown ID. Additionally check every bundle ID by hand; findings citing tool-call IDs can only be trusted through the stored audit hash. |
+| Verdict accuracy | ≥ 80% (≥ 7 of 8) | A case is a hit when the stored verdict has the expected category with valid citations, or — when the evidence genuinely cannot support a verdict — the result status is `insufficient_evidence`/`unavailable` with the expected gap in `notDeterminable` and no invented fact. Case 8 hits when the stale behaviour is observed; case 4 hits only when both of its checks pass (see [case 4](#4-nxdomain-is-never-a-failure-cause)). |
+| Citation validity | 100% | Server-enforced: a succeeded result cannot contain an unknown ID. Additionally check every bundle ID by hand. For IDs produced by a drill-down call, the tool result payload is **not persisted** — only the canonical arguments, duration, result hash and a structural summary — so the audit can be inspected but the payload cannot be recomputed; the hash is not an independent validation of the cited content. |
 | Unsupported-conclusion rate | ≤ 10% | Manually review claims: an `inferred` claim asserted as fact, or a next step that assumes unavailable evidence, counts as unsupported. |
 | Average tool calls | ≤ 6 | Mean of `toolCallCount` over cases. The server budget makes > 6 impossible; a low mean is fine. |
 | p95 analysis duration | ≤ 60 s | `finishedAt - startedAt` per case (includes queue time), nearest-rank p95. |
 | Cost per analysis | report only | Provider spend divided by attempts actually billed; a `200` cache hit costs nothing. |
-| Cache-hit rate | report only | `200` responses ÷ POST requests across the run. |
+| Cache-hit rate | report only | `200` responses ÷ POSTs issued **without** `force` across the run (step 4). Forced re-runs from step 6 always answer `202` and are excluded. |
 
 Record the model name, prompt version (`failure-analyst/v1`), console commit,
 date and any non-default budgets with the results — the cache key and the
@@ -279,14 +320,15 @@ verdicts depend on them.
 ## Results template
 
 Copy this table into the evaluation report. **This runbook contains no results;
-the table is empty on purpose.**
+the table is empty on purpose.** One row per case; a case that could not be
+produced is recorded `not run` with its reason and counts as a miss.
 
-| Case | Result status / category | Confidence | Observed IDs valid? | Tool calls | Duration (s) | Cache hit (200/202) | Notes |
+| Case | Result status / category | Confidence | Observed IDs valid? | Tool calls | Duration (s) | POST result (200/202) | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 upstream timeout | | | | | | | |
 | 2 connection refused | | | | | | | |
 | 3 policy REFUSED | | | | | | | |
-| 4 NXDOMAIN exclusion | | | | | | | |
+| 4 NXDOMAIN exclusion | `n/a` (no verdict; the rejection run should store `invalid` with `result = null`) | — | — | — | — | `202` (forced rejection run) | check 1 — NXDOMAIN-only trace absent from list/detail and evidence `404`: yes/no; check 2 — NXDOMAIN attribution rejected, job `invalid` with no result: yes/no. Both required for a hit. |
 | 5 instance unreachable | | | | | | | |
 | 6 spans missing | | | | | | | |
 | 7 logs truncated | | | | | | | |
@@ -298,8 +340,11 @@ and every case marked not run with the reason.
 
 ## Deterministic coverage
 
-These suites already run in CI. This runbook does not duplicate them; it covers
-what they cannot: real telemetry, real model behaviour, live latency and cost.
+The deterministic suites in this repository pin the following. This repository
+contains no CI pipeline configuration, so those suites are run manually or by
+external automation; this runbook makes no claim about CI. It does not duplicate
+them and covers what they cannot: real telemetry, real model behaviour, live
+latency and cost.
 
 | Guarantee | Suite |
 | --- | --- |
@@ -312,8 +357,8 @@ what they cannot: real telemetry, real model behaviour, live latency and cost.
 | Analysis API: 202 job, 200 cache hit, 404 unknown trace/attempt, 429 rate limit, 503 without service, markers | `tests/api_analysis_test.rs` |
 | Config defaults, minima and rejection of invalid analysis values | `tests/config_test.rs` |
 | Prompt contract (NXDOMAIN rule, drill-down names, version) | `tests/prompt_test.rs`, `tests/analysis_test.rs` |
-| UI state machine, polling, stale detection, deep-link restore, markers, drawer rendering/citation jump, chat handoff | `doggy-dns-ui/src/composables/__tests__/useInvestigation.spec.ts`, `.../useFailureList.spec.ts`, `.../components/__tests__/FailureDrawer.spec.ts`, `.../views/__tests__/FailureView.spec.ts`, `.../views/__tests__/OverviewView.spec.ts`, `.../router/__tests__/index.spec.ts` |
+| UI state machine, polling, stale detection, deep-link restore, markers, drawer rendering/citation jump, chat handoff | `doggy-dns-ui/src/composables/__tests__/useInvestigation.spec.ts`, `doggy-dns-ui/src/composables/__tests__/useFailureList.spec.ts`, `doggy-dns-ui/src/components/__tests__/FailureDrawer.spec.ts`, `doggy-dns-ui/src/views/__tests__/FailureView.spec.ts`, `doggy-dns-ui/src/views/__tests__/OverviewView.spec.ts`, `doggy-dns-ui/src/router/__tests__/index.spec.ts` |
 
-Not covered by CI, by design: real model verdict quality, real log/span content,
-live tool availability, actual duration distribution and cost. Those are the
-subject of this manual evaluation.
+Not covered by these deterministic tests, by design: real model verdict
+quality, real log/span content, live tool availability, actual duration
+distribution and cost. Those are the subject of this manual evaluation.

@@ -100,8 +100,8 @@ that was clicked. The response contains:
 Errors: `400` for a malformed query (the window is clamped to 5–1440 minutes,
 so an out-of-range value is not an error), `404` when the trace is not a failure
 group in that window, `502` when OpenObserve itself fails. Because a production
-start still requires `MODEL_API_KEY`, evidence-only operation without a key
-means `CONSOLE_DEMO=1`; the endpoint itself never calls the model.
+start still requires a model API key, evidence-only operation without one means
+`CONSOLE_DEMO=1`; the endpoint itself never calls the model.
 
 ### Analysis API
 
@@ -140,9 +140,11 @@ bodies) and is used only to badge the failure list.
 - Job status: `queued → running → succeeded | failed | invalid`.
 - A `succeeded` job carries a conclusion status of `ok`,
   `insufficient_evidence` or `unavailable`. Two rejected submissions produce job
-  status `invalid` with **no result**, only the validation diagnostic; `failed`
-  means the attempt could not run to completion. Neither is cached, so a later
-  POST starts a new attempt (rate limit permitting).
+  status `invalid` with **no result**; its stored `error` is the raw submission
+  payload capped at 512 bytes and kept for diagnosis — the validation reason is
+  returned to the model as the tool reply but is not persisted as the error.
+  `failed` means the attempt could not run to completion. Neither is cached, so
+  a later POST starts a new attempt (rate limit permitting).
 - The cache key is trace + evidence fingerprint + model name + prompt version.
   One queued/running job exists per key. Analyses run asynchronously and the UI
   polls once per second.
@@ -155,10 +157,11 @@ bodies) and is used only to badge the failure list.
   canonical arguments is refused.
 - The final result must arrive through `submit_failure_analysis` and is validated
   server-side: every cited ID must exist in the bundle or a tool result, every
-  `observed` finding must cite one, NXDOMAIN is rejected as a cause,
-  `insufficient_evidence` must list gaps, and `high` confidence requires a
-  reachable instance plus an observed finding. One repair attempt is allowed;
-  a second invalid submission is discarded.
+  `observed` finding must cite one, an `ok` result needs at least one observed
+  finding, NXDOMAIN is rejected as a cause, `insufficient_evidence` must list
+  gaps, and `high` confidence requires a reachable instance plus an observed
+  finding. One repair attempt is allowed; a second invalid submission is
+  discarded.
 - Log messages, span attributes and tool output are treated as untrusted data;
   the prompt tells the model to ignore instructions found there. Model API keys
   are never logged.
@@ -169,10 +172,11 @@ bodies) and is used only to badge the failure list.
 ### Storage and retention
 
 `data/console.db` (or `CONSOLE_DB`) holds the agent sessions and a
-`failure_investigations` table: trace id, filter, evidence fingerprint, model,
-prompt version, status, verdict category/confidence, result JSON, tool-call
-audit JSON, error and timestamps. Raw logs and spans are **never** persisted.
-Retention defaults to 30 days and is pruned at startup and once a day.
+`failure_investigations` table with `id` (primary key), trace id, `attempt`
+(numbered per trace), filter, evidence fingerprint, model, prompt version,
+status, verdict category/confidence, result JSON, tool-call audit JSON, error
+and timestamps. Raw logs and spans are **never** persisted. Retention defaults
+to 30 days and is pruned at startup and once a day.
 
 ### Configuration
 
@@ -184,7 +188,8 @@ Retention defaults to 30 days and is pruned at startup and once a day.
 | `CONSOLE_ANALYSIS_TIMEOUT_SECONDS` | `60` | `1` | Deadline for one analysis attempt |
 | `CONSOLE_ANALYSIS_MAX_TOOL_CALLS` | `6` | `1` | Server-enforced drill-down budget |
 
-Analysis also requires a non-empty `MODEL_API_KEY`, and is always unavailable in
+Analysis also requires a model API key (`MODEL_API_KEY`, falling back to
+`QWEN_API_KEY` then `OPENAI_API_KEY`), and is always unavailable in
 `CONSOLE_DEMO=1`: the scripted demo model cannot submit a valid forensic result,
 so the endpoints return `503` instead of persisting guaranteed-invalid attempts.
 
