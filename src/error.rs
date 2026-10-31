@@ -8,4 +8,6 @@ pub enum DataError {
     Invalid(String),
     #[error("not configured: {0}")]
     NotConfigured(String),
+    #[error("rate limited: {0}")]
+    RateLimited(String),
 }

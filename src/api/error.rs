@@ -20,6 +20,7 @@ impl IntoResponse for ApiError {
             DataError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
             DataError::Invalid(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
             DataError::NotConfigured(_) => (StatusCode::SERVICE_UNAVAILABLE, "not_configured"),
+            DataError::RateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
         };
         (
             status,
