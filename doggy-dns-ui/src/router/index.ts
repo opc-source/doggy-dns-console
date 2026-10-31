@@ -16,6 +16,11 @@ export const routes = [
     name: 'sessions',
     component: () => import('@/views/SessionsView.vue'),
   },
+  {
+    path: '/failures/:traceId',
+    name: 'failure',
+    component: () => import('@/views/FailureView.vue'),
+  },
 ]
 
 export const router = createRouter({

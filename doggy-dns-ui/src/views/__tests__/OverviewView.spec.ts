@@ -1,6 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import ErrorBanner from '@/components/ErrorBanner.vue'
 import OverviewView from '@/views/OverviewView.vue'
@@ -33,6 +33,19 @@ const failures = [
   },
 ]
 
+const markers = [
+  {
+    id: 'm1',
+    traceId: 't1',
+    status: 'succeeded',
+    verdictCategory: 'upstream_timeout',
+    confidence: 'high',
+    attempt: 1,
+    createdAt: 1,
+    finishedAt: 2,
+  },
+]
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -40,25 +53,38 @@ function json(body: unknown, status = 200) {
   })
 }
 
+function stubApi(overviewResponse: () => Response) {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api/overview')) return overviewResponse()
+      if (url.includes('/api/analysis/markers')) return json(markers)
+      return json(failures)
+    }),
+  )
+}
+
+function mountOverview() {
+  return mount(OverviewView, {
+    global: { plugins: [createPinia()], stubs: { TrendChart: true } },
+  })
+}
+
 describe('OverviewView', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
   it('keeps stale data on error', async () => {
     let failOverview = false
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input)
-        if (url.includes('/api/overview')) {
-          return failOverview
-            ? json({ error: { code: 'openobserve_unavailable', message: 'down' } }, 502)
-            : json(overview)
-        }
-        return json(failures)
-      }),
+    stubApi(() =>
+      failOverview
+        ? json({ error: { code: 'openobserve_unavailable', message: 'down' } }, 502)
+        : json(overview),
     )
 
-    const wrapper = mount(OverviewView, {
-      global: { plugins: [createPinia()], stubs: { TrendChart: true } },
-    })
+    const wrapper = mountOverview()
     await flushPromises()
     expect(wrapper.text()).toContain('99.7%')
 
@@ -69,5 +95,23 @@ describe('OverviewView', () => {
     expect(wrapper.text()).toContain('99.7%')
     expect(wrapper.findComponent(ErrorBanner).exists()).toBe(true)
     expect(wrapper.text()).toContain('上次成功数据')
+
+    wrapper.unmount()
+  })
+
+  it('marks failures that already have an analysis', async () => {
+    stubApi(() => json(overview))
+
+    const wrapper = mountOverview()
+    await flushPromises()
+
+    const row = wrapper.find('[data-testid="failure-row"]')
+    expect(row.exists()).toBe(true)
+    expect(row.text()).toContain('a.example.')
+    const badge = row.find('[data-testid="analyzed-badge"]')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toBe('已分析')
+
+    wrapper.unmount()
   })
 })

@@ -27,6 +27,7 @@ interface InvestigationOverrides {
   stale?: boolean
   loadEvidence?: () => Promise<boolean>
   startAnalysis?: (force?: boolean) => Promise<boolean>
+  loadAnalysis?: (analysisId?: string) => Promise<boolean>
 }
 
 function createInvestigation(overrides: InvestigationOverrides = {}): Investigation {
@@ -38,7 +39,7 @@ function createInvestigation(overrides: InvestigationOverrides = {}): Investigat
     stale: ref(overrides.stale ?? false),
     loadEvidence: vi.fn(overrides.loadEvidence ?? (async () => true)),
     startAnalysis: vi.fn(overrides.startAnalysis ?? (async () => true)),
-    loadAnalysis: vi.fn(async () => true),
+    loadAnalysis: vi.fn(overrides.loadAnalysis ?? (async () => true)),
   }
 }
 
@@ -199,10 +200,13 @@ function snapshot(overrides: Partial<AnalysisSnapshot> = {}): AnalysisSnapshot {
 
 const wrappers: VueWrapper[] = []
 
-function mountDrawer(pinia: Pinia = createPinia()): VueWrapper {
+function mountDrawer(
+  pinia: Pinia = createPinia(),
+  props: Record<string, unknown> = {},
+): VueWrapper {
   setActivePinia(pinia)
   const wrapper = mount(FailureDrawer, {
-    props: { traceId: 't1', windowMinutes: 60 },
+    props: { traceId: 't1', windowMinutes: 60, ...props },
     global: { plugins: [pinia] },
     attachTo: document.body,
   })
@@ -665,5 +669,90 @@ describe('FailureDrawer investigation panel', () => {
     expect(wrapper.text()).toContain('model failed')
     expect(wrapper.find('[data-testid="verdict-card"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="retry-analysis"]').exists()).toBe(true)
+  })
+
+  it('restores a shared attempt instead of starting a new analysis', async () => {
+    const investigation = createInvestigation({ state: 'idle' })
+    investigation.loadEvidence.mockImplementation(async () => {
+      investigation.evidence.value = bundle()
+      investigation.state.value = 'evidenceReady'
+      return true
+    })
+    investigation.loadAnalysis.mockImplementation(async () => {
+      investigation.analysis.value = snapshot()
+      investigation.state.value = 'analysisDone'
+      return true
+    })
+    current = investigation
+
+    const wrapper = mountDrawer(createPinia(), { analysisId: 'an-1' })
+    await flushPromises()
+
+    expect(investigation.loadAnalysis).toHaveBeenCalledTimes(1)
+    expect(investigation.loadAnalysis).toHaveBeenCalledWith('an-1')
+    expect(investigation.startAnalysis).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="investigation-state"]').text()).toBe('已完成')
+    expect(wrapper.find('[data-testid="verdict-card"]').text()).toContain('upstream_timeout')
+  })
+
+  it('starts a fresh analysis when the shared attempt no longer exists', async () => {
+    const investigation = createInvestigation({ state: 'idle' })
+    investigation.loadEvidence.mockImplementation(async () => {
+      investigation.evidence.value = bundle()
+      investigation.state.value = 'evidenceReady'
+      return true
+    })
+    // The composable's silent 404 path returns false and clears `error`.
+    investigation.loadAnalysis.mockImplementation(async () => false)
+    current = investigation
+
+    const wrapper = mountDrawer(createPinia(), { analysisId: 'an-gone' })
+    await flushPromises()
+
+    expect(investigation.loadAnalysis).toHaveBeenCalledWith('an-gone')
+    expect(investigation.startAnalysis).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-test="reload-evidence"]').exists()).toBe(false)
+  })
+
+  it('keeps the restore error visible instead of posting a new analysis', async () => {
+    const investigation = createInvestigation({ state: 'idle' })
+    investigation.loadEvidence.mockImplementation(async () => {
+      investigation.evidence.value = bundle()
+      investigation.state.value = 'evidenceReady'
+      return true
+    })
+    investigation.loadAnalysis.mockImplementation(async () => {
+      investigation.error.value = 'analysis lookup down'
+      return false
+    })
+    current = investigation
+
+    const wrapper = mountDrawer(createPinia(), { analysisId: 'an-9' })
+    await flushPromises()
+
+    expect(investigation.startAnalysis).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('analysis lookup down')
+    expect(wrapper.find('[data-test="retry-analysis"]').exists()).toBe(true)
+  })
+
+  it('restores the new attempt when the shared analysis id changes', async () => {
+    const investigation = createInvestigation({ state: 'idle' })
+    investigation.loadEvidence.mockImplementation(async () => {
+      investigation.evidence.value = bundle()
+      investigation.state.value = 'evidenceReady'
+      return true
+    })
+    current = investigation
+
+    const wrapper = mountDrawer(createPinia(), { analysisId: 'an-1' })
+    await flushPromises()
+    expect(investigation.loadAnalysis).toHaveBeenCalledWith('an-1')
+
+    await wrapper.setProps({ analysisId: 'an-2' })
+    await flushPromises()
+
+    expect(investigation.loadAnalysis).toHaveBeenCalledTimes(2)
+    expect(investigation.loadAnalysis).toHaveBeenLastCalledWith('an-2')
+    expect(investigation.startAnalysis).not.toHaveBeenCalled()
   })
 })

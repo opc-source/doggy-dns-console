@@ -3,7 +3,7 @@ import { ChevronRight } from '@lucide/vue'
 
 import type { FailureGroup } from '@/api/types'
 
-defineProps<{ groups: FailureGroup[] }>()
+defineProps<{ groups: FailureGroup[]; markers?: Set<string> }>()
 defineEmits<{ select: [group: FailureGroup] }>()
 
 function shortName(query: string) {
@@ -35,6 +35,13 @@ function shortName(query: string) {
       </span>
       <span class="mono min-w-0 flex-1 truncate text-xs text-text">{{ shortName(group.query) }}</span>
       <span class="tabular-nums text-xs text-muted">{{ group.count }}</span>
+      <span
+        v-if="markers?.has(group.traceId ?? '')"
+        data-testid="analyzed-badge"
+        class="rounded-md bg-accent/15 px-1.5 py-0.5 text-[10px] text-accent"
+        title="已有调查分析"
+        >已分析</span
+      >
       <ChevronRight :size="14" class="text-muted" />
     </button>
   </div>

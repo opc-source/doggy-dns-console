@@ -6,16 +6,15 @@ import type { MissingEvidence } from '@/api/types'
 import { useInvestigation } from '@/composables/useInvestigation'
 import { useChatStore } from '@/stores/chat'
 
-const props = defineProps<{ traceId: string; windowMinutes: number }>()
+const props = defineProps<{ traceId: string; windowMinutes: number; analysisId?: string }>()
 const emit = defineEmits<{ close: [] }>()
 const chat = useChatStore()
 
 const trace = toRef(props, 'traceId')
 const windowMinutes = toRef(props, 'windowMinutes')
-const { state, evidence, analysis, error, stale, loadEvidence, startAnalysis } = useInvestigation(
-  trace,
-  windowMinutes,
-)
+const analysisId = toRef(props, 'analysisId')
+const { state, evidence, analysis, error, stale, loadEvidence, startAnalysis, loadAnalysis } =
+  useInvestigation(trace, windowMinutes)
 
 type TabKey = 'logs' | 'spans' | 'instance' | 'metrics'
 
@@ -172,7 +171,19 @@ async function investigate() {
   // not paint its own outcome over the newest one.
   if (seq !== loadSeq) return
   evidenceFailed.value = !ok
-  if (ok && state.value === 'evidenceReady') await startAnalysis()
+  if (!ok) return
+
+  // A shared deep link restores the named attempt instead of starting a new one.
+  if (analysisId.value) {
+    const restored = await loadAnalysis(analysisId.value)
+    if (seq !== loadSeq) return
+    // `loadAnalysis` returns false after a silent 404 with `error` still null;
+    // only then is a fresh attempt the right fallback.
+    if (!restored && error.value === null) await startAnalysis()
+    return
+  }
+
+  if (state.value === 'evidenceReady') await startAnalysis()
 }
 
 onMounted(() => {
@@ -182,7 +193,7 @@ onMounted(() => {
   void investigate()
 })
 
-watch([trace, windowMinutes], () => {
+watch([trace, windowMinutes, analysisId], () => {
   void investigate()
 })
 

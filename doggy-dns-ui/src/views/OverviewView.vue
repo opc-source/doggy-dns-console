@@ -12,7 +12,7 @@ import { useUiStore } from '@/stores/ui'
 
 const ui = useUiStore()
 const { data, error, loading, lastUpdated, windowMinutes, setWindow, refresh } = useOverview(60)
-const { groups: failures } = useFailureList(windowMinutes)
+const { groups: failures, markers } = useFailureList(windowMinutes)
 
 const windows = [
   { label: '1h', value: 60 },
@@ -86,7 +86,11 @@ const errorMessage = computed(() => {
     <section class="grid grid-cols-1 gap-3 xl:grid-cols-[1.5fr_1fr]">
       <TrendChart v-if="data" :series="data.series" />
       <div v-else class="panel h-[300px] animate-pulse bg-surface-2/40" />
-      <FailureList :groups="failures" @select="(group) => ui.openFailure(group.traceId)" />
+      <FailureList
+        :groups="failures"
+        :markers="markers"
+        @select="(group) => ui.openFailure(group.traceId)"
+      />
     </section>
 
     <section class="grid grid-cols-1 gap-3 lg:grid-cols-2">
@@ -97,7 +101,8 @@ const errorMessage = computed(() => {
           hand its trace to the copilot.
         </p>
         <p class="mt-4 rounded-xl border border-border bg-surface-2 px-3 py-2 text-xs text-muted">
-          Tip: open a failure first, then use “让 AI 分析” in the drawer.
+          Tip: open a failure to load its evidence — analysis starts automatically, and the
+          share link restores it later.
         </p>
       </div>
       <div class="panel p-4">
