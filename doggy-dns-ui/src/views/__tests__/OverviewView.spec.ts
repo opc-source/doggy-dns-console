@@ -1,4 +1,4 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -65,14 +65,20 @@ function stubApi(overviewResponse: () => Response) {
   )
 }
 
+const wrappers: VueWrapper[] = []
+
 function mountOverview() {
-  return mount(OverviewView, {
+  const wrapper = mount(OverviewView, {
     global: { plugins: [createPinia()], stubs: { TrendChart: true } },
   })
+  wrappers.push(wrapper)
+  return wrapper
 }
 
 describe('OverviewView', () => {
   afterEach(() => {
+    // Unmounting stops the 15 s refresh interval even when an assertion failed.
+    for (const wrapper of wrappers.splice(0)) wrapper.unmount()
     vi.unstubAllGlobals()
   })
 
@@ -95,8 +101,6 @@ describe('OverviewView', () => {
     expect(wrapper.text()).toContain('99.7%')
     expect(wrapper.findComponent(ErrorBanner).exists()).toBe(true)
     expect(wrapper.text()).toContain('上次成功数据')
-
-    wrapper.unmount()
   })
 
   it('marks failures that already have an analysis', async () => {
@@ -111,7 +115,5 @@ describe('OverviewView', () => {
     const badge = row.find('[data-testid="analyzed-badge"]')
     expect(badge.exists()).toBe(true)
     expect(badge.text()).toBe('已分析')
-
-    wrapper.unmount()
   })
 })

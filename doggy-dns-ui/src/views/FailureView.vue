@@ -8,6 +8,7 @@ const route = useRoute()
 const router = useRouter()
 
 const DEFAULT_WINDOW_MINUTES = 60
+const POSITIVE_INTEGER = /^\d+$/
 
 function firstQueryValue(value: unknown): string | null {
   if (Array.isArray(value)) {
@@ -20,14 +21,14 @@ function firstQueryValue(value: unknown): string | null {
 const traceId = computed(() => String(route.params.traceId ?? ''))
 
 const windowMinutes = computed(() => {
-  const raw = firstQueryValue(route.query.windowMinutes)
-  if (raw === null) return DEFAULT_WINDOW_MINUTES
+  const raw = firstQueryValue(route.query.windowMinutes)?.trim()
+  if (!raw || !POSITIVE_INTEGER.test(raw)) return DEFAULT_WINDOW_MINUTES
   const parsed = Number(raw)
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_WINDOW_MINUTES
+  return parsed > 0 ? parsed : DEFAULT_WINDOW_MINUTES
 })
 
 const analysisId = computed(() => {
-  const raw = firstQueryValue(route.query.analysis)
+  const raw = firstQueryValue(route.query.analysis)?.trim()
   return raw ? raw : undefined
 })
 
@@ -37,12 +38,12 @@ function close() {
 </script>
 
 <template>
-  <main class="mx-auto max-w-[1440px] p-5 lg:p-7" aria-label="Failure investigation">
+  <section class="mx-auto max-w-[1440px] p-5 lg:p-7" aria-label="Failure investigation">
     <FailureDrawer
       :trace-id="traceId"
       :window-minutes="windowMinutes"
       :analysis-id="analysisId"
       @close="close"
     />
-  </main>
+  </section>
 </template>

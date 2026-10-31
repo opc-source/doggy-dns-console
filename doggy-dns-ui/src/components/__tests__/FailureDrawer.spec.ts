@@ -755,4 +755,33 @@ describe('FailureDrawer investigation panel', () => {
     expect(investigation.loadAnalysis).toHaveBeenLastCalledWith('an-2')
     expect(investigation.startAnalysis).not.toHaveBeenCalled()
   })
+
+  it('warns about stale evidence when the restored attempt no longer matches', async () => {
+    const investigation = createInvestigation({ state: 'idle' })
+    investigation.loadEvidence.mockImplementation(async () => {
+      investigation.evidence.value = bundle()
+      investigation.state.value = 'evidenceReady'
+      return true
+    })
+    investigation.loadAnalysis.mockImplementation(async () => {
+      investigation.analysis.value = snapshot({ evidenceFingerprint: 'sha256:old' })
+      investigation.state.value = 'stale'
+      investigation.stale.value = true
+      return true
+    })
+    current = investigation
+
+    const wrapper = mountDrawer(createPinia(), { analysisId: 'an-old' })
+    await flushPromises()
+
+    expect(investigation.loadAnalysis).toHaveBeenCalledWith('an-old')
+    expect(investigation.startAnalysis).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('证据已变化，需重新分析')
+    const reanalyze = wrapper.findAll('[data-test="reanalyze"]')
+    expect(reanalyze).toHaveLength(1)
+
+    await reanalyze[0]!.trigger('click')
+
+    expect(investigation.startAnalysis).toHaveBeenCalledWith(true)
+  })
 })

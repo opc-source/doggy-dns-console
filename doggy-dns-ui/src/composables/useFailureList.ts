@@ -52,6 +52,8 @@ export function useFailureList(windowMinutes: Ref<number>, limit = 5) {
       error.value = null
     } catch (cause) {
       error.value = String(cause)
+      // A failed window switch must not leave the previous window's badges behind.
+      markers.value = new Set()
       return
     }
     await refreshMarkers()

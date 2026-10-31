@@ -1,50 +1,46 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
-import { defineComponent, h, ref } from 'vue'
+import { defineComponent, h, ref, type Ref } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AnalysisMarker, FailureGroup } from '@/api/types'
 import { useFailureList } from '@/composables/useFailureList'
 
-const failures: FailureGroup[] = [
-  {
-    key: 'trace:t1',
-    traceId: 't1',
-    query: 'a.example.',
+function failure(key: string, traceId: string | null, query = 'a.example.'): FailureGroup {
+  return {
+    key,
+    traceId,
+    query,
     qtype: 'A',
-    instance: 'dns-1',
+    instance: traceId === null ? null : 'dns-1',
     authority: 'forward',
     responseCode: 'SERVFAIL',
     error: 'timeout',
     count: 2,
     firstSeen: 1,
     lastSeen: 2,
-    durationMs: 10,
-  },
-  {
-    key: 'query:b.example.',
-    traceId: null,
-    query: 'b.example.',
-    qtype: 'A',
-    instance: null,
-    authority: 'forward',
-    responseCode: 'SERVFAIL',
-    error: 'timeout',
-    count: 1,
-    firstSeen: 1,
-    lastSeen: 2,
-    durationMs: null,
-  },
+    durationMs: traceId === null ? null : 10,
+  }
+}
+
+// t1 appears twice (duplicate id), t2 once and one group has no trace id.
+const failures: FailureGroup[] = [
+  failure('trace:t1', 't1'),
+  failure('trace:t1-alt', 't1'),
+  failure('trace:t2', 't2'),
+  failure('query:b.example.', null, 'b.example.'),
 ]
 
-const marker: AnalysisMarker = {
-  id: 'm1',
-  traceId: 't1',
-  status: 'succeeded',
-  verdictCategory: 'upstream_timeout',
-  confidence: 'high',
-  attempt: 1,
-  createdAt: 1,
-  finishedAt: 2,
+function markerFor(traceId: string, id: string): AnalysisMarker {
+  return {
+    id,
+    traceId,
+    status: 'succeeded',
+    verdictCategory: 'upstream_timeout',
+    confidence: 'high',
+    attempt: 1,
+    createdAt: 1,
+    finishedAt: 2,
+  }
 }
 
 function json(body: unknown, status = 200) {
@@ -59,7 +55,10 @@ interface Call {
   method: string
 }
 
-function stubFetch(markers: () => Response | Promise<Response>): Call[] {
+function stubFetch(
+  markers: () => Response | Promise<Response>,
+  failGroups: () => boolean = () => false,
+): Call[] {
   const calls: Call[] = []
   vi.stubGlobal(
     'fetch',
@@ -67,6 +66,9 @@ function stubFetch(markers: () => Response | Promise<Response>): Call[] {
       const url = String(input)
       calls.push({ url, method: init?.method ?? 'GET' })
       if (url.includes('/api/analysis/markers')) return markers()
+      if (failGroups()) {
+        return json({ error: { code: 'boom', message: 'failures down' } }, 500)
+      }
       return json(failures)
     }),
   )
@@ -77,17 +79,18 @@ type List = ReturnType<typeof useFailureList>
 
 const wrappers: VueWrapper[] = []
 
-function mountList(): List {
+function mountList(): { list: List; windowMinutes: Ref<number> } {
+  const windowMinutes = ref(60)
   let list!: List
   const Host = defineComponent({
     setup() {
-      list = useFailureList(ref(60))
+      list = useFailureList(windowMinutes)
       return () => h('div')
     },
   })
   const wrapper = mount(Host)
   wrappers.push(wrapper)
-  return list
+  return { list, windowMinutes }
 }
 
 afterEach(() => {
@@ -98,27 +101,52 @@ afterEach(() => {
 })
 
 describe('useFailureList markers', () => {
-  it('marks the trace ids returned for the listed groups', async () => {
-    const calls = stubFetch(() => json([marker]))
-    const list = mountList()
+  it('requests exactly the unique non-null trace ids and drops unrequested marks', async () => {
+    const calls = stubFetch(() =>
+      json([markerFor('t1', 'm1'), markerFor('t2', 'm2'), markerFor('t9', 'm9')]),
+    )
+    const { list } = mountList()
 
     await flushPromises()
 
     const markerCall = calls.find((call) => call.url.includes('/api/analysis/markers'))
-    expect(markerCall?.url).toContain('/api/analysis/markers?traceIds=t1')
-    expect(markerCall?.url).not.toContain('null')
-    expect(list.markers.value.has('t1')).toBe(true)
+    expect(markerCall).toBeDefined()
+    const url = new URL(markerCall!.url, 'http://x')
+    expect(url.pathname).toBe('/api/analysis/markers')
+    expect(url.searchParams.get('traceIds')).toBe('t1,t2')
+    expect(markerCall!.url).not.toContain('null')
+    expect(new Set(list.markers.value)).toEqual(new Set(['t1', 't2']))
     expect(calls.every((call) => call.method !== 'POST')).toBe(true)
   })
 
   it('keeps groups rendered and the error clear when markers fail', async () => {
     stubFetch(() => json({ error: { code: 'boom', message: 'markers down' } }, 500))
-    const list = mountList()
+    const { list } = mountList()
 
     await flushPromises()
 
-    expect(list.groups.value).toHaveLength(2)
+    expect(list.groups.value).toHaveLength(4)
     expect(list.error.value).toBeNull()
+    expect(list.markers.value.size).toBe(0)
+  })
+
+  it('clears the markers when a group refresh fails', async () => {
+    let failGroups = false
+    stubFetch(
+      () => json([markerFor('t1', 'm1'), markerFor('t2', 'm2')]),
+      () => failGroups,
+    )
+    const { list, windowMinutes } = mountList()
+
+    await flushPromises()
+    expect(new Set(list.markers.value)).toEqual(new Set(['t1', 't2']))
+    expect(list.error.value).toBeNull()
+
+    failGroups = true
+    windowMinutes.value = 120
+    await flushPromises()
+
+    expect(list.error.value).not.toBeNull()
     expect(list.markers.value.size).toBe(0)
   })
 })
