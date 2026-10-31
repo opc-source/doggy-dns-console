@@ -6,6 +6,8 @@
 //! of being filled with guesses. The wire shape is fixed by spec §6.2, so the
 //! field names and enum values here must not drift.
 
+pub mod agent;
+pub mod drilldown;
 pub mod prompt;
 pub mod validate;
 

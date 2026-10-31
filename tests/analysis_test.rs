@@ -279,3 +279,301 @@ fn prompt_is_versioned_and_states_the_contract() {
         assert!(prompt.contains(needle), "prompt is missing {needle:?}");
     }
 }
+
+// ------------------------------------------------------ forensic agent loop
+
+use std::sync::Mutex;
+use std::time::Duration;
+
+use adk_rust::model::{ScriptedLlm, ScriptedResponse};
+use async_trait::async_trait;
+use doggy_dns_console::analysis::agent::{MAX_TOOL_RESULT_BYTES, SUBMIT_TOOL, run_forensic_loop};
+use doggy_dns_console::analysis::drilldown::{Drilldown, upstream_tool_name};
+use serde_json::Value;
+
+struct ScriptedDrilldown {
+    calls: Mutex<Vec<(String, Value)>>,
+    result: Value,
+}
+
+impl ScriptedDrilldown {
+    fn new(result: Value) -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            result,
+        }
+    }
+
+    fn calls(&self) -> Vec<(String, Value)> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl Drilldown for ScriptedDrilldown {
+    fn tool_declarations(&self) -> Vec<Value> {
+        vec![json!({
+            "name": "openobserve_search_sql",
+            "description": "run a read-only SQL query",
+            "parameters": {"type": "object"}
+        })]
+    }
+
+    async fn call_tool(&self, tool_name: &str, args: Value) -> Result<Value, String> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((tool_name.to_string(), args));
+        Ok(self.result.clone())
+    }
+}
+
+fn submit(result: &AnalysisResult) -> ScriptedResponse {
+    ScriptedResponse::function_call(SUBMIT_TOOL, serde_json::to_value(result).unwrap())
+}
+
+fn first_log_id(bundle: &EvidenceBundle) -> String {
+    bundle.logs.items.first().unwrap().id.clone()
+}
+
+#[test]
+fn exposed_drilldown_names_map_to_upstream_names() {
+    assert_eq!(
+        upstream_tool_name("openobserve_search_sql"),
+        Some("SearchSQL")
+    );
+    assert_eq!(upstream_tool_name("SearchSQL"), None);
+    assert_eq!(upstream_tool_name("unknown"), None);
+}
+
+#[tokio::test]
+async fn forensic_loop_accepts_a_direct_submission() {
+    let bundle = fixture_bundle().await;
+    let id = first_log_id(&bundle);
+    let drilldown = ScriptedDrilldown::new(json!({"rows": []}));
+    let llm = ScriptedLlm::new("test", vec![submit(&valid_result(&id))]);
+
+    let outcome = run_forensic_loop(&llm, &bundle, &drilldown, 6, Duration::from_secs(60))
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.result.status, AnalysisStatus::Ok);
+    assert!(outcome.tool_calls.is_empty());
+    assert!(drilldown.calls().is_empty());
+    assert_eq!(llm.requests().len(), 1);
+    assert!(
+        llm.requests()[0]
+            .tools
+            .contains_key("submit_failure_analysis")
+    );
+    assert!(
+        llm.requests()[0]
+            .tools
+            .contains_key("openobserve_search_sql")
+    );
+}
+
+#[tokio::test]
+async fn forensic_loop_runs_a_drilldown_then_submits() {
+    let bundle = fixture_bundle().await;
+    let drilldown = ScriptedDrilldown::new(json!({"rows": [{"message": "timeout"}]}));
+    let llm = ScriptedLlm::new(
+        "test",
+        vec![
+            ScriptedResponse::function_call(
+                "openobserve_search_sql",
+                json!({"query": "SELECT * FROM logs"}),
+            ),
+            submit(&valid_result("tool:1:result")),
+        ],
+    );
+
+    let outcome = run_forensic_loop(&llm, &bundle, &drilldown, 6, Duration::from_secs(60))
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.result.status, AnalysisStatus::Ok);
+    assert_eq!(outcome.tool_calls.len(), 1);
+    assert_eq!(outcome.tool_calls[0].name, "openobserve_search_sql");
+    assert_eq!(
+        outcome.tool_calls[0].canonical_args,
+        json!({"query": "SELECT * FROM logs"})
+    );
+    assert!(outcome.tool_calls[0].result_hash.starts_with("sha256:"));
+    assert_eq!(drilldown.calls().len(), 1);
+    assert_eq!(llm.requests().len(), 2);
+    assert!(
+        llm.requests()[1]
+            .contents
+            .iter()
+            .any(|content| content.role == "function")
+    );
+}
+
+#[tokio::test]
+async fn forensic_loop_rejects_the_seventh_drilldown_call() {
+    let bundle = fixture_bundle().await;
+    let drilldown = ScriptedDrilldown::new(json!({"rows": []}));
+    let mut script: Vec<ScriptedResponse> = (0..7)
+        .map(|index| {
+            ScriptedResponse::function_call(
+                "openobserve_search_sql",
+                json!({"query": format!("SELECT {index}")}),
+            )
+        })
+        .collect();
+    script.push(submit(&valid_result("tool:6:result")));
+    let llm = ScriptedLlm::new("test", script);
+
+    let outcome = run_forensic_loop(&llm, &bundle, &drilldown, 6, Duration::from_secs(60))
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.result.status, AnalysisStatus::Ok);
+    assert_eq!(drilldown.calls().len(), 6);
+    assert_eq!(outcome.tool_calls.len(), 6);
+    assert_eq!(llm.requests().len(), 8);
+    // The history accumulates, so the response to the rejected seventh call is
+    // the newest function response in the final request, not the first.
+    let seventh_response = llm.requests()[7]
+        .contents
+        .iter()
+        .rev()
+        .flat_map(|content| content.parts.iter().rev())
+        .find_map(|part| match part {
+            adk_rust::Part::FunctionResponse {
+                function_response, ..
+            } => Some(function_response.response.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(seventh_response.to_string().contains("budget exhausted"));
+}
+
+#[tokio::test]
+async fn forensic_loop_rejects_duplicate_canonical_arguments() {
+    let bundle = fixture_bundle().await;
+    let drilldown = ScriptedDrilldown::new(json!({"rows": []}));
+    let llm = ScriptedLlm::new(
+        "test",
+        vec![
+            ScriptedResponse::function_call(
+                "openobserve_search_sql",
+                json!({"query": "SELECT 1", "limit": 5}),
+            ),
+            ScriptedResponse::function_call(
+                "openobserve_search_sql",
+                json!({"limit": 5, "query": "SELECT 1"}),
+            ),
+            submit(&valid_result("tool:1:result")),
+        ],
+    );
+
+    let outcome = run_forensic_loop(&llm, &bundle, &drilldown, 6, Duration::from_secs(60))
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.result.status, AnalysisStatus::Ok);
+    assert_eq!(drilldown.calls().len(), 1);
+    assert_eq!(outcome.tool_calls.len(), 1);
+    assert_eq!(
+        outcome.tool_calls[0].canonical_args,
+        json!({"limit": 5, "query": "SELECT 1"})
+    );
+}
+
+#[tokio::test]
+async fn forensic_loop_allows_one_repair() {
+    let bundle = fixture_bundle().await;
+    let id = first_log_id(&bundle);
+    let drilldown = ScriptedDrilldown::new(json!({"rows": []}));
+    let llm = ScriptedLlm::new(
+        "test",
+        vec![
+            submit(&valid_result("log:does-not-exist")),
+            submit(&valid_result(&id)),
+        ],
+    );
+
+    let outcome = run_forensic_loop(&llm, &bundle, &drilldown, 6, Duration::from_secs(60))
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.result.status, AnalysisStatus::Ok);
+    assert_eq!(llm.requests().len(), 2);
+    let repair = llm.requests()[1]
+        .contents
+        .iter()
+        .filter(|content| content.role == "user")
+        .flat_map(|content| &content.parts)
+        .filter_map(|part| match part {
+            adk_rust::Part::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<String>();
+    assert!(repair.contains("unknown evidence ID"));
+}
+
+#[tokio::test]
+async fn forensic_loop_is_invalid_after_two_rejections() {
+    let bundle = fixture_bundle().await;
+    let drilldown = ScriptedDrilldown::new(json!({"rows": []}));
+    let llm = ScriptedLlm::new(
+        "test",
+        vec![
+            submit(&valid_result("log:missing-one")),
+            submit(&valid_result("log:missing-two")),
+        ],
+    );
+
+    let outcome = run_forensic_loop(&llm, &bundle, &drilldown, 6, Duration::from_secs(60))
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.result.status, AnalysisStatus::Invalid);
+    assert_eq!(llm.requests().len(), 2);
+    assert_eq!(outcome.result.findings, Vec::new());
+    assert_eq!(outcome.result.not_determinable.len(), 1);
+    assert!(outcome.result.not_determinable[0].contains("unknown evidence ID"));
+}
+
+#[tokio::test]
+async fn forensic_loop_degrades_to_unavailable_on_timeout() {
+    let bundle = fixture_bundle().await;
+    let drilldown = ScriptedDrilldown::new(json!({"rows": []}));
+    let llm = ScriptedLlm::new("test", Vec::<ScriptedResponse>::new());
+
+    let outcome = run_forensic_loop(&llm, &bundle, &drilldown, 6, Duration::ZERO)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.result.status, AnalysisStatus::Unavailable);
+    assert_eq!(outcome.result.verdict.category, VerdictCategory::Unknown);
+    assert_eq!(outcome.result.not_determinable.len(), 1);
+    assert!(outcome.result.not_determinable[0].contains("timed out"));
+    assert!(drilldown.calls().is_empty());
+    assert_eq!(llm.requests().len(), 0);
+    assert!(outcome.tool_calls.is_empty());
+}
+
+#[tokio::test]
+async fn forensic_loop_caps_tool_result_summaries() {
+    let bundle = fixture_bundle().await;
+    let drilldown = ScriptedDrilldown::new(json!({"rows": "x".repeat(20_000)}));
+    let llm = ScriptedLlm::new(
+        "test",
+        vec![
+            ScriptedResponse::function_call("openobserve_search_sql", json!({"query": "SELECT 1"})),
+            submit(&valid_result("tool:1:result")),
+        ],
+    );
+
+    let outcome = run_forensic_loop(&llm, &bundle, &drilldown, 6, Duration::from_secs(60))
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.result.status, AnalysisStatus::Ok);
+    assert_eq!(outcome.tool_calls.len(), 1);
+    assert!(outcome.tool_calls[0].summary.len() <= MAX_TOOL_RESULT_BYTES);
+    assert!(outcome.tool_calls[0].summary.contains("\"truncated\":true"));
+}
