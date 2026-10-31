@@ -694,3 +694,392 @@ async fn forensic_loop_audits_a_timed_out_drilldown() {
             .any(|gap| gap.contains("timed out"))
     );
 }
+
+// ---------------------------------------------------------- investigation store
+
+use doggy_dns_console::analysis::ToolCallAudit;
+use doggy_dns_console::analysis::store::{
+    CacheKey, InvestigationMarker, InvestigationOutcome, InvestigationRecord, InvestigationStatus,
+    InvestigationStore, NewInvestigation, SqliteInvestigationStore,
+};
+use doggy_dns_console::domain::Window;
+use sqlx::Row;
+
+const EVIDENCE_FINGERPRINT: &str = "sha256:evidence-fingerprint";
+const MODEL: &str = "test-model";
+
+fn sample_filter() -> FailureFilter {
+    FailureFilter {
+        window: Window::new(30),
+        domain: Some("example.com".to_string()),
+        response_code: Some("SERVFAIL".to_string()),
+        limit: 20,
+    }
+}
+
+fn sample_audit() -> ToolCallAudit {
+    ToolCallAudit {
+        name: "openobserve_search_sql".to_string(),
+        canonical_args: json!({"query": "SELECT * FROM logs LIMIT 5"}),
+        duration_ms: 42,
+        result_hash: "sha256:deadbeef".to_string(),
+        summary: "{\"rows\":2}".to_string(),
+    }
+}
+
+/// A terminal record that is internally consistent: the scalar verdict columns
+/// mirror the full result.
+fn succeeded_record(
+    id: &str,
+    trace_id: &str,
+    attempt: u32,
+    created_at: i64,
+) -> InvestigationRecord {
+    InvestigationRecord {
+        id: id.to_string(),
+        trace_id: trace_id.to_string(),
+        filter: sample_filter(),
+        evidence_fingerprint: EVIDENCE_FINGERPRINT.to_string(),
+        model: MODEL.to_string(),
+        prompt_version: PROMPT_VERSION.to_string(),
+        status: InvestigationStatus::Succeeded,
+        verdict_category: Some(VerdictCategory::UpstreamTimeout),
+        confidence: Some(Confidence::Medium),
+        result: Some(valid_result("log:1761436740000:00f067aa0ba902b7:deadbeef")),
+        tool_calls: vec![sample_audit()],
+        error: None,
+        attempt,
+        created_at,
+        finished_at: Some(created_at + 5),
+    }
+}
+
+fn cache_key<'a>(trace_id: &'a str, fingerprint: &'a str, model: &'a str) -> CacheKey<'a> {
+    CacheKey {
+        trace_id,
+        evidence_fingerprint: fingerprint,
+        model,
+        prompt_version: PROMPT_VERSION,
+    }
+}
+
+fn temp_db_url(dir: &tempfile::TempDir) -> String {
+    format!("sqlite:{}", dir.path().join("console.db").display())
+}
+
+#[tokio::test]
+async fn store_inserts_and_reads_an_investigation() {
+    // The trait must stay object-safe: the service layer holds an
+    // `Arc<dyn InvestigationStore>`.
+    let store: Arc<dyn InvestigationStore> =
+        Arc::new(SqliteInvestigationStore::memory().await.unwrap());
+    let record = succeeded_record("inv-1", "trace-a", 1, 1_761_436_800);
+
+    store.insert(&record).await.unwrap();
+
+    let stored = store.get("inv-1").await.unwrap().unwrap();
+    assert_eq!(stored, record);
+    assert_eq!(stored.filter, sample_filter());
+    assert_eq!(
+        stored.verdict_category,
+        Some(VerdictCategory::UpstreamTimeout)
+    );
+    assert_eq!(stored.confidence, Some(Confidence::Medium));
+    assert_eq!(stored.tool_calls, vec![sample_audit()]);
+    assert_eq!(stored.created_at, 1_761_436_800);
+    assert_eq!(stored.finished_at, Some(1_761_436_805));
+
+    assert_eq!(store.latest("trace-a").await.unwrap(), Some(record));
+    assert_eq!(store.get("missing").await.unwrap(), None);
+    assert_eq!(store.latest("trace-missing").await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn store_schema_matches_the_spec() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let url = temp_db_url(&dir);
+    let _store = SqliteInvestigationStore::new(&url).await.unwrap();
+
+    let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
+    let columns: Vec<String> = sqlx::query("PRAGMA table_info(failure_investigations)")
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+    assert_eq!(
+        columns,
+        vec![
+            "id",
+            "trace_id",
+            "filter_json",
+            "evidence_fingerprint",
+            "model",
+            "prompt_version",
+            "status",
+            "verdict_category",
+            "confidence",
+            "result_json",
+            "tool_calls_json",
+            "error",
+            "attempt",
+            "created_at",
+            "finished_at",
+        ]
+    );
+
+    let indexes: Vec<String> = sqlx::query("PRAGMA index_list(failure_investigations)")
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+    assert!(indexes.contains(&"idx_investigations_trace".to_string()));
+    assert!(indexes.contains(&"idx_investigations_created".to_string()));
+}
+
+#[tokio::test]
+async fn store_cache_hit_requires_the_full_key() {
+    let store = SqliteInvestigationStore::memory().await.unwrap();
+    let record = succeeded_record("inv-1", "trace-a", 1, 1_761_436_800);
+    store.insert(&record).await.unwrap();
+
+    let key = cache_key("trace-a", EVIDENCE_FINGERPRINT, MODEL);
+    assert_eq!(store.cache_hit(&key).await.unwrap(), Some(record.clone()));
+
+    assert_eq!(
+        store
+            .cache_hit(&cache_key("trace-a", EVIDENCE_FINGERPRINT, "other-model"))
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .cache_hit(&cache_key("trace-a", "sha256:other", MODEL))
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .cache_hit(&cache_key("trace-b", EVIDENCE_FINGERPRINT, MODEL))
+            .await
+            .unwrap(),
+        None
+    );
+
+    // An in-flight attempt for the same key never shadows the cached success.
+    let mut in_flight = succeeded_record("inv-2", "trace-a", 2, 1_761_436_900);
+    in_flight.status = InvestigationStatus::Running;
+    in_flight.verdict_category = None;
+    in_flight.confidence = None;
+    in_flight.result = None;
+    in_flight.tool_calls.clear();
+    in_flight.finished_at = None;
+    store.insert(&in_flight).await.unwrap();
+    assert_eq!(store.cache_hit(&key).await.unwrap(), Some(record));
+}
+
+#[tokio::test]
+async fn store_create_attempt_increments_attempt_and_tracks_running() {
+    let store = SqliteInvestigationStore::memory().await.unwrap();
+    let filter = sample_filter();
+    let input = NewInvestigation {
+        trace_id: "trace-a",
+        filter: &filter,
+        evidence_fingerprint: EVIDENCE_FINGERPRINT,
+        model: MODEL,
+        prompt_version: PROMPT_VERSION,
+    };
+
+    let first = store.create_attempt(&input).await.unwrap();
+    let second = store.create_attempt(&input).await.unwrap();
+
+    assert_eq!(first.attempt, 1);
+    assert_eq!(second.attempt, 2);
+    assert_eq!(first.status, InvestigationStatus::Queued);
+    assert_eq!(second.status, InvestigationStatus::Queued);
+    assert_ne!(first.id, second.id);
+    assert_eq!(first.filter, filter);
+    assert!(first.finished_at.is_none());
+
+    let key = cache_key("trace-a", EVIDENCE_FINGERPRINT, MODEL);
+    assert_eq!(store.running(&key).await.unwrap().unwrap().id, second.id);
+
+    // Retire the superseded attempt so only one remains in flight per key.
+    store
+        .finish(
+            &first.id,
+            &InvestigationOutcome {
+                status: InvestigationStatus::Failed,
+                result: None,
+                tool_calls: Vec::new(),
+                error: Some("superseded by a newer attempt".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    store.mark_running(&second.id).await.unwrap();
+    assert!(store.mark_running(&second.id).await.is_err());
+
+    let result = valid_result("log:1761436740000:00f067aa0ba902b7:deadbeef");
+    store
+        .finish(
+            &second.id,
+            &InvestigationOutcome {
+                status: InvestigationStatus::Succeeded,
+                result: Some(result.clone()),
+                tool_calls: vec![sample_audit()],
+                error: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let finished = store.get(&second.id).await.unwrap().unwrap();
+    assert_eq!(finished.status, InvestigationStatus::Succeeded);
+    assert_eq!(finished.result, Some(result));
+    assert_eq!(finished.tool_calls, vec![sample_audit()]);
+    assert_eq!(
+        finished.verdict_category,
+        Some(VerdictCategory::UpstreamTimeout)
+    );
+    assert_eq!(finished.confidence, Some(Confidence::Medium));
+    assert!(finished.finished_at.is_some());
+    assert_eq!(store.running(&key).await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn store_markers_return_the_latest_attempt_per_trace() {
+    let store = SqliteInvestigationStore::memory().await.unwrap();
+    store
+        .insert(&succeeded_record("a-1", "trace-a", 1, 1_761_436_800))
+        .await
+        .unwrap();
+    store
+        .insert(&succeeded_record("a-2", "trace-a", 2, 1_761_436_900))
+        .await
+        .unwrap();
+    store
+        .insert(&succeeded_record("b-1", "trace-b", 1, 1_761_436_850))
+        .await
+        .unwrap();
+    store
+        .insert(&succeeded_record("c-1", "trace-c", 1, 1_761_436_860))
+        .await
+        .unwrap();
+
+    let markers: Vec<InvestigationMarker> = store
+        .markers(&["trace-a".to_string(), "trace-b".to_string()])
+        .await
+        .unwrap();
+
+    assert_eq!(markers.len(), 2);
+    let a = markers
+        .iter()
+        .find(|marker| marker.trace_id == "trace-a")
+        .unwrap();
+    assert_eq!(a.id, "a-2");
+    assert_eq!(a.attempt, 2);
+    assert_eq!(a.status, InvestigationStatus::Succeeded);
+    assert_eq!(a.verdict_category, Some(VerdictCategory::UpstreamTimeout));
+    assert_eq!(a.confidence, Some(Confidence::Medium));
+    let b = markers
+        .iter()
+        .find(|marker| marker.trace_id == "trace-b")
+        .unwrap();
+    assert_eq!(b.id, "b-1");
+
+    assert!(store.markers(&[]).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn store_prunes_rows_older_than_retention() {
+    let store = SqliteInvestigationStore::memory().await.unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    store
+        .insert(&succeeded_record("old", "trace-old", 1, now - 31 * 86_400))
+        .await
+        .unwrap();
+    store
+        .insert(&succeeded_record("fresh", "trace-fresh", 1, now))
+        .await
+        .unwrap();
+
+    assert_eq!(store.prune_old(0).await.unwrap(), 0);
+    assert_eq!(store.prune_old(30).await.unwrap(), 1);
+    assert_eq!(store.get("old").await.unwrap(), None);
+    assert!(store.get("fresh").await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn store_survives_reopen() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let url = temp_db_url(&dir);
+    let record = succeeded_record("inv-1", "trace-a", 1, 1_761_436_800);
+
+    {
+        let store = SqliteInvestigationStore::new(&url).await.unwrap();
+        store.insert(&record).await.unwrap();
+    }
+
+    let reopened = SqliteInvestigationStore::new(&url).await.unwrap();
+    assert_eq!(reopened.get("inv-1").await.unwrap(), Some(record));
+}
+
+#[tokio::test]
+async fn store_persists_only_structured_tool_audits() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let url = temp_db_url(&dir);
+    let store = SqliteInvestigationStore::new(&url).await.unwrap();
+
+    let filter = sample_filter();
+    let input = NewInvestigation {
+        trace_id: "trace-a",
+        filter: &filter,
+        evidence_fingerprint: EVIDENCE_FINGERPRINT,
+        model: MODEL,
+        prompt_version: PROMPT_VERSION,
+    };
+    let attempt = store.create_attempt(&input).await.unwrap();
+    store.mark_running(&attempt.id).await.unwrap();
+
+    let audits = vec![sample_audit()];
+    let result = valid_result("log:1761436740000:00f067aa0ba902b7:deadbeef");
+    store
+        .finish(
+            &attempt.id,
+            &InvestigationOutcome {
+                status: InvestigationStatus::Succeeded,
+                result: Some(result.clone()),
+                tool_calls: audits.clone(),
+                error: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
+    let row =
+        sqlx::query("SELECT tool_calls_json, result_json FROM failure_investigations WHERE id = ?")
+            .bind(&attempt.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    let tool_calls_json: Option<String> = row.get("tool_calls_json");
+    assert_eq!(
+        tool_calls_json.unwrap(),
+        serde_json::to_string(&audits).unwrap()
+    );
+
+    let result_json: Option<String> = row.get("result_json");
+    let stored: AnalysisResult = serde_json::from_str(&result_json.unwrap()).unwrap();
+    assert_eq!(stored, result);
+}

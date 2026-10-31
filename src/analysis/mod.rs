@@ -9,6 +9,7 @@
 pub mod agent;
 pub mod drilldown;
 pub mod prompt;
+pub mod store;
 pub mod validate;
 
 pub use prompt::{PROMPT_VERSION, system_prompt};
@@ -70,6 +71,22 @@ pub enum VerdictCategory {
     Unknown,
 }
 
+impl VerdictCategory {
+    /// The serde wire string, used for the persisted scalar verdict column.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::UpstreamUnreachable => "upstream_unreachable",
+            Self::UpstreamTimeout => "upstream_timeout",
+            Self::UpstreamRefused => "upstream_refused",
+            Self::PolicyRefused => "policy_refused",
+            Self::ConfigInvalid => "config_invalid",
+            Self::NacosStale => "nacos_stale",
+            Self::XdpPath => "xdp_path",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// Confidence in the verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -77,6 +94,17 @@ pub enum Confidence {
     Low,
     Medium,
     High,
+}
+
+impl Confidence {
+    /// The serde wire string, used for the persisted scalar verdict column.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
 }
 
 /// One claim with the evidence IDs that support it.
