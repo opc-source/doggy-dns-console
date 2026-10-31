@@ -12,13 +12,21 @@ use sha2::{Digest, Sha256};
 
 use crate::domain::LogRecord;
 
+/// Lowercase hexadecimal encoding without an extra dependency.
+pub fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
 /// First four SHA-256 digest bytes as 8 lowercase hex characters.
 pub fn short_hash(input: &str) -> String {
     let digest = Sha256::digest(input.as_bytes());
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}",
-        digest[0], digest[1], digest[2], digest[3]
-    )
+    hex_lower(&digest[..4])
 }
 
 /// Normalized content used as the `short_hash` input for a log.
