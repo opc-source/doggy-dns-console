@@ -65,8 +65,9 @@ finishes inside the budget. That is what these eight cases measure.
    Record the fingerprint, `missing`, `instance.reachable`/`matchQuality` and the
    log/span counts. These define the case.
 
-4. **First observation — no `force`.** The drawer already sent this request when
-   it opened; repeat it to observe the cache for the captured evidence:
+4. **First observation — no `force`.** If you opened the drawer it may already have
+   started analysis (a deep-link restore with `?analysis=` does not POST). Issue this
+   non-forced request to observe the cache for the captured evidence:
 
    ```bash
    curl -s -i -X POST \
@@ -76,10 +77,12 @@ finishes inside the budget. That is what these eight cases measure.
    # 202 = new or in-flight job, body {"analysisId":"..."}
    ```
 
-   For a fingerprint analyzed for the first time, the drawer's request queued the
-   job, so expect `202`; for evidence already analyzed with the same model and
-   prompt version it is a `200` cache hit. Record which one you got — this POST
-   is the cache-hit measurement for the case. On `202`, poll the returned id
+   For a fingerprint first analyzed in this run the job may still be queued or
+   running (`202`) or may already have finished (`200`); for evidence already
+   analyzed with the same model and prompt version it is a `200` cache hit.
+   Record which one you got — this non-forced POST is the cache-hit measurement
+   for the case, regardless of whether the drawer had started the job. On `202`,
+   poll the returned id
    until terminal:
 
    ```bash
@@ -280,8 +283,9 @@ cannot support the case.
 - **Expected:** the reloaded bundle has a different `fingerprint`; the drawer
   keeps the old analysis but marks it stale ("证据已变化，需重新分析") instead of
   presenting it as current. A new POST without `force` gets `202` (a new
-  fingerprint is a cache miss), not `200`; "重新分析" creates attempt N+1 and the
-  UI shows the new attempt. If the evidence is unchanged, the POST returns `200`
+  fingerprint is a cache miss), not `200`; "重新分析" creates a new attempt
+  (numbered per cache key) and the UI shows the new attempt. If the evidence is
+  unchanged, the POST returns `200`
   and does not call the model. If the named attempt in the deep link no longer
   exists, the drawer falls back to a fresh analysis.
 - **Mandatory citation:** not applicable; check instead that no stale result is
@@ -311,7 +315,7 @@ Measured over the eight cases, using the snapshot fields (`status`,
 | Average tool calls | ≤ 6 | Mean of `toolCallCount` over cases. The server budget makes > 6 impossible; a low mean is fine. |
 | p95 analysis duration | ≤ 60 s | `finishedAt - startedAt` per case (includes queue time), nearest-rank p95. |
 | Cost per analysis | report only | Provider spend divided by attempts actually billed; a `200` cache hit costs nothing. |
-| Cache-hit rate | report only | `200` responses ÷ POSTs issued **without** `force` across the run (step 4). Forced re-runs from step 6 always answer `202` and are excluded. |
+| Cache-hit rate | report only | `200` responses ÷ POSTs issued **without** `force` across the run (step 4). Forced re-runs from step 6 create a new attempt (`202` unless rate-limited or errored) and are excluded. |
 
 Record the model name, prompt version (`failure-analyst/v1`), console commit,
 date and any non-default budgets with the results — the cache key and the

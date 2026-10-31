@@ -173,7 +173,8 @@ bodies) and is used only to badge the failure list.
 
 `data/console.db` (or `CONSOLE_DB`) holds the agent sessions and a
 `failure_investigations` table with `id` (primary key), trace id, `attempt`
-(numbered per trace), filter, evidence fingerprint, model, prompt version,
+(numbered per cache key: trace, evidence fingerprint, model and prompt
+version), filter, evidence fingerprint, model, prompt version,
 status, verdict category/confidence, result JSON, tool-call audit JSON, error
 and timestamps. Raw logs and spans are **never** persisted. Retention defaults
 to 30 days and is pruned at startup and once a day.
