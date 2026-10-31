@@ -280,6 +280,100 @@ describe('useInvestigation', () => {
     expect(getPaths()).toHaveLength(1)
   })
 
+  it('cancels_the_previous_poll_loop_when_a_forced_rerun_fails', async () => {
+    const { item } = setup()
+    getMock().mockResolvedValueOnce(bundle())
+    await item.loadEvidence()
+
+    postMock().mockResolvedValueOnce({ status: 202, body: { analysisId: 'a1' } })
+    await item.startAnalysis()
+    expect(item.state.value).toBe('analysisRunning')
+
+    postMock().mockRejectedValueOnce(new ApiError(429, 'rate_limited', 'analysis rate limit'))
+    await expect(item.startAnalysis(true)).resolves.toBe(false)
+
+    expect(item.state.value).toBe('evidenceReady')
+    expect(item.error.value).toBe('analysis rate limit')
+
+    getMock().mockResolvedValue(runningSnapshot())
+    const callsAfterFailure = getPaths().length
+    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_INTERVAL_MS * 3)
+
+    expect(item.state.value).toBe('evidenceReady')
+    expect(item.error.value).toBe('analysis rate limit')
+    expect(getPaths()).toHaveLength(callsAfterFailure)
+  })
+
+  it('does_not_let_an_orphaned_poll_overwrite_a_newer_analysis', async () => {
+    const { item } = setup()
+    getMock().mockResolvedValueOnce(bundle())
+    await item.loadEvidence()
+
+    postMock().mockResolvedValueOnce({ status: 202, body: { analysisId: 'a1' } })
+    await item.startAnalysis()
+    expect(item.state.value).toBe('analysisRunning')
+
+    const other = snapshot({ analysisId: 'other' })
+    getMock().mockResolvedValueOnce(other).mockResolvedValue(runningSnapshot())
+    await expect(item.loadAnalysis('other')).resolves.toBe(true)
+
+    expect(item.analysis.value?.analysisId).toBe('other')
+    expect(item.state.value).toBe('analysisDone')
+
+    const callsAfterRestore = getPaths().length
+    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_INTERVAL_MS * 3)
+
+    expect(item.analysis.value?.analysisId).toBe('other')
+    expect(item.state.value).toBe('analysisDone')
+    expect(getPaths()).toHaveLength(callsAfterRestore)
+  })
+
+  it('returns_to_evidence_ready_after_a_matching_evidence_reload', async () => {
+    const { item } = setup()
+    getMock().mockResolvedValueOnce(bundle('sha256:a'))
+    await item.loadEvidence()
+
+    postMock().mockResolvedValueOnce({ status: 200, body: snapshot() })
+    await item.startAnalysis()
+    expect(item.state.value).toBe('analysisDone')
+
+    getMock().mockResolvedValueOnce(bundle('sha256:a'))
+    await expect(item.loadEvidence()).resolves.toBe(true)
+
+    expect(item.stale.value).toBe(false)
+    expect(item.state.value).toBe('evidenceReady')
+    expect(item.analysis.value?.analysisId).toBe('a1')
+
+    getMock().mockResolvedValueOnce(snapshot())
+    await expect(item.loadAnalysis()).resolves.toBe(true)
+    expect(item.state.value).toBe('analysisDone')
+  })
+
+  it('clears_the_previous_analysis_when_a_forced_rerun_starts', async () => {
+    const { item } = setup()
+    getMock().mockResolvedValueOnce(bundle())
+    await item.loadEvidence()
+
+    postMock().mockResolvedValueOnce({ status: 200, body: snapshot() })
+    await item.startAnalysis()
+    expect(item.analysis.value?.attempt).toBe(1)
+
+    const accepted = deferred<{ status: number; body: { analysisId: string } }>()
+    postMock().mockReturnValueOnce(accepted.promise)
+    const rerun = item.startAnalysis(true)
+
+    expect(item.state.value).toBe('analysisQueued')
+    expect(item.analysis.value).toBeNull()
+
+    accepted.resolve({ status: 202, body: { analysisId: 'a2' } })
+    await expect(rerun).resolves.toBe(true)
+    expect(item.state.value).toBe('analysisRunning')
+  })
+
+  it('pins_the_poll_interval_to_one_second', () => {
+    expect(ANALYSIS_POLL_INTERVAL_MS).toBe(1000)
+  })
+
   it('marks_the_analysis_stale_when_the_evidence_fingerprint_changes', async () => {
     const { item } = setup()
     getMock().mockResolvedValueOnce(bundle('sha256:a'))

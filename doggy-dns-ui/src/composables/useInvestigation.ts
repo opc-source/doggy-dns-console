@@ -95,7 +95,10 @@ export function useInvestigation(traceId: Ref<string | null>, windowMinutes: Ref
   }
 
   function stateFromEvidence(): InvestigationState {
-    return stateFromAnalysis() ?? 'evidenceReady'
+    // The brief pins this: a fresh evidence load is a neutral state, only a
+    // fingerprint mismatch with a loaded analysis escalates to `stale`.
+    // `loadAnalysis` is the explicit route back to a settled analysis state.
+    return stale.value ? 'stale' : 'evidenceReady'
   }
 
   function applySnapshot(snapshot: AnalysisSnapshot, gen: number): void {
@@ -152,11 +155,19 @@ export function useInvestigation(traceId: Ref<string | null>, windowMinutes: Ref
   async function startAnalysis(force = false): Promise<boolean> {
     const trace = traceId.value
     if (!trace) return false
+    // A new start owns the poll loop: stop any surviving loop before issuing
+    // requests so neither its timer nor an applied snapshot can clobber the
+    // outcome of this attempt.
+    cancelPolling()
     const gen = generation
     if (!evidence.value) {
       const loaded = await loadEvidence()
       if (!loaded || gen !== generation) return false
     }
+
+    // A re-run must not keep exposing the previous attempt (e.g. as `stale`)
+    // while the replacement is queued or running.
+    if (force) analysis.value = null
 
     state.value = 'analysisQueued'
     error.value = null
@@ -197,6 +208,9 @@ export function useInvestigation(traceId: Ref<string | null>, windowMinutes: Ref
   async function loadAnalysis(analysisId?: string): Promise<boolean> {
     const trace = traceId.value
     if (!trace) return false
+    // Restoring an attempt replaces whatever was polling: cancel first so an
+    // orphaned loop cannot overwrite the restored snapshot on its next tick.
+    cancelPolling()
     const gen = generation
     const query = analysisId ? `?analysis=${encodeURIComponent(analysisId)}` : ''
     try {
