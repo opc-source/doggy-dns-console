@@ -35,7 +35,7 @@ pub async fn failure_detail(
     Ok(Json(state.service.failure_detail(&trace_id, filter).await?))
 }
 
-fn filter_from(query: FailureQuery, default_limit: usize) -> FailureFilter {
+pub(crate) fn filter_from(query: FailureQuery, default_limit: usize) -> FailureFilter {
     FailureFilter {
         window: Window::new(query.window_minutes.unwrap_or(60)),
         domain: query.domain,

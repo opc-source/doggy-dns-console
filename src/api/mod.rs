@@ -1,5 +1,6 @@
 pub mod connections;
 pub mod error;
+pub mod evidence;
 pub mod failures;
 pub mod health;
 pub mod instances;
@@ -21,6 +22,7 @@ pub fn business_router(state: ApiState) -> Router {
         .route("/api/overview", get(overview::overview))
         .route("/api/failures", get(failures::failures))
         .route("/api/failures/{trace_id}", get(failures::failure_detail))
+        .route("/api/failures/{trace_id}/evidence", get(evidence::evidence))
         .route("/api/instances", get(instances::instances))
         .route("/api/instances/{id}", get(instances::instance_detail))
         .route("/api/connections", get(connections::connections))
