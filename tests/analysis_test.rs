@@ -670,8 +670,7 @@ async fn forensic_loop_audits_tool_errors() {
 #[tokio::test]
 async fn forensic_loop_audits_a_timed_out_drilldown() {
     let bundle = fixture_bundle().await;
-    let drilldown =
-        ScriptedDrilldown::new(json!({"rows": []})).with_delay(Duration::from_millis(200));
+    let drilldown = ScriptedDrilldown::new(json!({"rows": []})).with_delay(Duration::from_secs(2));
     let llm = ScriptedLlm::new(
         "test",
         vec![ScriptedResponse::function_call(
@@ -680,7 +679,7 @@ async fn forensic_loop_audits_a_timed_out_drilldown() {
         )],
     );
 
-    let outcome = run_forensic_loop(&llm, &bundle, &drilldown, 6, Duration::from_millis(20))
+    let outcome = run_forensic_loop(&llm, &bundle, &drilldown, 6, Duration::from_millis(300))
         .await
         .unwrap();
 
