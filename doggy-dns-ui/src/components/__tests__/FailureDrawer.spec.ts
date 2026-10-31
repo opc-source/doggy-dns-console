@@ -39,11 +39,15 @@ describe('FailureDrawer', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const wrapper = mount(FailureDrawer, {
-      props: { traceId: 't1' },
+      props: { traceId: 't1', windowMinutes: 60 },
       global: { plugins: [pinia] },
       attachTo: document.body,
     })
     await flushPromises()
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/failures/t1?windowMinutes=60'),
+      expect.anything(),
+    )
     expect(wrapper.text()).toContain('t1')
     expect(wrapper.text()).toContain('upstream forward lookup failed')
     await wrapper.vm.$nextTick()
@@ -60,7 +64,7 @@ describe('FailureDrawer', () => {
     const chat = useChatStore()
     const send = vi.spyOn(chat, 'send').mockResolvedValue(true)
     const wrapper = mount(FailureDrawer, {
-      props: { traceId: 't1' },
+      props: { traceId: 't1', windowMinutes: 60 },
       global: { plugins: [pinia] },
       attachTo: document.body,
     })

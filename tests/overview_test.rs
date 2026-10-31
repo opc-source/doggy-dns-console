@@ -17,8 +17,8 @@ fn config(base_url: String) -> OpenObserveConfig {
         base_url,
         org: "default".to_string(),
         auth: OpenObserveAuth::None,
-        log_stream: "doggy-dns".to_string(),
-        trace_stream: "doggy-dns".to_string(),
+        log_stream: "doggy_dns".to_string(),
+        trace_stream: "doggy_dns".to_string(),
         metric_queries: "dns_queries".to_string(),
         metric_duration: "dns_query_duration_bucket".to_string(),
     }

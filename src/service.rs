@@ -33,8 +33,12 @@ impl ConsoleService {
         self.telemetry.failures(filter).await
     }
 
-    pub async fn failure_detail(&self, trace_id: &str) -> Result<FailureDetail, DataError> {
-        self.telemetry.failure_detail(trace_id).await
+    pub async fn failure_detail(
+        &self,
+        trace_id: &str,
+        filter: FailureFilter,
+    ) -> Result<FailureDetail, DataError> {
+        self.telemetry.failure_detail(trace_id, filter).await
     }
 
     pub async fn instances(&self) -> Result<Vec<Instance>, DataError> {

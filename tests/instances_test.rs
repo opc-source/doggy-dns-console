@@ -118,7 +118,11 @@ impl TelemetrySource for SeenOnly {
     async fn failures(&self, _filter: FailureFilter) -> Result<Vec<FailureGroup>, DataError> {
         Err(DataError::NotConfigured("unused".into()))
     }
-    async fn failure_detail(&self, _trace_id: &str) -> Result<FailureDetail, DataError> {
+    async fn failure_detail(
+        &self,
+        _trace_id: &str,
+        _filter: FailureFilter,
+    ) -> Result<FailureDetail, DataError> {
         Err(DataError::NotConfigured("unused".into()))
     }
     async fn seen_instances(&self, _window: Window) -> Result<Vec<SeenInstance>, DataError> {

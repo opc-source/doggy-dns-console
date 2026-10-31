@@ -23,6 +23,9 @@ fn defaults_are_loopback_and_local_sqlite() {
     assert!(cfg.openobserve_mcp.enabled);
     assert_eq!(cfg.openobserve.metric_queries, "dns_queries");
     assert_eq!(cfg.openobserve.metric_duration, "dns_query_duration_bucket");
+    assert_eq!(cfg.openobserve.log_stream, "doggy_dns");
+    assert_eq!(cfg.openobserve.trace_stream, "doggy_dns");
+    assert_eq!(cfg.model.name, "qwen3.8-flash");
     assert_eq!(cfg.mcp.control_port, 19090);
 }
 
@@ -57,6 +60,67 @@ fn demo_mode_needs_no_model_key_or_openobserve() {
     assert!(cfg.demo);
     assert!(cfg.model.api_key.is_empty());
     assert!(!cfg.openobserve_mcp.enabled);
+}
+
+#[test]
+fn model_config_falls_back_to_openai_and_qwen_env() {
+    let cfg = Config::from_env_with(env(&[
+        ("OPENOBSERVE_BASE_URL", "http://127.0.0.1:5080"),
+        (
+            "OPENAI_BASE_URL",
+            "https://token-plan.example/compatible-mode/v1",
+        ),
+        ("QWEN_API_KEY", "qwen-key"),
+    ]))
+    .unwrap();
+    assert_eq!(
+        cfg.model.base_url.as_deref(),
+        Some("https://token-plan.example/compatible-mode/v1")
+    );
+    assert_eq!(cfg.model.api_key, "qwen-key");
+}
+
+#[test]
+fn model_config_falls_back_to_openai_key() {
+    let cfg = Config::from_env_with(env(&[
+        ("OPENOBSERVE_BASE_URL", "http://127.0.0.1:5080"),
+        ("OPENAI_BASE_URL", "https://openai.example/v1"),
+        ("OPENAI_API_KEY", "openai-key"),
+    ]))
+    .unwrap();
+    assert_eq!(
+        cfg.model.base_url.as_deref(),
+        Some("https://openai.example/v1")
+    );
+    assert_eq!(cfg.model.api_key, "openai-key");
+}
+
+#[test]
+fn qwen_api_key_wins_over_openai_key() {
+    let cfg = Config::from_env_with(env(&[
+        ("OPENOBSERVE_BASE_URL", "http://127.0.0.1:5080"),
+        ("QWEN_API_KEY", "qwen-key"),
+        ("OPENAI_API_KEY", "openai-key"),
+    ]))
+    .unwrap();
+    assert_eq!(cfg.model.api_key, "qwen-key");
+}
+
+#[test]
+fn model_config_prefers_explicit_model_env() {
+    let cfg = Config::from_env_with(env(&[
+        ("OPENOBSERVE_BASE_URL", "http://127.0.0.1:5080"),
+        ("MODEL_BASE_URL", "https://explicit.example/v1"),
+        ("MODEL_API_KEY", "explicit-key"),
+        ("OPENAI_BASE_URL", "https://fallback.example/v1"),
+        ("QWEN_API_KEY", "qwen-key"),
+    ]))
+    .unwrap();
+    assert_eq!(
+        cfg.model.base_url.as_deref(),
+        Some("https://explicit.example/v1")
+    );
+    assert_eq!(cfg.model.api_key, "explicit-key");
 }
 
 #[test]

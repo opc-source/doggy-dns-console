@@ -1,4 +1,5 @@
 pub mod client;
+pub mod failures;
 pub mod normalize;
 pub mod overview;
 pub mod telemetry;

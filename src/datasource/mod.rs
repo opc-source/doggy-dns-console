@@ -48,7 +48,11 @@ impl Clock for FixedClock {
 pub trait TelemetrySource: Send + Sync {
     async fn overview(&self, window: Window) -> Result<Overview, DataError>;
     async fn failures(&self, filter: FailureFilter) -> Result<Vec<FailureGroup>, DataError>;
-    async fn failure_detail(&self, trace_id: &str) -> Result<FailureDetail, DataError>;
+    async fn failure_detail(
+        &self,
+        trace_id: &str,
+        filter: FailureFilter,
+    ) -> Result<FailureDetail, DataError>;
     async fn seen_instances(&self, window: Window) -> Result<Vec<SeenInstance>, DataError>;
 }
 

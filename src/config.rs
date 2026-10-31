@@ -115,9 +115,13 @@ impl Config {
             _ => OpenObserveAuth::None,
         };
 
-        let model_api_key = text("MODEL_API_KEY");
+        let model_api_key = text("MODEL_API_KEY")
+            .or_else(|| text("QWEN_API_KEY"))
+            .or_else(|| text("OPENAI_API_KEY"));
         if !demo && model_api_key.is_none() {
-            return Err(ConfigError::Missing("MODEL_API_KEY"));
+            return Err(ConfigError::Missing(
+                "MODEL_API_KEY, QWEN_API_KEY, or OPENAI_API_KEY",
+            ));
         }
 
         let mcp_endpoints = text("MCP_ENDPOINTS")
@@ -172,9 +176,9 @@ impl Config {
                 org: openobserve_org.clone(),
                 auth: openobserve_auth,
                 log_stream: text("OPENOBSERVE_LOG_STREAM")
-                    .unwrap_or_else(|| "doggy-dns".to_string()),
+                    .unwrap_or_else(|| "doggy_dns".to_string()),
                 trace_stream: text("OPENOBSERVE_TRACE_STREAM")
-                    .unwrap_or_else(|| "doggy-dns".to_string()),
+                    .unwrap_or_else(|| "doggy_dns".to_string()),
                 metric_queries: text("OPENOBSERVE_METRIC_QUERIES")
                     .unwrap_or_else(|| "dns_queries".to_string()),
                 metric_duration: text("OPENOBSERVE_METRIC_DURATION")
@@ -193,8 +197,8 @@ impl Config {
                 timeout: Duration::from_secs(2),
             },
             model: ModelConfig {
-                base_url: text("MODEL_BASE_URL"),
-                name: text("MODEL_NAME").unwrap_or_else(|| "deepseek-chat".to_string()),
+                base_url: text("MODEL_BASE_URL").or_else(|| text("OPENAI_BASE_URL")),
+                name: text("MODEL_NAME").unwrap_or_else(|| "qwen3.8-flash".to_string()),
                 api_key: model_api_key.unwrap_or_default(),
             },
         })
