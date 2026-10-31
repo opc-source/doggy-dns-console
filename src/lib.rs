@@ -4,5 +4,6 @@ pub mod config;
 pub mod datasource;
 pub mod domain;
 pub mod error;
+pub mod evidence;
 pub mod server;
 pub mod service;
