@@ -6,7 +6,9 @@ use async_trait::async_trait;
 
 use crate::datasource::mcp::{McpInstanceSource, Probe};
 use crate::datasource::{Clock, InstanceSource, TelemetrySource};
-use crate::domain::{Instance, InstanceDetail, SeenInstance, Window};
+use crate::domain::{
+    Instance, InstanceDetail, InstanceIdentity, MatchQuality, MatchedInstance, SeenInstance, Window,
+};
 use crate::error::DataError;
 
 /// A node whose newest telemetry sample is older than this is offline.
@@ -150,6 +152,149 @@ impl InstanceSource for MergedInstanceSource {
             Err(error) => Err(error),
         }
     }
+
+    async fn resolve(
+        &self,
+        wanted: &InstanceIdentity,
+    ) -> Result<Option<MatchedInstance>, DataError> {
+        let seen = self.seen().await;
+        let Some((instance, quality)) = match_seen(&seen, wanted) else {
+            return Ok(None);
+        };
+        let sid = wanted
+            .service_instance_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|sid| !sid.is_empty());
+
+        let Some(endpoint) = endpoint_for(&instance, self.control_port) else {
+            // No dialable endpoint: keep the telemetry identity and let
+            // config/runtime remain unavailable downstream.
+            return Ok(Some(MatchedInstance {
+                quality: verify_exact(quality, sid, &instance.id),
+                reachable: false,
+                detail: degraded_detail(instance_from_seen(
+                    &instance,
+                    self.clock.now_ms() - ONLINE_WINDOW_MS,
+                )),
+            }));
+        };
+
+        // Probe the matched instance only, exactly once.
+        let probes = [Probe::discovered(endpoint, &instance.host)];
+        match self.mcp.detail_at(&probes, &instance.id).await {
+            Ok(detail) => {
+                let quality = verify_exact(quality, sid, &detail.instance.id);
+                Ok(Some(MatchedInstance {
+                    quality,
+                    reachable: true,
+                    detail,
+                }))
+            }
+            Err(DataError::NotFound(_)) => Ok(Some(MatchedInstance {
+                quality: verify_exact(quality, sid, &instance.id),
+                reachable: false,
+                detail: degraded_detail(instance_from_seen(
+                    &instance,
+                    self.clock.now_ms() - ONLINE_WINDOW_MS,
+                )),
+            })),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+/// Exact is only credible once the detail identifies the requested process.
+/// Until then the strongest verified fact is the shared host.
+fn verify_exact(quality: MatchQuality, sid: Option<&str>, detail_id: &str) -> MatchQuality {
+    if quality != MatchQuality::Exact {
+        return quality;
+    }
+    match sid {
+        Some(sid) if detail_id.eq_ignore_ascii_case(sid) => MatchQuality::Exact,
+        _ => MatchQuality::Host,
+    }
+}
+
+/// Match a telemetry identity to a seen instance using the documented
+/// strongest-first chain: exact `service_instance_id`, host + ip, host, none.
+pub fn match_seen(
+    seen: &[SeenInstance],
+    identity: &InstanceIdentity,
+) -> Option<(SeenInstance, MatchQuality)> {
+    if let Some(sid) = identity
+        .service_instance_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|sid| !sid.is_empty())
+    {
+        // Exact id, or `<host>-<pid>` whose host published the telemetry row.
+        for instance in seen {
+            if instance.id.eq_ignore_ascii_case(sid) {
+                return Some((instance.clone(), MatchQuality::Exact));
+            }
+        }
+        if let Some((host, pid)) = sid.rsplit_once('-')
+            && pid.parse::<u32>().is_ok()
+        {
+            for instance in seen {
+                if instance.host.eq_ignore_ascii_case(host.trim()) {
+                    return Some((instance.clone(), MatchQuality::Exact));
+                }
+            }
+        }
+    }
+
+    if let (Some(host), Some(ip)) = (
+        identity
+            .host
+            .as_deref()
+            .map(str::trim)
+            .filter(|host| !host.is_empty()),
+        identity
+            .ip
+            .as_deref()
+            .map(str::trim)
+            .filter(|ip| !ip.is_empty()),
+    ) {
+        for instance in seen {
+            if instance.host.eq_ignore_ascii_case(host) && endpoint_matches_ip(instance, ip) {
+                return Some((instance.clone(), MatchQuality::HostIp));
+            }
+        }
+    }
+
+    if let Some(host) = identity
+        .host
+        .as_deref()
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+    {
+        for instance in seen {
+            if instance.host.eq_ignore_ascii_case(host) {
+                return Some((instance.clone(), MatchQuality::Host));
+            }
+        }
+    }
+
+    None
+}
+
+fn endpoint_matches_ip(instance: &SeenInstance, ip: &str) -> bool {
+    let Some(url) = instance
+        .endpoint
+        .as_deref()
+        .and_then(|endpoint| url::Url::parse(endpoint).ok())
+    else {
+        return false;
+    };
+    url.host_str().is_some_and(|endpoint_ip| {
+        trim_brackets(endpoint_ip).eq_ignore_ascii_case(trim_brackets(ip))
+    })
+}
+
+fn trim_brackets(value: &str) -> &str {
+    value.trim_matches(['[', ']'])
 }
 
 fn endpoint_for(instance: &SeenInstance, control_port: u16) -> Option<String> {

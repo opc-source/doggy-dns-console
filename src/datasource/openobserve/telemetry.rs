@@ -11,11 +11,13 @@ use crate::datasource::openobserve::normalize::{
     normalize_failure_group_row, normalize_log_row, normalize_span_row,
 };
 use crate::datasource::openobserve::overview::{
-    failure_query, failure_series_query, p95_query, seen_query, series_query, total_query,
+    failure_query, failure_series_query, p95_query, scoped_failure_query, scoped_total_query,
+    seen_query, series_query, total_query,
 };
 use crate::datasource::{Clock, TelemetrySource};
 use crate::domain::{
-    FailureDetail, FailureFilter, FailureGroup, Overview, SeenInstance, SeriesPoint, Window,
+    FailureDetail, FailureFilter, FailureGroup, MetricCounts, Overview, SeenInstance, SeriesPoint,
+    Window, WindowMetrics,
 };
 use crate::error::DataError;
 
@@ -124,18 +126,94 @@ impl TelemetrySource for OpenObserveTelemetry {
         logs.sort_by_key(|log| log.ts);
 
         let span_sql = trace_spans_query(trace_stream, trace_id, 200);
-        let spans = match self.client.search_traces(&span_sql, start, end, 200).await {
-            Ok(rows) => rows.iter().filter_map(normalize_span_row).collect(),
-            Err(error) => {
-                tracing::warn!(
-                    trace_id = trace_id,
-                    error = %error,
-                    "trace span lookup failed"
-                );
-                Vec::new()
+        let (spans, spans_unavailable) =
+            match self.client.search_traces(&span_sql, start, end, 200).await {
+                Ok(rows) => (rows.iter().filter_map(normalize_span_row).collect(), false),
+                Err(error) => {
+                    tracing::warn!(
+                        trace_id = trace_id,
+                        error = %error,
+                        "trace span lookup failed"
+                    );
+                    (Vec::new(), true)
+                }
+            };
+        Ok(FailureDetail {
+            group,
+            logs,
+            spans,
+            spans_unavailable,
+        })
+    }
+
+    async fn failure_metrics(
+        &self,
+        host: Option<&str>,
+        start_ms: u64,
+        end_ms: u64,
+    ) -> Result<WindowMetrics, DataError> {
+        if end_ms <= start_ms {
+            return Err(DataError::Invalid(
+                "metric window must have a positive duration".to_string(),
+            ));
+        }
+        let start_ms = start_ms as i64;
+        let end_ms = end_ms as i64;
+        let minutes = ((end_ms - start_ms + 59_999) / 60_000).max(1) as u32;
+        let step = u64::from(minutes) * 60;
+        let metric = &self.client.config().metric_queries;
+
+        let global_queries_query = scoped_total_query(metric, minutes, None);
+        let global_failures_query = scoped_failure_query(metric, minutes, None);
+        let (global_queries, global_failures) = tokio::try_join!(
+            self.client
+                .query_promql(&global_queries_query, start_ms, end_ms, step),
+            self.client
+                .query_promql(&global_failures_query, start_ms, end_ms, step),
+        )?;
+        if global_queries.is_empty() {
+            // No series for the unfiltered total means the metric itself is
+            // absent or not scraped. Any count reported from that state would
+            // be invented, so surface it as unavailable evidence instead.
+            return Err(DataError::Upstream(format!(
+                "metric series {metric} unavailable for the requested window"
+            )));
+        }
+
+        let host_counts = match host {
+            Some(host) => {
+                let host_queries_query = scoped_total_query(metric, minutes, Some(host));
+                let host_failures_query = scoped_failure_query(metric, minutes, Some(host));
+                let (host_queries, host_failures) = tokio::try_join!(
+                    self.client
+                        .query_promql(&host_queries_query, start_ms, end_ms, step),
+                    self.client
+                        .query_promql(&host_failures_query, start_ms, end_ms, step),
+                )?;
+                if host_queries.is_empty() {
+                    // An absent host total cannot be told apart from a host
+                    // that handled nothing, so the evidence contract keeps
+                    // host metrics absent rather than inventing a zero.
+                    None
+                } else {
+                    // `host_failures` may still be empty; that is a measured
+                    // zero because the metric is live for this host.
+                    Some(MetricCounts {
+                        queries: sum_last(&host_queries),
+                        failures: sum_last(&host_failures),
+                    })
+                }
             }
+            None => None,
         };
-        Ok(FailureDetail { group, logs, spans })
+
+        Ok(WindowMetrics {
+            host: host_counts,
+            global: MetricCounts {
+                queries: sum_last(&global_queries),
+                failures: sum_last(&global_failures),
+            },
+        })
     }
 
     async fn seen_instances(&self, window: Window) -> Result<Vec<SeenInstance>, DataError> {
@@ -230,6 +308,19 @@ fn last_value(series: &[PromSeries]) -> Option<f64> {
 
 fn last_u64(series: &[PromSeries]) -> Option<u64> {
     last_value(series).map(|value| value.max(0.0).round() as u64)
+}
+
+/// Sums the newest sample of every series.
+///
+/// The metric queries use a step equal to the whole window, so only the last
+/// sample describes the requested range; summing every sample would count the
+/// same trailing `increase` window repeatedly.
+fn sum_last(series: &[PromSeries]) -> u64 {
+    series
+        .iter()
+        .filter_map(|item| item.points.last())
+        .map(|(_, value)| value.max(0.0).round() as u64)
+        .sum()
 }
 
 fn zip_series(volume: &[PromSeries], failures: &[PromSeries]) -> Vec<SeriesPoint> {

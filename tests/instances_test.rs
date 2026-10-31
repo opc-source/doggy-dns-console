@@ -2,11 +2,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use doggy_dns_console::datasource::fixture::FixtureSource;
-use doggy_dns_console::datasource::instances::MergedInstanceSource;
+use doggy_dns_console::datasource::instances::{MergedInstanceSource, match_seen};
 use doggy_dns_console::datasource::mcp::{InstanceTransport, McpInstanceSource};
 use doggy_dns_console::datasource::{FixedClock, InstanceSource, TelemetrySource};
 use doggy_dns_console::domain::{
-    FailureDetail, FailureFilter, FailureGroup, Overview, SeenInstance, Window,
+    FailureDetail, FailureFilter, FailureGroup, InstanceIdentity, MatchQuality, MetricCounts,
+    Overview, SeenInstance, Window,
 };
 use doggy_dns_console::error::DataError;
 use serde_json::{Value, json};
@@ -507,4 +508,292 @@ async fn detail_by_instance_id_probes_the_publishing_host() {
             .iter()
             .all(|call| call.starts_with("http://node-a.internal:19090/mcp "))
     );
+}
+
+#[test]
+fn match_quality_serializes_as_snake_case() {
+    assert_eq!(
+        serde_json::to_string(&MatchQuality::HostIp).unwrap(),
+        "\"host_ip\""
+    );
+    assert_eq!(
+        serde_json::to_string(&MatchQuality::None).unwrap(),
+        "\"none\""
+    );
+}
+
+#[test]
+fn instance_identity_serializes_camel_case_and_skips_absent_fields() {
+    let identity = InstanceIdentity {
+        service_instance_id: Some("host1-4242".to_string()),
+        host: Some("host1".to_string()),
+        ip: None,
+    };
+    let value = serde_json::to_value(&identity).unwrap();
+    assert_eq!(value["serviceInstanceId"], "host1-4242");
+    assert_eq!(value["host"], "host1");
+    assert!(value.get("ip").is_none());
+}
+
+#[test]
+fn match_seen_prefers_exact_sid_match() {
+    let seen = vec![
+        SeenInstance {
+            id: "host1-4242".to_string(),
+            host: "host1".to_string(),
+            last_seen: 1000,
+            endpoint: Some("http://127.0.0.1:8080/mcp".to_string()),
+        },
+        SeenInstance {
+            id: "host2-1234".to_string(),
+            host: "host2".to_string(),
+            last_seen: 2000,
+            endpoint: Some("http://127.0.0.2:8080/mcp".to_string()),
+        },
+    ];
+    let identity = InstanceIdentity {
+        service_instance_id: Some("host1-4242".to_string()),
+        host: Some("host1".to_string()),
+        ip: Some("127.0.0.1".to_string()),
+    };
+    let (matched, quality) = match_seen(&seen, &identity).unwrap();
+    assert_eq!(matched.id, "host1-4242");
+    assert_eq!(quality, MatchQuality::Exact);
+}
+
+#[test]
+fn match_seen_treats_host_pid_sid_as_exact_for_the_publishing_host() {
+    // Telemetry publishes the host as the seen instance id; the process id
+    // only exists in service_instance_id. The pair is a provisional exact
+    // match that resolution verifies against the control plane.
+    let seen = vec![SeenInstance {
+        id: "host1".to_string(),
+        host: "host1".to_string(),
+        last_seen: 1000,
+        endpoint: Some("http://127.0.0.1:8080/mcp".to_string()),
+    }];
+    let identity = InstanceIdentity {
+        service_instance_id: Some("host1-4242".to_string()),
+        host: Some("host1".to_string()),
+        ip: None,
+    };
+    let (matched, quality) = match_seen(&seen, &identity).unwrap();
+    assert_eq!(matched.id, "host1");
+    assert_eq!(quality, MatchQuality::Exact);
+}
+
+#[test]
+fn match_seen_falls_back_to_host_ip() {
+    let seen = vec![SeenInstance {
+        id: "other-9999".to_string(),
+        host: "host1".to_string(),
+        last_seen: 1000,
+        endpoint: Some("http://127.0.0.1:8080/mcp".to_string()),
+    }];
+    let identity = InstanceIdentity {
+        service_instance_id: Some("missing-4242".to_string()),
+        host: Some("host1".to_string()),
+        ip: Some("127.0.0.1".to_string()),
+    };
+    let (matched, quality) = match_seen(&seen, &identity).unwrap();
+    assert_eq!(matched.id, "other-9999");
+    assert_eq!(quality, MatchQuality::HostIp);
+}
+
+#[test]
+fn match_seen_falls_back_to_host() {
+    let seen = vec![SeenInstance {
+        id: "other-9999".to_string(),
+        host: "host1".to_string(),
+        last_seen: 1000,
+        endpoint: Some("http://127.0.0.2:8080/mcp".to_string()),
+    }];
+    let identity = InstanceIdentity {
+        service_instance_id: Some("missing-4242".to_string()),
+        host: Some("host1".to_string()),
+        ip: Some("127.0.0.1".to_string()),
+    };
+    let (matched, quality) = match_seen(&seen, &identity).unwrap();
+    assert_eq!(matched.id, "other-9999");
+    assert_eq!(quality, MatchQuality::Host);
+}
+
+#[test]
+fn match_seen_returns_none_without_a_matching_identity() {
+    let seen = vec![SeenInstance {
+        id: "host1".to_string(),
+        host: "host1".to_string(),
+        last_seen: 1000,
+        endpoint: None,
+    }];
+    assert!(match_seen(&seen, &InstanceIdentity::default()).is_none());
+    let identity = InstanceIdentity {
+        service_instance_id: Some("other-1".to_string()),
+        host: Some("other".to_string()),
+        ip: None,
+    };
+    assert!(match_seen(&seen, &identity).is_none());
+}
+
+#[tokio::test]
+async fn resolve_returns_exact_match_from_seen() {
+    let now = 1_761_436_800_000;
+    let telemetry: Arc<dyn TelemetrySource> = Arc::new(SeenOnly(vec![SeenInstance {
+        id: "node-a".to_string(),
+        host: "node-a".to_string(),
+        last_seen: now,
+        endpoint: Some("http://node-a.internal:19090/mcp".to_string()),
+    }]));
+    let transport = recording();
+    let mcp = Arc::new(McpInstanceSource::new(Vec::new(), transport.clone()));
+    let merged = MergedInstanceSource::new(mcp, telemetry, 19090, Arc::new(FixedClock(now)));
+    let identity = InstanceIdentity {
+        service_instance_id: Some("node-a-42".to_string()),
+        host: Some("node-a".to_string()),
+        ip: None,
+    };
+
+    let matched = merged.resolve(&identity).await.unwrap().unwrap();
+    assert_eq!(matched.quality, MatchQuality::Exact);
+    assert!(matched.reachable);
+    assert_eq!(matched.detail.instance.id, "node-a-42");
+
+    let calls = transport.calls.lock().unwrap();
+    assert!(!calls.is_empty());
+    assert!(
+        calls
+            .iter()
+            .all(|call| call.starts_with("http://node-a.internal:19090/mcp "))
+    );
+}
+
+#[tokio::test]
+async fn resolve_downgrades_exact_when_the_detail_is_a_different_process() {
+    let now = 1_761_436_800_000;
+    let telemetry: Arc<dyn TelemetrySource> = Arc::new(SeenOnly(vec![SeenInstance {
+        id: "dns-node-1".to_string(),
+        host: "dns-node-1".to_string(),
+        last_seen: now,
+        endpoint: None,
+    }]));
+    let mcp = Arc::new(McpInstanceSource::new(
+        Vec::new(),
+        Arc::new(FakeTransport::ok()),
+    ));
+    let merged = MergedInstanceSource::new(mcp, telemetry, 19090, Arc::new(FixedClock(now)));
+    let identity = InstanceIdentity {
+        service_instance_id: Some("dns-node-1-9999".to_string()),
+        host: Some("dns-node-1".to_string()),
+        ip: None,
+    };
+
+    let matched = merged.resolve(&identity).await.unwrap().unwrap();
+    assert_eq!(matched.quality, MatchQuality::Host);
+    assert!(matched.reachable);
+    assert_eq!(matched.detail.instance.id, "dns-node-1");
+}
+
+#[tokio::test]
+async fn resolve_preserves_telemetry_identity_when_the_probe_fails() {
+    let now = 1_761_436_800_000;
+    let telemetry: Arc<dyn TelemetrySource> = Arc::new(SeenOnly(vec![SeenInstance {
+        id: "node-a".to_string(),
+        host: "node-a".to_string(),
+        last_seen: now - 10_000,
+        endpoint: Some("http://10.0.0.9:19090/mcp".to_string()),
+    }]));
+    let mcp = Arc::new(McpInstanceSource::new(
+        Vec::new(),
+        Arc::new(FailingTransport),
+    ));
+    let merged = MergedInstanceSource::new(mcp, telemetry, 19090, Arc::new(FixedClock(now)));
+    let identity = InstanceIdentity {
+        service_instance_id: Some("node-a-42".to_string()),
+        host: Some("node-a".to_string()),
+        ip: Some("10.0.0.9".to_string()),
+    };
+
+    let matched = merged.resolve(&identity).await.unwrap().unwrap();
+    assert_eq!(matched.quality, MatchQuality::Host);
+    assert!(!matched.reachable);
+    assert_eq!(matched.detail.instance.id, "node-a");
+    assert_eq!(matched.detail.instance.host, "node-a");
+    assert!(matched.detail.config_toml.is_none());
+    assert!(matched.detail.plugins.is_empty());
+    assert!(matched.detail.runtime.is_none());
+}
+
+#[tokio::test]
+async fn resolve_does_not_probe_when_nothing_matches() {
+    let now = 1_761_436_800_000;
+    let telemetry: Arc<dyn TelemetrySource> = Arc::new(SeenOnly(vec![SeenInstance {
+        id: "node-a".to_string(),
+        host: "node-a".to_string(),
+        last_seen: now,
+        endpoint: Some("http://node-a.internal:19090/mcp".to_string()),
+    }]));
+    let transport = recording();
+    let mcp = Arc::new(McpInstanceSource::new(Vec::new(), transport.clone()));
+    let merged = MergedInstanceSource::new(mcp, telemetry, 19090, Arc::new(FixedClock(now)));
+    let identity = InstanceIdentity {
+        service_instance_id: Some("other-1".to_string()),
+        host: Some("other".to_string()),
+        ip: None,
+    };
+
+    assert!(merged.resolve(&identity).await.unwrap().is_none());
+    assert!(transport.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn fixture_failure_metrics_reports_host_and_global_counts() {
+    let fixture = FixtureSource::new(Arc::new(FixedClock(1_761_436_800_000)));
+    let metrics = fixture
+        .failure_metrics(Some("dns-node-1"), 0, 600_000)
+        .await
+        .unwrap();
+    assert_eq!(
+        metrics.host,
+        Some(MetricCounts {
+            queries: 120,
+            failures: 12
+        })
+    );
+    assert_eq!(
+        metrics.global,
+        MetricCounts {
+            queries: 4800,
+            failures: 421
+        }
+    );
+
+    let global_only = fixture.failure_metrics(None, 0, 600_000).await.unwrap();
+    assert!(global_only.host.is_none());
+}
+
+#[tokio::test]
+async fn failure_metrics_defaults_to_not_configured() {
+    let telemetry = SeenOnly(Vec::new());
+    let result = telemetry.failure_metrics(None, 0, 1).await;
+    assert!(matches!(result, Err(DataError::NotConfigured(_))));
+}
+
+#[tokio::test]
+async fn default_resolve_requires_the_detail_to_be_the_requested_process() {
+    let fixture = FixtureSource::new(Arc::new(FixedClock(1_761_436_800_000)));
+    let identity = InstanceIdentity {
+        service_instance_id: Some("dns-node-1".to_string()),
+        host: Some("dns-node-1".to_string()),
+        ip: None,
+    };
+    let matched = fixture.resolve(&identity).await.unwrap().unwrap();
+    assert_eq!(matched.quality, MatchQuality::Exact);
+    assert!(matched.reachable);
+
+    let different = InstanceIdentity {
+        service_instance_id: Some("dns-node-1-9999".to_string()),
+        host: Some("dns-node-1".to_string()),
+        ip: None,
+    };
+    assert!(fixture.resolve(&different).await.unwrap().is_none());
 }

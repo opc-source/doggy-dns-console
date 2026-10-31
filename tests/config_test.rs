@@ -166,3 +166,48 @@ fn openobserve_mcp_token_overrides_basic_auth() {
         doggy_dns_console::config::OpenObserveAuth::Bearer(ref t) if t == "mcp-token"
     ));
 }
+
+#[test]
+fn analysis_config_defaults_are_secure() {
+    let cfg = Config::from_env_with(env(&[("CONSOLE_DEMO", "1")])).unwrap();
+    assert!(cfg.analysis.enabled);
+    assert_eq!(cfg.analysis.retention_days, 30);
+    assert_eq!(cfg.analysis.rate_per_minute, 10);
+    assert_eq!(cfg.analysis.timeout, std::time::Duration::from_secs(60));
+    assert_eq!(cfg.analysis.max_tool_calls, 6);
+}
+
+#[test]
+fn analysis_config_reads_overrides() {
+    let cfg = Config::from_env_with(env(&[
+        ("CONSOLE_DEMO", "1"),
+        ("CONSOLE_ANALYSIS_ENABLED", "false"),
+        ("CONSOLE_ANALYSIS_RETENTION_DAYS", "7"),
+        ("CONSOLE_ANALYSIS_RATE_PER_MIN", "2"),
+        ("CONSOLE_ANALYSIS_TIMEOUT_SECONDS", "15"),
+        ("CONSOLE_ANALYSIS_MAX_TOOL_CALLS", "3"),
+    ]))
+    .unwrap();
+    assert!(!cfg.analysis.enabled);
+    assert_eq!(cfg.analysis.retention_days, 7);
+    assert_eq!(cfg.analysis.rate_per_minute, 2);
+    assert_eq!(cfg.analysis.timeout, std::time::Duration::from_secs(15));
+    assert_eq!(cfg.analysis.max_tool_calls, 3);
+}
+
+#[test]
+fn analysis_config_rejects_invalid_values() {
+    for (key, value) in [
+        ("CONSOLE_ANALYSIS_ENABLED", "sometimes"),
+        ("CONSOLE_ANALYSIS_RETENTION_DAYS", "0"),
+        ("CONSOLE_ANALYSIS_RATE_PER_MIN", "abc"),
+        ("CONSOLE_ANALYSIS_TIMEOUT_SECONDS", "0"),
+        ("CONSOLE_ANALYSIS_MAX_TOOL_CALLS", "0"),
+    ] {
+        let err = Config::from_env_with(env(&[("CONSOLE_DEMO", "1"), (key, value)])).unwrap_err();
+        assert!(
+            err.to_string().contains(key),
+            "unexpected error for {key}={value}: {err}"
+        );
+    }
+}

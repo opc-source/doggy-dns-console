@@ -257,6 +257,45 @@ async fn failure_detail_group_matches_the_list_entry() {
     assert_eq!(detail.logs[2].message, "dns query completed");
     assert_eq!(detail.spans.len(), 2);
     assert_eq!(detail.spans[1].name, "dns.error");
+    assert!(!detail.spans_unavailable);
+}
+
+#[tokio::test]
+async fn failure_detail_marks_spans_unavailable_when_trace_search_fails() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/default/_search"))
+        .and(query_param("type", "logs"))
+        .and(body_string_contains("GROUP BY trace_id"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            include_str!("fixtures/openobserve_failure_groups.json"),
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/default/_search"))
+        .and(query_param("type", "logs"))
+        .and(body_string_contains("SELECT * FROM"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            include_str!("fixtures/openobserve_failures_flat.json"),
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/default/_search"))
+        .and(query_param("type", "traces"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    let detail = telemetry(&server)
+        .failure_detail("t1", window_filter(50))
+        .await
+        .unwrap();
+    assert!(detail.spans.is_empty());
+    assert!(detail.spans_unavailable);
 }
 
 #[tokio::test]

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use crate::analysis::service::AnalysisService;
 use crate::datasource::{InstanceSource, openobserve::OpenObserveClient};
 use crate::error::DataError;
 use crate::service::ConsoleService;
@@ -25,4 +26,7 @@ pub struct ApiState {
     pub openobserve_health: Arc<dyn Probe>,
     pub openobserve_mcp_health: Option<Arc<dyn Probe>>,
     pub model_configured: bool,
+    /// `None` in demo mode or when analysis is disabled/misconfigured; the
+    /// analysis endpoints then answer 503.
+    pub analysis: Option<Arc<AnalysisService>>,
 }

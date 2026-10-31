@@ -50,6 +50,15 @@ pub struct ModelConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct AnalysisConfig {
+    pub enabled: bool,
+    pub retention_days: u64,
+    pub rate_per_minute: u64,
+    pub timeout: Duration,
+    pub max_tool_calls: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct Config {
     pub addr: SocketAddr,
     pub db_url: String,
@@ -61,6 +70,7 @@ pub struct Config {
     pub openobserve_mcp: OpenObserveMcpConfig,
     pub mcp: McpConfig,
     pub model: ModelConfig,
+    pub analysis: AnalysisConfig,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -69,6 +79,49 @@ pub enum ConfigError {
     Missing(&'static str),
     #[error("invalid {name}: {value}")]
     Invalid { name: &'static str, value: String },
+}
+
+impl AnalysisConfig {
+    fn from_get(get: &impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
+        let enabled = match get("CONSOLE_ANALYSIS_ENABLED").as_deref() {
+            None => true,
+            Some(value) => parse_bool(value).ok_or_else(|| ConfigError::Invalid {
+                name: "CONSOLE_ANALYSIS_ENABLED",
+                value: value.to_string(),
+            })?,
+        };
+        let retention_days = parse_u64(
+            "CONSOLE_ANALYSIS_RETENTION_DAYS",
+            get("CONSOLE_ANALYSIS_RETENTION_DAYS"),
+            30,
+            1,
+        )?;
+        let rate_per_minute = parse_u64(
+            "CONSOLE_ANALYSIS_RATE_PER_MIN",
+            get("CONSOLE_ANALYSIS_RATE_PER_MIN"),
+            10,
+            1,
+        )?;
+        let timeout_secs = parse_u64(
+            "CONSOLE_ANALYSIS_TIMEOUT_SECONDS",
+            get("CONSOLE_ANALYSIS_TIMEOUT_SECONDS"),
+            60,
+            1,
+        )?;
+        let max_tool_calls = parse_u64(
+            "CONSOLE_ANALYSIS_MAX_TOOL_CALLS",
+            get("CONSOLE_ANALYSIS_MAX_TOOL_CALLS"),
+            6,
+            1,
+        )?;
+        Ok(Self {
+            enabled,
+            retention_days,
+            rate_per_minute,
+            timeout: Duration::from_secs(timeout_secs),
+            max_tool_calls,
+        })
+    }
 }
 
 impl Config {
@@ -162,6 +215,8 @@ impl Config {
             None => openobserve_auth.clone(),
         };
 
+        let analysis = AnalysisConfig::from_get(&text)?;
+
         Ok(Self {
             addr,
             db_url: text("CONSOLE_DB").unwrap_or_else(|| "sqlite:data/console.db".to_string()),
@@ -201,8 +256,30 @@ impl Config {
                 name: text("MODEL_NAME").unwrap_or_else(|| "qwen3.8-flash".to_string()),
                 api_key: model_api_key.unwrap_or_default(),
             },
+            analysis,
         })
     }
+}
+
+fn parse_u64(
+    name: &'static str,
+    raw: Option<String>,
+    default: u64,
+    minimum: u64,
+) -> Result<u64, ConfigError> {
+    let value = match raw {
+        Some(value) => value
+            .parse::<u64>()
+            .map_err(|_| ConfigError::Invalid { name, value })?,
+        None => default,
+    };
+    if value < minimum {
+        return Err(ConfigError::Invalid {
+            name,
+            value: format!("{value} (must be at least {minimum})"),
+        });
+    }
+    Ok(value)
 }
 
 fn parse_bool(value: &str) -> Option<bool> {

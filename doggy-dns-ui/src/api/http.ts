@@ -29,7 +29,12 @@ export async function apiGet<T>(path: string): Promise<T> {
   return body as T
 }
 
-export async function apiPost<T>(path: string, body: unknown): Promise<T> {
+export interface ApiResponse<T> {
+  status: number
+  body: T
+}
+
+export async function apiPostWithStatus<T>(path: string, body: unknown): Promise<ApiResponse<T>> {
   const response = await fetch(path, {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/json' },
@@ -50,5 +55,9 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
       error?.message ?? `request failed with ${response.status}`,
     )
   }
-  return parsed as T
+  return { status: response.status, body: parsed as T }
+}
+
+export async function apiPost<T>(path: string, body: unknown): Promise<T> {
+  return (await apiPostWithStatus<T>(path, body)).body
 }

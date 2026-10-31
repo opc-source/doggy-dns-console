@@ -1,5 +1,7 @@
+pub mod analysis;
 pub mod connections;
 pub mod error;
+pub mod evidence;
 pub mod failures;
 pub mod health;
 pub mod instances;
@@ -7,7 +9,7 @@ pub mod overview;
 pub mod state;
 
 use axum::Router;
-use axum::routing::get;
+use axum::routing::{get, post};
 
 use crate::api::state::ApiState;
 
@@ -21,6 +23,12 @@ pub fn business_router(state: ApiState) -> Router {
         .route("/api/overview", get(overview::overview))
         .route("/api/failures", get(failures::failures))
         .route("/api/failures/{trace_id}", get(failures::failure_detail))
+        .route("/api/failures/{trace_id}/evidence", get(evidence::evidence))
+        .route(
+            "/api/failures/{trace_id}/analysis",
+            post(analysis::start).get(analysis::status),
+        )
+        .route("/api/analysis/markers", get(analysis::markers))
         .route("/api/instances", get(instances::instances))
         .route("/api/instances/{id}", get(instances::instance_detail))
         .route("/api/connections", get(connections::connections))
