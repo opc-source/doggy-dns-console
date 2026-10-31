@@ -41,6 +41,8 @@ fn promql_label_value(value: &str) -> String {
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
 }
 
 pub fn p95_query(metric: &str, window: Window) -> String {

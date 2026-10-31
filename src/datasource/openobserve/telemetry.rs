@@ -171,6 +171,14 @@ impl TelemetrySource for OpenObserveTelemetry {
             self.client
                 .query_promql(&global_failures_query, start_ms, end_ms, step),
         )?;
+        if global_queries.is_empty() {
+            // No series for the unfiltered total means the metric itself is
+            // absent or not scraped. Any count reported from that state would
+            // be invented, so surface it as unavailable evidence instead.
+            return Err(DataError::Upstream(format!(
+                "metric series {metric} unavailable for the requested window"
+            )));
+        }
 
         let host_counts = match host {
             Some(host) => {
@@ -182,11 +190,14 @@ impl TelemetrySource for OpenObserveTelemetry {
                     self.client
                         .query_promql(&host_failures_query, start_ms, end_ms, step),
                 )?;
-                if host_queries.is_empty() && host_failures.is_empty() {
-                    // No series for this host: the evidence contract keeps
+                if host_queries.is_empty() {
+                    // An absent host total cannot be told apart from a host
+                    // that handled nothing, so the evidence contract keeps
                     // host metrics absent rather than inventing a zero.
                     None
                 } else {
+                    // `host_failures` may still be empty; that is a measured
+                    // zero because the metric is live for this host.
                     Some(MetricCounts {
                         queries: sum_last(&host_queries),
                         failures: sum_last(&host_failures),

@@ -40,6 +40,13 @@ fn matrix(values: serde_json::Value, labels: serde_json::Value) -> ResponseTempl
     }))
 }
 
+fn empty_matrix() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "status": "success",
+        "data": { "resultType": "matrix", "result": [] }
+    }))
+}
+
 async fn mount(server: &MockServer, query: &str, body: ResponseTemplate) {
     Mock::given(method("GET"))
         .and(path("/api/default/prometheus/api/v1/query_range"))
@@ -332,12 +339,170 @@ async fn failure_metrics_propagates_promql_failures() {
     assert!(matches!(error, DataError::Upstream(_)));
 }
 
+#[tokio::test]
+async fn failure_metrics_reports_unavailable_when_global_metric_is_absent() {
+    let server = MockServer::start().await;
+    let start = 1_761_436_800_000_i64;
+    let end = start + 30 * 60_000;
+    mount(
+        &server,
+        &scoped_total_query("dns_queries", 30, None),
+        empty_matrix(),
+    )
+    .await;
+    mount(
+        &server,
+        &scoped_failure_query("dns_queries", 30, None),
+        empty_matrix(),
+    )
+    .await;
+
+    let error = telemetry(&server)
+        .failure_metrics(None, start as u64, end as u64)
+        .await
+        .unwrap_err();
+
+    // An absent unfiltered series means the metric is not scraped; reporting
+    // 0/0 from that state would invent data.
+    assert!(matches!(error, DataError::Upstream(_)));
+}
+
+#[tokio::test]
+async fn failure_metrics_keeps_measured_zero_when_only_failure_series_is_empty() {
+    let server = MockServer::start().await;
+    let start = 1_761_436_800_000_i64;
+    let end = start + 30 * 60_000;
+    mount(
+        &server,
+        &scoped_total_query("dns_queries", 30, None),
+        matrix(serde_json::json!([[ts(end), "120"]]), serde_json::json!({})),
+    )
+    .await;
+    mount(
+        &server,
+        &scoped_failure_query("dns_queries", 30, None),
+        empty_matrix(),
+    )
+    .await;
+
+    let metrics = telemetry(&server)
+        .failure_metrics(None, start as u64, end as u64)
+        .await
+        .unwrap();
+
+    // A live total with no failure-coded series is a measured zero, not a
+    // missing metric.
+    assert_eq!(
+        metrics.global,
+        MetricCounts {
+            queries: 120,
+            failures: 0
+        }
+    );
+    assert_eq!(metrics.host, None);
+}
+
+#[tokio::test]
+async fn failure_metrics_omits_host_counts_when_host_series_is_absent() {
+    let server = MockServer::start().await;
+    let start = 1_761_436_800_000_i64;
+    let end = start + 30 * 60_000;
+    mount(
+        &server,
+        &scoped_total_query("dns_queries", 30, None),
+        matrix(serde_json::json!([[ts(end), "120"]]), serde_json::json!({})),
+    )
+    .await;
+    mount(
+        &server,
+        &scoped_failure_query("dns_queries", 30, None),
+        matrix(serde_json::json!([[ts(end), "7"]]), serde_json::json!({})),
+    )
+    .await;
+    mount(
+        &server,
+        &scoped_total_query("dns_queries", 30, Some("dns-node-1")),
+        empty_matrix(),
+    )
+    .await;
+    mount(
+        &server,
+        &scoped_failure_query("dns_queries", 30, Some("dns-node-1")),
+        empty_matrix(),
+    )
+    .await;
+
+    let metrics = telemetry(&server)
+        .failure_metrics(Some("dns-node-1"), start as u64, end as u64)
+        .await
+        .unwrap();
+
+    assert_eq!(metrics.host, None);
+    assert_eq!(
+        metrics.global,
+        MetricCounts {
+            queries: 120,
+            failures: 7
+        }
+    );
+}
+
+#[tokio::test]
+async fn failure_metrics_omits_host_counts_when_host_total_is_absent() {
+    let server = MockServer::start().await;
+    let start = 1_761_436_800_000_i64;
+    let end = start + 30 * 60_000;
+    mount(
+        &server,
+        &scoped_total_query("dns_queries", 30, None),
+        matrix(serde_json::json!([[ts(end), "120"]]), serde_json::json!({})),
+    )
+    .await;
+    mount(
+        &server,
+        &scoped_failure_query("dns_queries", 30, None),
+        matrix(serde_json::json!([[ts(end), "7"]]), serde_json::json!({})),
+    )
+    .await;
+    mount(
+        &server,
+        &scoped_total_query("dns_queries", 30, Some("dns-node-1")),
+        empty_matrix(),
+    )
+    .await;
+    mount(
+        &server,
+        &scoped_failure_query("dns_queries", 30, Some("dns-node-1")),
+        matrix(
+            serde_json::json!([[ts(end), "2"]]),
+            serde_json::json!({ "host_name": "dns-node-1" }),
+        ),
+    )
+    .await;
+
+    let metrics = telemetry(&server)
+        .failure_metrics(Some("dns-node-1"), start as u64, end as u64)
+        .await
+        .unwrap();
+
+    // An inconsistent backend must not produce a host count from a missing
+    // total series.
+    assert_eq!(metrics.host, None);
+    assert_eq!(
+        metrics.global,
+        MetricCounts {
+            queries: 120,
+            failures: 7
+        }
+    );
+}
+
 #[test]
 fn scoped_metric_queries_escape_host_label_values() {
-    let query = scoped_total_query("dns_queries", 30, Some("node\"a\\b"));
+    let query = scoped_total_query("dns_queries", 30, Some("node\"a\\b\r\nx\ty"));
 
     assert_eq!(
         query,
-        r#"sum(increase(dns_queries{host_name="node\"a\\b"}[30m]))"#
+        r#"sum(increase(dns_queries{host_name="node\"a\\b\r\nx\ty"}[30m]))"#
     );
 }
