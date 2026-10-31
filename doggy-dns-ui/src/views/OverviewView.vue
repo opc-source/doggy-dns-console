@@ -110,6 +110,11 @@ const errorMessage = computed(() => {
       </div>
     </section>
 
-    <FailureDrawer v-if="ui.drawerTraceId" :trace-id="ui.drawerTraceId" @close="ui.closeFailure()" />
+    <FailureDrawer
+      v-if="ui.drawerTraceId"
+      :trace-id="ui.drawerTraceId"
+      :window-minutes="windowMinutes"
+      @close="ui.closeFailure()"
+    />
   </div>
 </template>

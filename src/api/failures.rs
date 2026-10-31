@@ -20,18 +20,26 @@ pub async fn failures(
     State(state): State<ApiState>,
     Query(query): Query<FailureQuery>,
 ) -> Result<Json<Vec<FailureGroup>>, ApiError> {
-    let filter = FailureFilter {
-        window: Window::new(query.window_minutes.unwrap_or(60)),
-        domain: query.domain,
-        response_code: query.response_code,
-        limit: query.limit.unwrap_or(50).clamp(1, 200),
-    };
+    let filter = filter_from(query, 50);
     Ok(Json(state.service.failures(filter).await?))
 }
 
 pub async fn failure_detail(
     State(state): State<ApiState>,
     Path(trace_id): Path<String>,
+    Query(query): Query<FailureQuery>,
 ) -> Result<Json<FailureDetail>, ApiError> {
-    Ok(Json(state.service.failure_detail(&trace_id).await?))
+    // The detail must aggregate over the same window and filters as the list
+    // entry it was opened from; the limit is irrelevant to a single trace.
+    let filter = filter_from(query, 1);
+    Ok(Json(state.service.failure_detail(&trace_id, filter).await?))
+}
+
+fn filter_from(query: FailureQuery, default_limit: usize) -> FailureFilter {
+    FailureFilter {
+        window: Window::new(query.window_minutes.unwrap_or(60)),
+        domain: query.domain,
+        response_code: query.response_code,
+        limit: query.limit.unwrap_or(default_limit).clamp(1, 200),
+    }
 }

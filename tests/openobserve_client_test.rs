@@ -9,8 +9,8 @@ fn test_config(base_url: String) -> OpenObserveConfig {
             username: "u".to_string(),
             password: "p".to_string(),
         },
-        log_stream: "doggy-dns".to_string(),
-        trace_stream: "doggy-dns".to_string(),
+        log_stream: "doggy_dns".to_string(),
+        trace_stream: "doggy_dns".to_string(),
         metric_queries: "dns_queries".to_string(),
         metric_duration: "dns_query_duration_bucket".to_string(),
     }
@@ -32,7 +32,7 @@ async fn search_logs_posts_sql_to_org_endpoint_with_basic_auth() {
 
     let client = OpenObserveClient::new(test_config(server.uri())).unwrap();
     let rows = client
-        .search_logs("SELECT * FROM \"doggy-dns\"", 1_000, 2_000, 10)
+        .search_logs("SELECT * FROM \"doggy_dns\"", 1_000, 2_000, 10)
         .await
         .unwrap();
     assert_eq!(rows[0]["trace_id"], "t1");

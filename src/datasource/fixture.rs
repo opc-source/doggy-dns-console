@@ -121,24 +121,44 @@ impl TelemetrySource for FixtureSource {
 
     async fn failures(&self, filter: FailureFilter) -> Result<Vec<FailureGroup>, DataError> {
         let mut groups = self.groups();
+        groups.retain(|group| !group.response_code.eq_ignore_ascii_case("NXDOMAIN"));
         if let Some(domain) = &filter.domain {
             groups.retain(|group| group.query.contains(domain.as_str()));
         }
         if let Some(code) = &filter.response_code {
             groups.retain(|group| group.response_code.eq_ignore_ascii_case(code));
-        } else {
-            groups.retain(|group| group.response_code != "NXDOMAIN");
         }
-        groups.truncate(filter.limit.min(200));
+        groups.sort_by(|left, right| {
+            right
+                .count
+                .cmp(&left.count)
+                .then_with(|| right.last_seen.cmp(&left.last_seen))
+        });
+        groups.truncate(filter.limit.clamp(1, 200));
         Ok(groups)
     }
 
-    async fn failure_detail(&self, trace_id: &str) -> Result<FailureDetail, DataError> {
+    async fn failure_detail(
+        &self,
+        trace_id: &str,
+        filter: FailureFilter,
+    ) -> Result<FailureDetail, DataError> {
         let group = self
             .groups()
             .into_iter()
-            .find(|group| group.trace_id.as_deref() == Some(trace_id))
-            .ok_or_else(|| DataError::NotFound(format!("trace {trace_id}")))?;
+            .find(|group| {
+                group.trace_id.as_deref() == Some(trace_id)
+                    && !group.response_code.eq_ignore_ascii_case("NXDOMAIN")
+                    && filter
+                        .domain
+                        .as_ref()
+                        .is_none_or(|domain| group.query.contains(domain.as_str()))
+                    && filter
+                        .response_code
+                        .as_ref()
+                        .is_none_or(|code| group.response_code.eq_ignore_ascii_case(code))
+            })
+            .ok_or_else(|| DataError::NotFound(format!("failure trace {trace_id}")))?;
         let now = self.clock.now_ms();
         let logs = vec![LogRecord {
             ts: now - 60 * 1000,

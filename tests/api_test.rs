@@ -38,8 +38,12 @@ impl TelemetrySource for RecordingTelemetry {
         self.limit.store(filter.limit, Ordering::SeqCst);
         self.inner.failures(filter).await
     }
-    async fn failure_detail(&self, trace_id: &str) -> Result<FailureDetail, DataError> {
-        self.inner.failure_detail(trace_id).await
+    async fn failure_detail(
+        &self,
+        trace_id: &str,
+        filter: FailureFilter,
+    ) -> Result<FailureDetail, DataError> {
+        self.inner.failure_detail(trace_id, filter).await
     }
     async fn seen_instances(&self, window: Window) -> Result<Vec<SeenInstance>, DataError> {
         self.inner.seen_instances(window).await
@@ -58,7 +62,11 @@ impl TelemetrySource for FailingTelemetry {
         Err(DataError::Upstream("connection refused".to_string()))
     }
 
-    async fn failure_detail(&self, _trace_id: &str) -> Result<FailureDetail, DataError> {
+    async fn failure_detail(
+        &self,
+        _trace_id: &str,
+        _filter: FailureFilter,
+    ) -> Result<FailureDetail, DataError> {
         Err(DataError::Upstream("connection refused".to_string()))
     }
 

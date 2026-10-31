@@ -33,7 +33,16 @@ async fn fixture_failure_detail_contains_trace_evidence() {
         .await
         .unwrap();
     let trace_id = groups[0].trace_id.clone().unwrap();
-    let detail = service().failure_detail(&trace_id).await.unwrap();
+    let detail = service()
+        .failure_detail(
+            &trace_id,
+            FailureFilter {
+                window: Window::new(60),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
     assert_eq!(detail.group.trace_id.as_deref(), Some(trace_id.as_str()));
     assert!(!detail.logs.is_empty());
     assert!(!detail.spans.is_empty());

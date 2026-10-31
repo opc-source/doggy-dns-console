@@ -29,6 +29,9 @@ pub struct FailureArgs {
 #[serde(rename_all = "camelCase")]
 pub struct TraceArgs {
     pub trace_id: String,
+    pub window_minutes: Option<u32>,
+    pub domain: Option<String>,
+    pub response_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -72,7 +75,13 @@ pub async fn get_failure_detail(
     service: &ConsoleService,
     args: TraceArgs,
 ) -> Result<Value, DataError> {
-    let detail = service.failure_detail(&args.trace_id).await?;
+    let filter = FailureFilter {
+        window: Window::new(args.window_minutes.unwrap_or(60)),
+        domain: args.domain,
+        response_code: args.response_code,
+        limit: 1,
+    };
+    let detail = service.failure_detail(&args.trace_id, filter).await?;
     serde_json::to_value(detail).map_err(|error| DataError::Invalid(error.to_string()))
 }
 
@@ -106,7 +115,7 @@ pub fn build_tools(service: Arc<ConsoleService>) -> Vec<Arc<dyn Tool>> {
         Arc::new(
             StatefulTool::new(
                 "list_failures",
-                "List DNS failures (SERVFAIL / REFUSED / FORMERR / timeouts) grouped by trace_id. NXDOMAIN is excluded unless responseCode=NXDOMAIN is explicitly requested.",
+                "List DNS failures (SERVFAIL / REFUSED / FORMERR / timeouts) grouped by trace_id. NXDOMAIN is a normal negative answer and is always excluded.",
                 state.clone(),
                 tool_list_failures,
             )
@@ -117,7 +126,7 @@ pub fn build_tools(service: Arc<ConsoleService>) -> Vec<Arc<dyn Tool>> {
         Arc::new(
             StatefulTool::new(
                 "get_failure_detail",
-                "Return the logs and spans for one trace_id so the analysis can cite real evidence.",
+                "Return the failure group, logs and spans for one trace_id so the analysis can cite real evidence. Pass the same windowMinutes/domain/responseCode used by list_failures.",
                 state.clone(),
                 tool_failure_detail,
             )

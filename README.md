@@ -29,7 +29,8 @@ cd .. && CONSOLE_DEMO=1 cargo run
 
 1. Copy `.env.example` to `.env` and fill it in.
 2. Set `OPENOBSERVE_BASE_URL`, `OPENOBSERVE_ORG`, and either `OPENOBSERVE_USER`/`OPENOBSERVE_PASSWORD` or `OPENOBSERVE_TOKEN`.
-3. Set `MODEL_*` for any OpenAI-compatible endpoint.
+3. Set `MODEL_*` for any OpenAI-compatible endpoint. `MODEL_BASE_URL` falls back to
+   `OPENAI_BASE_URL`, and `MODEL_API_KEY` falls back to `QWEN_API_KEY` then `OPENAI_API_KEY`.
 4. Instances are discovered automatically from OpenObserve telemetry: doggy-dns
    exports `host.name`, `doggy_dns.ip_addr` and `doggy_dns.control.port`, which
    the console joins into `http://{ip_addr}:{control_port}/mcp`. Nodes that
@@ -85,5 +86,5 @@ backend and the Vite dev server automatically.
 - Read-only: no config writes, no DNS mutations, no alert management.
 - SQLite stores only agent sessions (`data/console.db`); telemetry is not copied locally.
 - Success rate excludes `NXDOMAIN`; a window with zero queries shows `—`.
-- `NXDOMAIN` detail rows are not exported by doggy-dns (they are `info!`); aggregate counts
-  still come from metrics.
+- `NXDOMAIN` is a normal negative answer, never a failure: the failure list and failure
+  detail always exclude it, even when `responseCode=NXDOMAIN` is requested.

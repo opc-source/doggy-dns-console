@@ -5,11 +5,12 @@ import { Copy, Sparkles, X } from '@lucide/vue'
 import { useFailureDetail } from '@/composables/useFailures'
 import { useChatStore } from '@/stores/chat'
 
-const props = defineProps<{ traceId: string }>()
+const props = defineProps<{ traceId: string; windowMinutes: number }>()
 const emit = defineEmits<{ close: [] }>()
 const chat = useChatStore()
 const trace = toRef(props, 'traceId')
-const { detail, error, loading } = useFailureDetail(trace)
+const windowMinutes = toRef(props, 'windowMinutes')
+const { detail, error, loading } = useFailureDetail(trace, windowMinutes)
 const copied = ref(false)
 const closeButton = ref<HTMLButtonElement | null>(null)
 const dialog = ref<HTMLElement | null>(null)

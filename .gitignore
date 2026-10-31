@@ -23,3 +23,7 @@ lcov.info
 
 # Local console data
 /data/
+
+# Local environment (contains secrets)
+.env
+.env.local

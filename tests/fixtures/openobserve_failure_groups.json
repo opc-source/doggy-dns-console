@@ -1,0 +1,5 @@
+{"hits":[
+  {"trace_id":"t1","count":2,"first_seen":1761436800000000,"last_seen":1761436860000000,"queries":["a.example.","a.example."],"qtype":"A","host_name":"dns-node-1","authority":"forward[8.8.8.8:53]","response_code":"SERVFAIL","errors":["timeout","timeout"]},
+  {"trace_id":"t2","count":1,"first_seen":1761436920000000,"last_seen":1761436920000000,"queries":["b.example."],"qtype":"AAAA","host_name":"dns-node-2","authority":null,"response_code":"REFUSED","errors":["policy"]},
+  {"trace_id":"t4","count":1,"first_seen":1761437100000000,"last_seen":1761437100000000,"queries":["d.example."],"qtype":"A","host_name":"dns-node-3","authority":"forward[1.1.1.1:53]","response_code":"SERVFAIL","errors":["refused"]}
+]}

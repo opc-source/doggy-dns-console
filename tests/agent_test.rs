@@ -31,8 +31,12 @@ impl TelemetrySource for CountingTelemetry {
     async fn failures(&self, filter: FailureFilter) -> Result<Vec<FailureGroup>, DataError> {
         self.inner.failures(filter).await
     }
-    async fn failure_detail(&self, trace_id: &str) -> Result<FailureDetail, DataError> {
-        self.inner.failure_detail(trace_id).await
+    async fn failure_detail(
+        &self,
+        trace_id: &str,
+        filter: FailureFilter,
+    ) -> Result<FailureDetail, DataError> {
+        self.inner.failure_detail(trace_id, filter).await
     }
     async fn seen_instances(&self, window: Window) -> Result<Vec<SeenInstance>, DataError> {
         self.inner.seen_instances(window).await
