@@ -177,7 +177,9 @@ bodies) and is used only to badge the failure list.
 version), filter, evidence fingerprint, model, prompt version,
 status, verdict category/confidence, result JSON, tool-call audit JSON, error
 and timestamps. Raw logs and spans are **never** persisted. Retention defaults
-to 30 days and is pruned at startup and once a day.
+to 30 days and is pruned at startup and once a day. At startup, `queued` or
+`running` rows left behind by a previous process are marked `failed` as
+interrupted, so no status request waits on a job nothing owns.
 
 ### Configuration
 

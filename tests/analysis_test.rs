@@ -172,6 +172,37 @@ async fn validation_rejects_observed_finding_without_evidence() {
 }
 
 #[tokio::test]
+async fn validation_rejects_observed_finding_citing_only_a_tool_result() {
+    let bundle = fixture_bundle().await;
+    let mut index = EvidenceIndex::from_bundle(&bundle);
+    index.insert("tool:1:result");
+
+    let mut result = valid_result(&bundle.logs.items[0].id);
+    result.findings[0].evidence_ids = vec!["tool:1:result".to_string()];
+    result.findings[0].claim = "the drill-down returned an upstream timeout".to_string();
+
+    assert_eq!(
+        validate_result(&result, &index),
+        Err(ValidationError::ObservedFindingWithoutBundleEvidence(
+            "the drill-down returned an upstream timeout".to_string()
+        ))
+    );
+}
+
+#[tokio::test]
+async fn validation_accepts_observed_finding_citing_span_evidence() {
+    let bundle = fixture_bundle().await;
+    let span_id = bundle.spans.items[0].id.clone();
+
+    let mut result = valid_result(&bundle.logs.items[0].id);
+    result.findings[0].evidence_ids = vec![span_id.clone()];
+
+    let index = EvidenceIndex::from_bundle(&bundle);
+
+    assert_eq!(validate_result(&result, &index), Ok(()));
+}
+
+#[tokio::test]
 async fn validation_rejects_nxdomain_in_summary() {
     let bundle = fixture_bundle().await;
     let mut result = valid_result(&bundle.logs.items[0].id);
@@ -360,6 +391,15 @@ fn first_log_id(bundle: &EvidenceBundle) -> String {
     bundle.logs.items.first().unwrap().id.clone()
 }
 
+/// A valid result that cites a bundle log plus a drill-down result. An
+/// `observed` finding needs the bundle citation (spec §6.2); the tool ID proves
+/// drill-down IDs are accepted when bundled evidence backs them.
+fn drilled_result(bundle: &EvidenceBundle, tool_id: &str) -> AnalysisResult {
+    let mut result = valid_result(&first_log_id(bundle));
+    result.findings[0].evidence_ids.push(tool_id.to_string());
+    result
+}
+
 fn function_responses(request: &adk_rust::LlmRequest) -> Vec<Value> {
     request
         .contents
@@ -422,7 +462,7 @@ async fn forensic_loop_runs_a_drilldown_then_submits() {
                 "openobserve_search_sql",
                 json!({"query": "SELECT * FROM logs"}),
             ),
-            submit(&valid_result("tool:1:result")),
+            submit(&drilled_result(&bundle, "tool:1:result")),
         ],
     );
 
@@ -460,7 +500,7 @@ async fn forensic_loop_rejects_the_seventh_drilldown_call() {
             )
         })
         .collect();
-    script.push(submit(&valid_result("tool:6:result")));
+    script.push(submit(&drilled_result(&bundle, "tool:6:result")));
     let llm = ScriptedLlm::new("test", script);
 
     let outcome = run_forensic_loop(&llm, &bundle, &drilldown, 6, Duration::from_secs(60))
@@ -510,7 +550,7 @@ async fn forensic_loop_rejects_duplicate_canonical_arguments() {
                 "openobserve_search_sql",
                 json!({"limit": 5, "query": "SELECT 1"}),
             ),
-            submit(&valid_result("tool:1:result")),
+            submit(&drilled_result(&bundle, "tool:1:result")),
         ],
     );
 
@@ -621,7 +661,7 @@ async fn forensic_loop_caps_tool_result_summaries() {
         "test",
         vec![
             ScriptedResponse::function_call("openobserve_search_sql", json!({"query": "SELECT 1"})),
-            submit(&valid_result("tool:1:result")),
+            submit(&drilled_result(&bundle, "tool:1:result")),
         ],
     );
 
@@ -649,7 +689,7 @@ async fn forensic_loop_audits_tool_errors() {
         "test",
         vec![
             ScriptedResponse::function_call("openobserve_search_sql", json!({"query": "SELECT 1"})),
-            submit(&valid_result("tool:1:result")),
+            submit(&drilled_result(&bundle, "tool:1:result")),
         ],
     );
 
@@ -1007,6 +1047,64 @@ async fn store_markers_return_the_latest_attempt_per_trace() {
     assert_eq!(b.id, "b-1");
 
     assert!(store.markers(&[]).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn store_fail_interrupted_fails_only_in_flight_rows() {
+    let store = SqliteInvestigationStore::memory().await.unwrap();
+    let filter = sample_filter();
+    let input = NewInvestigation {
+        trace_id: "trace-a",
+        filter: &filter,
+        evidence_fingerprint: EVIDENCE_FINGERPRINT,
+        model: MODEL,
+        prompt_version: PROMPT_VERSION,
+    };
+    let queued = store.create_attempt(&input).await.unwrap();
+    let succeeded = succeeded_record("done-1", "trace-b", 1, 1_761_436_800);
+    store.insert(&succeeded).await.unwrap();
+
+    let affected = store
+        .fail_interrupted("interrupted by a previous console process")
+        .await
+        .unwrap();
+
+    assert_eq!(affected, 1);
+    let interrupted = store.get(&queued.id).await.unwrap().unwrap();
+    assert_eq!(interrupted.status, InvestigationStatus::Failed);
+    assert_eq!(
+        interrupted.error.as_deref(),
+        Some("interrupted by a previous console process")
+    );
+    assert!(interrupted.finished_at.is_some());
+    assert_eq!(store.get("done-1").await.unwrap(), Some(succeeded));
+
+    // A second sweep has nothing left to fail.
+    assert_eq!(store.fail_interrupted("again").await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn store_finish_rejects_an_already_terminal_row() {
+    let store = SqliteInvestigationStore::memory().await.unwrap();
+    let record = succeeded_record("inv-1", "trace-a", 1, 1_761_436_800);
+    store.insert(&record).await.unwrap();
+
+    let outcome = InvestigationOutcome {
+        status: InvestigationStatus::Failed,
+        result: None,
+        tool_calls: Vec::new(),
+        error: Some("late failure".to_string()),
+    };
+    let error = store.finish("inv-1", &outcome).await.unwrap_err();
+
+    assert!(
+        error.contains("already terminal") || error.contains("unknown"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(store.get("inv-1").await.unwrap(), Some(record));
+
+    // An unknown id produces the same guard.
+    assert!(store.finish("missing", &outcome).await.is_err());
 }
 
 #[tokio::test]
@@ -1422,7 +1520,7 @@ async fn service_reuses_the_in_flight_attempt_for_the_same_key() {
         "test",
         vec![
             ScriptedResponse::function_call("openobserve_search_sql", json!({"query": "SELECT 1"})),
-            submit(&valid_result("tool:1:result")),
+            submit(&drilled_result(&bundle, "tool:1:result")),
         ],
     ));
     let service = Arc::new(AnalysisService::new(

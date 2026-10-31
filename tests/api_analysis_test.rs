@@ -254,8 +254,15 @@ async fn post_starts_a_job_and_get_reports_the_snapshot() {
     assert_eq!(snapshot["toolCallCount"], 0);
     assert_eq!(snapshot["model"], "test");
     assert_eq!(snapshot["promptVersion"], PROMPT_VERSION);
-    assert!(snapshot["startedAt"].as_i64().unwrap() > 0);
-    assert!(snapshot["finishedAt"].as_i64().is_some());
+    let started_at = snapshot["startedAt"].as_i64().unwrap();
+    let finished_at = snapshot["finishedAt"].as_i64().unwrap();
+    // The wire unit is epoch milliseconds, like evidence timestamps.
+    assert!(
+        started_at >= 1_000_000_000_000,
+        "startedAt must be milliseconds, got {started_at}"
+    );
+    assert_eq!(finished_at % 1000, 0, "seconds leaked onto the wire");
+    assert!(finished_at >= started_at);
     assert_eq!(snapshot["filter"]["windowMinutes"], 60);
     assert_eq!(snapshot["error"], serde_json::Value::Null);
     assert_eq!(snapshot["result"]["status"], "ok");
@@ -362,6 +369,14 @@ async fn markers_return_latest_attempts_and_skip_unknown_traces() {
     assert_eq!(markers[0]["status"], "succeeded");
     assert_eq!(markers[0]["attempt"], 1);
     assert!(markers[0].get("result").is_none());
+    // Markers use the same millisecond unit as the snapshot API.
+    let created_at = markers[0]["createdAt"].as_i64().unwrap();
+    let finished_at = markers[0]["finishedAt"].as_i64().unwrap();
+    assert!(
+        created_at >= 1_000_000_000_000,
+        "createdAt must be milliseconds, got {created_at}"
+    );
+    assert_eq!(finished_at % 1000, 0, "seconds leaked onto the wire");
 }
 
 #[tokio::test]

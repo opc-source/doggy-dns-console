@@ -18,6 +18,10 @@ pub enum ValidationError {
     UnknownEvidenceId(String),
     #[error("observed finding has no evidence ID: {0}")]
     ObservedFindingWithoutEvidence(String),
+    #[error(
+        "observed finding cites no log, span, config, metric or plugin ID: {0}. Cite bundle evidence or mark the finding inferred"
+    )]
+    ObservedFindingWithoutBundleEvidence(String),
     #[error("an ok result requires at least one observed finding")]
     NoObservedFindings,
     #[error("insufficient_evidence must list notDeterminable gaps")]
@@ -95,7 +99,8 @@ impl EvidenceIndex {
 ///
 /// Rules, in order (later rules may assume earlier ones passed):
 /// 1. every cited evidence ID exists;
-/// 2. every observed finding cites at least one evidence ID;
+/// 2. every observed finding cites at least one evidence ID, and that ID comes
+///    from the bundle (log/span/config/metric/plugin), not only a tool result;
 /// 3. NXDOMAIN never appears as a failure cause;
 /// 4. `insufficient_evidence` lists gaps;
 /// 5. `ok` has at least one observed finding;
@@ -115,6 +120,16 @@ pub fn validate_result(
     for finding in &result.findings {
         if finding.kind == FindingKind::Observed && finding.evidence_ids.is_empty() {
             return Err(ValidationError::ObservedFindingWithoutEvidence(
+                finding.claim.clone(),
+            ));
+        }
+        if finding.kind == FindingKind::Observed
+            && !finding
+                .evidence_ids
+                .iter()
+                .any(|id| is_bundle_reference(id))
+        {
+            return Err(ValidationError::ObservedFindingWithoutBundleEvidence(
                 finding.claim.clone(),
             ));
         }
@@ -160,4 +175,13 @@ pub fn validate_result(
 
 fn mentions_nxdomain(text: &str) -> bool {
     text.to_ascii_lowercase().contains("nxdomain")
+}
+
+/// Whether `id` names evidence from the bundle rather than a tool result.
+/// `tool:` IDs are citable but cannot alone support an `observed` finding
+/// (spec §6.2).
+fn is_bundle_reference(id: &str) -> bool {
+    ["log:", "span:", "config:", "metric:", "plugin:"]
+        .iter()
+        .any(|prefix| id.starts_with(prefix))
 }

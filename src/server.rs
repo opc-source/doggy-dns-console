@@ -192,6 +192,20 @@ async fn build_analysis(
             return None;
         }
     };
+    // Nothing owns a queued/running row left by a previous process; fail them
+    // so status endpoints and polling drawers never wait on a dead job.
+    match store
+        .fail_interrupted("interrupted by a previous console process")
+        .await
+    {
+        Ok(failed) if failed > 0 => {
+            tracing::warn!(failed, "interrupted failure investigations marked failed");
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(%error, "interrupted failure investigation sweep failed");
+        }
+    }
     let service = Arc::new(AnalysisService::new(
         Arc::new(store),
         config.analysis.clone(),

@@ -60,6 +60,10 @@ pub struct MarkerQuery {
 }
 
 /// One persisted analysis attempt as the API presents it.
+///
+/// `startedAt`/`finishedAt` are epoch **milliseconds**, the same wire unit as
+/// evidence timestamps; the store keeps seconds and the conversion happens
+/// only here.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalysisSnapshot {
@@ -92,8 +96,8 @@ impl From<&InvestigationRecord> for AnalysisSnapshot {
             status: record.status,
             attempt: record.attempt,
             tool_call_count: record.tool_calls.len(),
-            started_at: record.created_at,
-            finished_at: record.finished_at,
+            started_at: to_millis(record.created_at),
+            finished_at: record.finished_at.map(to_millis),
             filter: record.filter.clone(),
             evidence_fingerprint: record.evidence_fingerprint.clone(),
             model: record.model.clone(),
@@ -105,6 +109,41 @@ impl From<&InvestigationRecord> for AnalysisSnapshot {
             error: record.error.clone(),
         }
     }
+}
+
+/// One lightweight investigation marker as the API presents it. Timestamps use
+/// the same epoch-millisecond unit as [`AnalysisSnapshot`].
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisMarker {
+    pub id: String,
+    pub trace_id: String,
+    pub status: InvestigationStatus,
+    pub verdict_category: Option<VerdictCategory>,
+    pub confidence: Option<Confidence>,
+    pub attempt: u32,
+    pub created_at: i64,
+    pub finished_at: Option<i64>,
+}
+
+impl From<InvestigationMarker> for AnalysisMarker {
+    fn from(marker: InvestigationMarker) -> Self {
+        Self {
+            id: marker.id,
+            trace_id: marker.trace_id,
+            status: marker.status,
+            verdict_category: marker.verdict_category,
+            confidence: marker.confidence,
+            attempt: marker.attempt,
+            created_at: to_millis(marker.created_at),
+            finished_at: marker.finished_at.map(to_millis),
+        }
+    }
+}
+
+/// Converts the store's epoch seconds to the API's epoch milliseconds.
+fn to_millis(seconds: i64) -> i64 {
+    seconds.saturating_mul(1000)
 }
 
 fn serialize_filter<S>(filter: &FailureFilter, serializer: S) -> Result<S::Ok, S::Error>
@@ -167,13 +206,20 @@ pub async fn status(
 pub async fn markers(
     State(state): State<ApiState>,
     Query(query): Query<MarkerQuery>,
-) -> Result<Json<Vec<InvestigationMarker>>, ApiError> {
+) -> Result<Json<Vec<AnalysisMarker>>, ApiError> {
     let trace_ids = parse_trace_ids(query.trace_ids.as_deref())?;
     if trace_ids.is_empty() {
         return Ok(Json(Vec::new()));
     }
     let analysis = analysis_service(&state)?;
-    Ok(Json(analysis.markers(&trace_ids).await?))
+    Ok(Json(
+        analysis
+            .markers(&trace_ids)
+            .await?
+            .into_iter()
+            .map(AnalysisMarker::from)
+            .collect(),
+    ))
 }
 
 fn analysis_service(state: &ApiState) -> Result<&Arc<AnalysisService>, ApiError> {

@@ -195,6 +195,25 @@ impl SqliteInvestigationStore {
     pub async fn memory() -> Result<Self, String> {
         Self::new("sqlite::memory:").await
     }
+
+    /// Fails every attempt left `queued` or `running` by a previous process.
+    ///
+    /// Nothing owns an in-flight row after a restart, so without this sweep the
+    /// status endpoints would report `running` until a new attempt for the same
+    /// key crosses the stale threshold. Returns the number of rows changed.
+    pub async fn fail_interrupted(&self, reason: &str) -> Result<u64, String> {
+        let finished_at = now_seconds()?;
+        let updated = sqlx::query(
+            "UPDATE failure_investigations SET status = 'failed', error = ?, finished_at = ? \
+             WHERE status IN ('queued', 'running')",
+        )
+        .bind(reason)
+        .bind(finished_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| error.to_string())?;
+        Ok(updated.rows_affected())
+    }
 }
 
 #[async_trait]
@@ -347,7 +366,7 @@ impl InvestigationStore for SqliteInvestigationStore {
         let updated = sqlx::query(
             "UPDATE failure_investigations SET status = ?, verdict_category = ?, \
              confidence = ?, result_json = ?, tool_calls_json = ?, error = ?, finished_at = ? \
-             WHERE id = ?",
+             WHERE id = ? AND status IN ('queued', 'running')",
         )
         .bind(outcome.status.as_str())
         .bind(verdict.map(|verdict| verdict.category.as_str()))
@@ -361,7 +380,9 @@ impl InvestigationStore for SqliteInvestigationStore {
         .await
         .map_err(|error| error.to_string())?;
         if updated.rows_affected() == 0 {
-            return Err(format!("unknown investigation {id}"));
+            return Err(format!(
+                "investigation {id} is unknown or already terminal; refusing to finish it"
+            ));
         }
         Ok(())
     }
