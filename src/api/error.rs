@@ -21,6 +21,7 @@ impl IntoResponse for ApiError {
             DataError::Invalid(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
             DataError::NotConfigured(_) => (StatusCode::SERVICE_UNAVAILABLE, "not_configured"),
             DataError::RateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+            DataError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         };
         (
             status,

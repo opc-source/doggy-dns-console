@@ -1083,3 +1083,513 @@ async fn store_persists_only_structured_tool_audits() {
     let stored: AnalysisResult = serde_json::from_str(&result_json.unwrap()).unwrap();
     assert_eq!(stored, result);
 }
+
+// --------------------------------------------------------- analysis service
+
+use adk_rust::AdkError;
+use doggy_dns_console::analysis::service::{AnalysisService, AnalysisStart};
+use doggy_dns_console::config::AnalysisConfig;
+use doggy_dns_console::error::DataError;
+
+fn analysis_config(rate_per_minute: u64) -> AnalysisConfig {
+    AnalysisConfig {
+        enabled: true,
+        retention_days: 30,
+        rate_per_minute,
+        timeout: Duration::from_secs(5),
+        max_tool_calls: 6,
+    }
+}
+
+/// A bundle that keeps the fixture evidence but answers to another trace, so
+/// one service can exercise several cache keys without them colliding.
+fn bundle_named(bundle: &EvidenceBundle, trace_id: &str) -> EvidenceBundle {
+    let mut clone = bundle.clone();
+    clone.trace_id = trace_id.to_string();
+    clone
+}
+
+fn succeeded_seed(
+    id: &str,
+    trace_id: &str,
+    fingerprint: &str,
+    model: &str,
+    prompt_version: &str,
+    attempt: u32,
+    created_at: i64,
+) -> InvestigationRecord {
+    InvestigationRecord {
+        id: id.to_string(),
+        trace_id: trace_id.to_string(),
+        filter: sample_filter(),
+        evidence_fingerprint: fingerprint.to_string(),
+        model: model.to_string(),
+        prompt_version: prompt_version.to_string(),
+        status: InvestigationStatus::Succeeded,
+        verdict_category: Some(VerdictCategory::UpstreamTimeout),
+        confidence: Some(Confidence::Medium),
+        result: Some(valid_result("log:1761436740000:00f067aa0ba902b7:deadbeef")),
+        tool_calls: vec![sample_audit()],
+        error: None,
+        attempt,
+        created_at,
+        finished_at: Some(created_at + 5),
+    }
+}
+
+async fn wait_terminal(service: &AnalysisService, trace_id: &str, id: &str) -> InvestigationRecord {
+    for _ in 0..300 {
+        let record = service.attempt(trace_id, Some(id)).await.unwrap();
+        if matches!(
+            record.status,
+            InvestigationStatus::Succeeded
+                | InvestigationStatus::Failed
+                | InvestigationStatus::Invalid
+        ) {
+            return record;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("analysis did not reach a terminal state");
+}
+
+async fn memory_store() -> Arc<dyn InvestigationStore> {
+    Arc::new(SqliteInvestigationStore::memory().await.unwrap())
+}
+
+#[tokio::test]
+async fn service_runs_an_analysis_to_completion() {
+    let bundle = fixture_bundle().await;
+    let filter = FailureFilter::default();
+    let store = Arc::new(SqliteInvestigationStore::memory().await.unwrap());
+    let llm = Arc::new(ScriptedLlm::new(
+        "test",
+        vec![submit(&valid_result(&first_log_id(&bundle)))],
+    ));
+    let service = Arc::new(AnalysisService::new(
+        store.clone(),
+        analysis_config(10),
+        Some(llm),
+        None,
+    ));
+
+    let start = service.start(&bundle, &filter, false).await.unwrap();
+    let queued = start.record().clone();
+    assert!(matches!(start, AnalysisStart::Started(_)));
+    assert!(!queued.id.is_empty());
+    assert_eq!(queued.status, InvestigationStatus::Queued);
+    assert_eq!(queued.attempt, 1);
+
+    let finished = wait_terminal(&service, &bundle.trace_id, &queued.id).await;
+    assert_eq!(finished.status, InvestigationStatus::Succeeded);
+    let result = finished.result.as_ref().unwrap();
+    assert_eq!(result.status, AnalysisStatus::Ok);
+    assert_eq!(finished.attempt, 1);
+    assert!(finished.finished_at.is_some());
+    assert_eq!(finished.error, None);
+
+    let fetched = service
+        .attempt(&bundle.trace_id, Some(&queued.id))
+        .await
+        .unwrap();
+    assert_eq!(fetched, finished);
+    let latest = service.attempt(&bundle.trace_id, None).await.unwrap();
+    assert_eq!(latest, finished);
+}
+
+#[tokio::test]
+async fn service_returns_a_cache_hit_without_calling_the_model() {
+    let bundle = fixture_bundle().await;
+    let filter = FailureFilter::default();
+    let store: Arc<dyn InvestigationStore> = memory_store().await;
+    let llm = Arc::new(ScriptedLlm::new(
+        "test",
+        vec![submit(&valid_result(&first_log_id(&bundle)))],
+    ));
+    let service = Arc::new(AnalysisService::new(
+        store,
+        analysis_config(10),
+        Some(llm.clone()),
+        None,
+    ));
+
+    let first = service.start(&bundle, &filter, false).await.unwrap();
+    let first_id = first.analysis_id().to_string();
+    wait_terminal(&service, &bundle.trace_id, &first_id).await;
+    let calls = llm.requests().len();
+    assert_eq!(calls, 1);
+
+    let second = service.start(&bundle, &filter, false).await.unwrap();
+    assert!(matches!(second, AnalysisStart::Cached(_)));
+    assert_eq!(second.analysis_id(), first_id);
+    assert_eq!(llm.requests().len(), calls);
+}
+
+#[tokio::test]
+async fn service_force_creates_a_new_attempt() {
+    let bundle = fixture_bundle().await;
+    let filter = FailureFilter::default();
+    let store: Arc<dyn InvestigationStore> = memory_store().await;
+    let llm = Arc::new(ScriptedLlm::new(
+        "test",
+        vec![
+            submit(&valid_result(&first_log_id(&bundle))),
+            submit(&valid_result(&first_log_id(&bundle))),
+        ],
+    ));
+    let service = Arc::new(AnalysisService::new(
+        store,
+        analysis_config(10),
+        Some(llm.clone()),
+        None,
+    ));
+
+    let first = service.start(&bundle, &filter, false).await.unwrap();
+    let first_id = first.analysis_id().to_string();
+    wait_terminal(&service, &bundle.trace_id, &first_id).await;
+
+    let forced = service.start(&bundle, &filter, true).await.unwrap();
+    let forced_record = forced.record().clone();
+    assert!(matches!(forced, AnalysisStart::Started(_)));
+    assert_ne!(forced_record.id, first_id);
+    assert_eq!(forced_record.attempt, 2);
+    assert_eq!(forced_record.status, InvestigationStatus::Queued);
+    wait_terminal(&service, &bundle.trace_id, &forced_record.id).await;
+    assert_eq!(llm.requests().len(), 2);
+
+    let cached = service.start(&bundle, &filter, false).await.unwrap();
+    assert!(matches!(cached, AnalysisStart::Cached(_)));
+    assert_eq!(cached.record().attempt, 2);
+    assert_eq!(cached.analysis_id(), forced_record.id);
+}
+
+#[tokio::test]
+async fn service_keys_the_cache_by_fingerprint_model_and_prompt_version() {
+    let base = fixture_bundle().await;
+    let filter = FailureFilter::default();
+    let store: Arc<dyn InvestigationStore> = memory_store().await;
+    let llm = Arc::new(ScriptedLlm::new(
+        "test",
+        vec![
+            submit(&valid_result(&first_log_id(&base))),
+            submit(&valid_result(&first_log_id(&base))),
+            submit(&valid_result(&first_log_id(&base))),
+        ],
+    ));
+    let service = Arc::new(AnalysisService::new(
+        store.clone(),
+        analysis_config(10),
+        Some(llm.clone()),
+        None,
+    ));
+
+    // Exact key: cached.
+    let exact = bundle_named(&base, "trace-exact-key");
+    store
+        .insert(&succeeded_seed(
+            "seed-exact",
+            &exact.trace_id,
+            &exact.fingerprint,
+            "test",
+            PROMPT_VERSION,
+            1,
+            1_761_436_800,
+        ))
+        .await
+        .unwrap();
+    let cached = service.start(&exact, &filter, false).await.unwrap();
+    assert!(matches!(cached, AnalysisStart::Cached(_)));
+    assert_eq!(cached.analysis_id(), "seed-exact");
+
+    // One mismatched component at a time must miss the cache.
+    let fingerprint = bundle_named(&base, "trace-fingerprint-key");
+    store
+        .insert(&succeeded_seed(
+            "seed-fingerprint",
+            &fingerprint.trace_id,
+            "sha256:some-other-evidence",
+            "test",
+            PROMPT_VERSION,
+            1,
+            1_761_436_800,
+        ))
+        .await
+        .unwrap();
+    let started = service.start(&fingerprint, &filter, false).await.unwrap();
+    assert!(matches!(started, AnalysisStart::Started(_)));
+    assert_ne!(started.analysis_id(), "seed-fingerprint");
+    wait_terminal(&service, &fingerprint.trace_id, started.analysis_id()).await;
+
+    let model = bundle_named(&base, "trace-model-key");
+    store
+        .insert(&succeeded_seed(
+            "seed-model",
+            &model.trace_id,
+            &model.fingerprint,
+            "some-other-model",
+            PROMPT_VERSION,
+            1,
+            1_761_436_800,
+        ))
+        .await
+        .unwrap();
+    let started = service.start(&model, &filter, false).await.unwrap();
+    assert!(matches!(started, AnalysisStart::Started(_)));
+    assert_ne!(started.analysis_id(), "seed-model");
+    wait_terminal(&service, &model.trace_id, started.analysis_id()).await;
+
+    let prompt = bundle_named(&base, "trace-prompt-key");
+    store
+        .insert(&succeeded_seed(
+            "seed-prompt",
+            &prompt.trace_id,
+            &prompt.fingerprint,
+            "test",
+            "failure-analyst/v0",
+            1,
+            1_761_436_800,
+        ))
+        .await
+        .unwrap();
+    let started = service.start(&prompt, &filter, false).await.unwrap();
+    assert!(matches!(started, AnalysisStart::Started(_)));
+    assert_ne!(started.analysis_id(), "seed-prompt");
+    wait_terminal(&service, &prompt.trace_id, started.analysis_id()).await;
+
+    assert_eq!(llm.requests().len(), 3);
+}
+
+#[tokio::test]
+async fn service_reuses_the_in_flight_attempt_for_the_same_key() {
+    let bundle = fixture_bundle().await;
+    let filter = FailureFilter::default();
+    let store: Arc<dyn InvestigationStore> = memory_store().await;
+    let drilldown = Arc::new(
+        ScriptedDrilldown::new(json!({"rows": []})).with_delay(Duration::from_millis(300)),
+    );
+    let llm = Arc::new(ScriptedLlm::new(
+        "test",
+        vec![
+            ScriptedResponse::function_call("openobserve_search_sql", json!({"query": "SELECT 1"})),
+            submit(&valid_result("tool:1:result")),
+        ],
+    ));
+    let service = Arc::new(AnalysisService::new(
+        store.clone(),
+        analysis_config(10),
+        Some(llm.clone()),
+        Some(drilldown),
+    ));
+
+    let first = service.start(&bundle, &filter, false).await.unwrap();
+    let first_id = first.analysis_id().to_string();
+    assert!(matches!(first, AnalysisStart::Started(_)));
+
+    let second = service.start(&bundle, &filter, false).await.unwrap();
+    assert!(matches!(second, AnalysisStart::InFlight(_)));
+    assert_eq!(second.analysis_id(), first_id);
+    assert!(matches!(
+        second.record().status,
+        InvestigationStatus::Queued | InvestigationStatus::Running
+    ));
+
+    let finished = wait_terminal(&service, &bundle.trace_id, &first_id).await;
+    assert_eq!(finished.status, InvestigationStatus::Succeeded);
+    assert_eq!(
+        store
+            .latest(&bundle.trace_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .attempt,
+        1
+    );
+    // One drill-down turn plus one submission turn: no second job ran.
+    assert_eq!(llm.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn service_rate_limits_new_jobs_but_not_cache_hits() {
+    let bundle = fixture_bundle().await;
+    let filter = FailureFilter::default();
+    let store: Arc<dyn InvestigationStore> = memory_store().await;
+    let llm = Arc::new(ScriptedLlm::new(
+        "test",
+        vec![submit(&valid_result(&first_log_id(&bundle)))],
+    ));
+    let service = Arc::new(AnalysisService::new(
+        store,
+        analysis_config(1),
+        Some(llm),
+        None,
+    ));
+
+    let first = service.start(&bundle, &filter, false).await.unwrap();
+    let first_id = first.analysis_id().to_string();
+    wait_terminal(&service, &bundle.trace_id, &first_id).await;
+
+    let cached = service.start(&bundle, &filter, false).await.unwrap();
+    assert!(matches!(cached, AnalysisStart::Cached(_)));
+
+    let mut other = bundle.clone();
+    other.trace_id = "trace-rate-other".to_string();
+    other.fingerprint = "sha256:rate-other".to_string();
+    match service.start(&other, &filter, false).await {
+        Err(DataError::RateLimited(message)) => {
+            assert!(message.contains("rate limit"), "{message}");
+        }
+        other => panic!("expected a rate limit, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn service_requires_enabled_analysis_and_a_model() {
+    let bundle = fixture_bundle().await;
+    let filter = FailureFilter::default();
+
+    let mut disabled = analysis_config(10);
+    disabled.enabled = false;
+    let service = Arc::new(AnalysisService::new(
+        memory_store().await,
+        disabled,
+        Some(Arc::new(ScriptedLlm::new(
+            "test",
+            Vec::<ScriptedResponse>::new(),
+        ))),
+        None,
+    ));
+    match service.start(&bundle, &filter, false).await {
+        Err(DataError::NotConfigured(message)) => {
+            assert!(message.contains("disabled"), "{message}");
+        }
+        other => panic!("expected NotConfigured for disabled analysis, got {other:?}"),
+    }
+
+    let service = Arc::new(AnalysisService::new(
+        memory_store().await,
+        analysis_config(10),
+        None,
+        None,
+    ));
+    match service.start(&bundle, &filter, false).await {
+        Err(DataError::NotConfigured(message)) => {
+            assert!(message.contains("model"), "{message}");
+        }
+        other => panic!("expected NotConfigured for a missing model, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn service_reports_invalid_submissions_as_invalid() {
+    let bundle = fixture_bundle().await;
+    let filter = FailureFilter::default();
+    let store: Arc<dyn InvestigationStore> = memory_store().await;
+    let drilldown = Arc::new(ScriptedDrilldown::new(json!({"rows": []})));
+    let llm = Arc::new(ScriptedLlm::new(
+        "test",
+        vec![
+            ScriptedResponse::function_call("openobserve_search_sql", json!({"query": "SELECT 1"})),
+            submit(&valid_result("log:missing-id")),
+            submit(&valid_result("log:missing-id")),
+        ],
+    ));
+    let service = Arc::new(AnalysisService::new(
+        store,
+        analysis_config(10),
+        Some(llm),
+        Some(drilldown),
+    ));
+
+    let start = service.start(&bundle, &filter, false).await.unwrap();
+    let id = start.analysis_id().to_string();
+    let record = wait_terminal(&service, &bundle.trace_id, &id).await;
+
+    assert_eq!(record.status, InvestigationStatus::Invalid);
+    assert!(record.result.is_none());
+    let error = record.error.as_deref().unwrap();
+    assert!(error.contains("missing-id"), "{error}");
+    // Tool audits survive an invalid terminal job.
+    assert_eq!(record.tool_calls.len(), 1);
+    assert_eq!(record.tool_calls[0].name, "openobserve_search_sql");
+}
+
+#[tokio::test]
+async fn service_keeps_a_missing_model_result_as_a_successful_unavailable() {
+    let bundle = fixture_bundle().await;
+    let filter = FailureFilter::default();
+    let store: Arc<dyn InvestigationStore> = memory_store().await;
+    let llm = Arc::new(ScriptedLlm::new(
+        "test",
+        vec![ScriptedResponse::error(AdkError::model("upstream 500"))],
+    ));
+    let service = Arc::new(AnalysisService::new(
+        store,
+        analysis_config(10),
+        Some(llm),
+        None,
+    ));
+
+    let start = service.start(&bundle, &filter, false).await.unwrap();
+    let id = start.analysis_id().to_string();
+    let record = wait_terminal(&service, &bundle.trace_id, &id).await;
+
+    assert_eq!(record.status, InvestigationStatus::Succeeded);
+    let result = record.result.as_ref().unwrap();
+    assert_eq!(result.status, AnalysisStatus::Unavailable);
+    assert!(!result.not_determinable.is_empty());
+    assert_eq!(record.error, None);
+}
+
+#[tokio::test]
+async fn service_recovers_a_stale_running_attempt() {
+    let bundle = fixture_bundle().await;
+    let filter = FailureFilter::default();
+    let store = Arc::new(SqliteInvestigationStore::memory().await.unwrap());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    let mut stale = succeeded_seed(
+        "inv-stale",
+        &bundle.trace_id,
+        &bundle.fingerprint,
+        "test",
+        PROMPT_VERSION,
+        1,
+        now - 10_000,
+    );
+    stale.status = InvestigationStatus::Running;
+    stale.verdict_category = None;
+    stale.confidence = None;
+    stale.result = None;
+    stale.tool_calls.clear();
+    stale.finished_at = None;
+    store.insert(&stale).await.unwrap();
+
+    let llm = Arc::new(ScriptedLlm::new(
+        "test",
+        vec![submit(&valid_result(&first_log_id(&bundle)))],
+    ));
+    let service = Arc::new(AnalysisService::new(
+        store.clone(),
+        analysis_config(10),
+        Some(llm),
+        None,
+    ));
+
+    let start = service.start(&bundle, &filter, false).await.unwrap();
+    let fresh = start.record().clone();
+    assert!(matches!(start, AnalysisStart::Started(_)));
+    assert_eq!(fresh.attempt, 2);
+
+    let recovered = store.get("inv-stale").await.unwrap().unwrap();
+    assert_eq!(recovered.status, InvestigationStatus::Failed);
+    assert_eq!(
+        recovered.error.as_deref(),
+        Some("stale running attempt recovered")
+    );
+
+    let finished = wait_terminal(&service, &bundle.trace_id, &fresh.id).await;
+    assert_eq!(finished.status, InvestigationStatus::Succeeded);
+}

@@ -9,6 +9,7 @@
 pub mod agent;
 pub mod drilldown;
 pub mod prompt;
+pub mod service;
 pub mod store;
 pub mod validate;
 
