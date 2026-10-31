@@ -54,8 +54,8 @@ fn id_allocator_builds_documented_ids() {
     assert_eq!(ids.plugin("inst-1", 0), "plugin:inst-1:0");
     assert_eq!(ids.config("inst-1"), "config:inst-1");
     assert_eq!(
-        ids.metric("host-a", "queries", 10, 20),
-        "metric:host-a:queries:10-20"
+        ids.metric("host", "host-a:queries", 10, 20),
+        "metric:host:host-a:queries:10-20"
     );
     assert_eq!(
         ids.metric("global", "failures", 10, 20),
@@ -702,11 +702,11 @@ fn evidence_bundle_serializes_camel_case_and_snake_case_missing() {
     assert!(value["metrics"]["host"]["failures"].is_number());
     assert_eq!(
         value["metrics"]["host"]["queriesId"],
-        "metric:dns-node-1:queries:1793439600000-1793441400000"
+        "metric:host:dns-node-1:queries:1793439600000-1793441400000"
     );
     assert_eq!(
         value["metrics"]["host"]["failuresId"],
-        "metric:dns-node-1:failures:1793439600000-1793441400000"
+        "metric:host:dns-node-1:failures:1793439600000-1793441400000"
     );
     assert!(value["metrics"]["host"].get("counts").is_none());
 
@@ -1066,7 +1066,7 @@ fn fingerprint_changes_with_metrics() {
                 .host
                 .as_mut()
                 .unwrap()
-                .queries_id = "metric:dns-node-1:queries:0-1".to_string();
+                .queries_id = "metric:host:dns-node-1:queries:0-1".to_string();
         },
         "host metrics queriesId",
     );
@@ -1079,7 +1079,7 @@ fn fingerprint_changes_with_metrics() {
                 .host
                 .as_mut()
                 .unwrap()
-                .failures_id = "metric:dns-node-1:failures:0-1".to_string();
+                .failures_id = "metric:host:dns-node-1:failures:0-1".to_string();
         },
         "host metrics failuresId",
     );

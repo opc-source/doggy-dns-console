@@ -199,8 +199,8 @@ pub struct EvidenceRange {
 impl EvidenceRange {
     /// `metric:<host|global>:<name>:<start>-<end>`
     ///
-    /// For a host-scoped count the scope is the host name; global counts use
-    /// the literal `global`.
+    /// Host IDs use `host:<host name>:<queries|failures>` as the name so they
+    /// remain unique across hosts while retaining the scope discriminator.
     pub fn metric_id(&self, scope: &str, name: &str) -> String {
         format!("metric:{scope}:{name}:{}-{}", self.start, self.end)
     }
@@ -214,9 +214,9 @@ pub struct EvidenceHostMetrics {
     pub name: String,
     #[serde(flatten)]
     pub counts: MetricCounts,
-    /// `metric:<name>:queries:<start>-<end>`
+    /// `metric:host:<name>:queries:<start>-<end>`
     pub queries_id: String,
-    /// `metric:<name>:failures:<start>-<end>`
+    /// `metric:host:<name>:failures:<start>-<end>`
     pub failures_id: String,
 }
 
@@ -225,8 +225,8 @@ impl EvidenceHostMetrics {
     pub fn new(name: impl Into<String>, counts: MetricCounts, range: &EvidenceRange) -> Self {
         let name = name.into();
         Self {
-            queries_id: range.metric_id(&name, "queries"),
-            failures_id: range.metric_id(&name, "failures"),
+            queries_id: range.metric_id("host", &format!("{name}:queries")),
+            failures_id: range.metric_id("host", &format!("{name}:failures")),
             name,
             counts,
         }
