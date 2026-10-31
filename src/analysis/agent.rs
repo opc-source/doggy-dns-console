@@ -35,6 +35,10 @@ pub const MAX_TOOL_RESULT_BYTES: usize = 8 * 1024;
 pub struct ForensicOutcome {
     pub result: AnalysisResult,
     pub tool_calls: Vec<ToolCallAudit>,
+    /// Truncated raw submission retained for triage when the model never
+    /// produced a valid result (spec §6.3.2; Task 9 persists it in
+    /// `failure_investigations.error`).
+    pub diagnostic: Option<String>,
 }
 
 struct Call {
@@ -71,7 +75,10 @@ pub async fn run_forensic_loop(
     let mut index = EvidenceIndex::from_bundle(bundle);
     let mut audits = Vec::new();
     let mut seen_calls = HashSet::new();
-    let mut repairs_used = 0u32;
+    let mut repair_used = false;
+    // Counts rejected calls across turns so a submission that follows a
+    // budget rejection can disclose the gap (spec §6.3.3).
+    let mut budget_rejections = 0usize;
 
     loop {
         if remaining(deadline).is_none() {
@@ -112,22 +119,37 @@ pub async fn run_forensic_loop(
                     truncate(&text, 512)
                 )
             };
+            let diagnostic = Some(truncate(&text, 512));
             messages.push(assistant);
-            if retry_after_invalid(&mut messages, &reason, &mut repairs_used) {
+            if retry_after_invalid(&mut messages, &reason, &mut repair_used) {
                 continue;
             }
             return Ok(ForensicOutcome {
                 result: invalid_result(reason),
                 tool_calls: audits,
+                diagnostic,
             });
         }
 
         messages.push(assistant);
 
         let mut submitted = None;
-        let mut repair_reason = None;
+        let mut rejection: Option<String> = None;
+        let mut diagnostic: Option<String> = None;
+        let mut submission_decided = false;
 
         for call in calls {
+            if submission_decided {
+                // A submission attempt ended this turn. Answer every remaining
+                // call so the transcript has one response per function call.
+                push_response(
+                    &mut messages,
+                    &call,
+                    json!({"error": "not executed: submission ended the turn"}),
+                );
+                continue;
+            }
+
             if call.name == SUBMIT_TOOL {
                 match parse_submission(&call.args, &index) {
                     Ok(result) => {
@@ -135,8 +157,14 @@ pub async fn run_forensic_loop(
                         break;
                     }
                     Err(reason) => {
-                        repair_reason = Some(reason);
-                        break;
+                        push_response(&mut messages, &call, json!({"error": reason}));
+                        diagnostic = Some(truncate(
+                            &serde_json::to_string(&call.args).unwrap_or_default(),
+                            512,
+                        ));
+                        rejection = Some(reason);
+                        submission_decided = true;
+                        continue;
                     }
                 }
             }
@@ -151,6 +179,7 @@ pub async fn run_forensic_loop(
             }
 
             if audits.len() >= max_tool_calls {
+                budget_rejections += 1;
                 push_response(
                     &mut messages,
                     &call,
@@ -194,10 +223,19 @@ pub async fn run_forensic_loop(
                     .await;
             let duration_ms = started.elapsed().as_millis() as u64;
 
-            let payload = match outcome {
-                Ok(Ok(value)) => value,
-                Ok(Err(error)) => json!({"error": error}),
+            let (payload, is_error) = match outcome {
+                Ok(Ok(value)) => (value, false),
+                Ok(Err(error)) => (json!({"error": error}), true),
                 Err(_) => {
+                    let payload = json!({"error": "drill-down call timed out"});
+                    let result_hash = hash_json(&payload);
+                    audits.push(ToolCallAudit {
+                        name: call.name.clone(),
+                        canonical_args: canonical,
+                        duration_ms,
+                        result_hash: result_hash.clone(),
+                        summary: summary_of(&payload, &result_hash, true),
+                    });
                     return Ok(unavailable(
                         format!("drill-down call {call_number} timed out"),
                         audits,
@@ -208,10 +246,7 @@ pub async fn run_forensic_loop(
             let canonical_result = canonicalize(&payload);
             let result_hash = hash_json(&canonical_result);
             let capped = cap_result(&canonical_result, &result_hash);
-            let summary = truncate(
-                &serde_json::to_string(&capped).unwrap_or_default(),
-                MAX_TOOL_RESULT_BYTES,
-            );
+            let summary = summary_of(&canonical_result, &result_hash, is_error);
 
             audits.push(ToolCallAudit {
                 name: call.name.clone(),
@@ -229,20 +264,30 @@ pub async fn run_forensic_loop(
             );
         }
 
-        if let Some(result) = submitted {
+        if let Some(mut result) = submitted {
+            if budget_rejections > 0 {
+                push_gap(
+                    &mut result,
+                    &format!(
+                        "drill-down budget exhausted after {max_tool_calls} calls; the verdict uses only the evidence collected before the limit"
+                    ),
+                );
+            }
             return Ok(ForensicOutcome {
                 result,
                 tool_calls: audits,
+                diagnostic: None,
             });
         }
 
-        if let Some(reason) = repair_reason {
-            if retry_after_invalid(&mut messages, &reason, &mut repairs_used) {
+        if let Some(reason) = rejection {
+            if retry_after_invalid(&mut messages, &reason, &mut repair_used) {
                 continue;
             }
             return Ok(ForensicOutcome {
                 result: invalid_result(reason),
                 tool_calls: audits,
+                diagnostic,
             });
         }
     }
@@ -309,11 +354,11 @@ fn parse_submission(args: &Value, index: &EvidenceIndex) -> Result<AnalysisResul
     Ok(result)
 }
 
-fn retry_after_invalid(messages: &mut Vec<Content>, reason: &str, repairs_used: &mut u32) -> bool {
-    if *repairs_used > 0 {
+fn retry_after_invalid(messages: &mut Vec<Content>, reason: &str, repair_used: &mut bool) -> bool {
+    if *repair_used {
         return false;
     }
-    *repairs_used = 1;
+    *repair_used = true;
     messages.push(Content::new("user").with_text(format!(
         "Your submission was rejected: {reason}. Call submit_failure_analysis again with a corrected JSON object that satisfies the contract. Do not add prose."
     )));
@@ -348,6 +393,17 @@ fn unavailable(gap: impl Into<String>, tool_calls: Vec<ToolCallAudit>) -> Forens
             not_determinable: vec![gap.into()],
         },
         tool_calls,
+        diagnostic: None,
+    }
+}
+
+fn push_gap(result: &mut AnalysisResult, gap: &str) {
+    if !result
+        .not_determinable
+        .iter()
+        .any(|existing| existing == gap)
+    {
+        result.not_determinable.push(gap.to_string());
     }
 }
 
@@ -401,13 +457,48 @@ fn cap_result(result: &Value, result_hash: &str) -> Value {
     })
 }
 
+/// Structural digest persisted in the audit. It must never contain raw
+/// telemetry rows (spec §8): only size, shape and the result hash survive.
+fn summary_of(result: &Value, result_hash: &str, is_error: bool) -> String {
+    let bytes = serde_json::to_string(result)
+        .map(|text| text.len())
+        .unwrap_or(0);
+    let mut digest = json!({
+        "bytes": bytes,
+        "truncated": bytes > MAX_TOOL_RESULT_BYTES,
+        "resultHash": result_hash,
+    });
+    if is_error {
+        if let Some(error) = result.get("error").and_then(Value::as_str) {
+            digest["error"] = Value::String(truncate(error, 256));
+        }
+    } else {
+        match result {
+            Value::Object(object) => {
+                let mut keys: Vec<&String> = object.keys().collect();
+                keys.sort_unstable();
+                digest["keys"] = json!(keys.into_iter().take(32).cloned().collect::<Vec<String>>());
+            }
+            Value::Array(items) => digest["items"] = json!(items.len()),
+            _ => {}
+        }
+    }
+    truncate(
+        &serde_json::to_string(&digest).unwrap_or_default(),
+        MAX_TOOL_RESULT_BYTES,
+    )
+}
+
 /// Truncates on a UTF-8 boundary so the result never exceeds `max_bytes`.
 fn truncate(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {
         return text.to_string();
     }
     const MARKER: &str = "...";
-    let mut end = max_bytes.saturating_sub(MARKER.len());
+    if max_bytes <= MARKER.len() {
+        return MARKER[..max_bytes].to_string();
+    }
+    let mut end = max_bytes - MARKER.len();
     while end > 0 && !text.is_char_boundary(end) {
         end -= 1;
     }
