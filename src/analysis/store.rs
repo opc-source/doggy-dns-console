@@ -29,19 +29,19 @@ const SELECT_BY_ID: &str = "SELECT id, trace_id, filter_json, evidence_fingerpri
 const SELECT_LATEST: &str = "SELECT id, trace_id, filter_json, evidence_fingerprint, model, \
      prompt_version, status, verdict_category, confidence, result_json, tool_calls_json, \
      error, attempt, created_at, finished_at FROM failure_investigations WHERE trace_id = ? \
-     ORDER BY created_at DESC, id DESC LIMIT 1";
+     ORDER BY created_at DESC, rowid DESC LIMIT 1";
 
 const SELECT_CACHE_HIT: &str = "SELECT id, trace_id, filter_json, evidence_fingerprint, model, \
      prompt_version, status, verdict_category, confidence, result_json, tool_calls_json, \
      error, attempt, created_at, finished_at FROM failure_investigations \
      WHERE trace_id = ? AND evidence_fingerprint = ? AND model = ? AND prompt_version = ? \
-     AND status = 'succeeded' ORDER BY attempt DESC LIMIT 1";
+     AND status = 'succeeded' ORDER BY attempt DESC, rowid DESC LIMIT 1";
 
 const SELECT_RUNNING: &str = "SELECT id, trace_id, filter_json, evidence_fingerprint, model, \
      prompt_version, status, verdict_category, confidence, result_json, tool_calls_json, \
      error, attempt, created_at, finished_at FROM failure_investigations \
      WHERE trace_id = ? AND evidence_fingerprint = ? AND model = ? AND prompt_version = ? \
-     AND status IN ('queued', 'running') ORDER BY attempt DESC LIMIT 1";
+     AND status IN ('queued', 'running') ORDER BY created_at DESC, rowid DESC LIMIT 1";
 
 const INSERT_SQL: &str = "INSERT INTO failure_investigations (id, trace_id, filter_json, \
      evidence_fingerprint, model, prompt_version, status, verdict_category, confidence, \
@@ -413,12 +413,14 @@ impl InvestigationStore for SqliteInvestigationStore {
             return Ok(Vec::new());
         }
         // The only dynamic part is the placeholder count; every value is bound.
+        // `rowid` is not projected, but the window function may still order by
+        // it because the window runs over the inner table scan.
         let placeholders = vec!["?"; trace_ids.len()].join(", ");
         let sql = format!(
             "SELECT id, trace_id, status, verdict_category, confidence, attempt, created_at, \
              finished_at FROM (SELECT id, trace_id, status, verdict_category, confidence, \
              attempt, created_at, finished_at, ROW_NUMBER() OVER (PARTITION BY trace_id \
-             ORDER BY created_at DESC, id DESC) AS rank FROM failure_investigations \
+             ORDER BY created_at DESC, rowid DESC) AS rank FROM failure_investigations \
              WHERE trace_id IN ({placeholders})) WHERE rank = 1"
         );
         let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));

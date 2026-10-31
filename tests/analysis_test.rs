@@ -754,6 +754,19 @@ fn succeeded_record(
     }
 }
 
+/// An in-flight record that is internally consistent: no verdict, result or
+/// completion time yet.
+fn running_record(id: &str, trace_id: &str, attempt: u32, created_at: i64) -> InvestigationRecord {
+    let mut record = succeeded_record(id, trace_id, attempt, created_at);
+    record.status = InvestigationStatus::Running;
+    record.verdict_category = None;
+    record.confidence = None;
+    record.result = None;
+    record.tool_calls.clear();
+    record.finished_at = None;
+    record
+}
+
 fn cache_key<'a>(trace_id: &'a str, fingerprint: &'a str, model: &'a str) -> CacheKey<'a> {
     CacheKey {
         trace_id,
@@ -1082,6 +1095,44 @@ async fn store_persists_only_structured_tool_audits() {
     let result_json: Option<String> = row.get("result_json");
     let stored: AnalysisResult = serde_json::from_str(&result_json.unwrap()).unwrap();
     assert_eq!(stored, result);
+}
+
+#[tokio::test]
+async fn store_latest_prefers_the_newer_insert_when_timestamps_tie() {
+    let store = SqliteInvestigationStore::memory().await.unwrap();
+    // `created_at` only has second resolution and ids are random UUID v4, so
+    // the tie has to be broken by insertion order. The older row carries a
+    // lexicographically larger id to prove the id no longer decides.
+    let created_at = 1_761_436_800;
+    let older = succeeded_record("zzzz-older", "trace-a", 1, created_at);
+    let newer = succeeded_record("aaaa-newer", "trace-a", 2, created_at);
+
+    store.insert(&older).await.unwrap();
+    store.insert(&newer).await.unwrap();
+
+    assert_eq!(
+        store.latest("trace-a").await.unwrap().unwrap().id,
+        "aaaa-newer"
+    );
+
+    let markers = store.markers(&["trace-a".to_string()]).await.unwrap();
+    assert_eq!(markers.len(), 1);
+    assert_eq!(markers[0].id, "aaaa-newer");
+    assert_eq!(markers[0].attempt, 2);
+}
+
+#[tokio::test]
+async fn store_running_prefers_the_newer_insert_when_timestamps_tie() {
+    let store = SqliteInvestigationStore::memory().await.unwrap();
+    let created_at = 1_761_436_800;
+    let older = running_record("zzzz-older", "trace-a", 1, created_at);
+    let newer = running_record("aaaa-newer", "trace-a", 2, created_at);
+
+    store.insert(&older).await.unwrap();
+    store.insert(&newer).await.unwrap();
+
+    let key = cache_key("trace-a", EVIDENCE_FINGERPRINT, MODEL);
+    assert_eq!(store.running(&key).await.unwrap().unwrap().id, "aaaa-newer");
 }
 
 // --------------------------------------------------------- analysis service
