@@ -89,6 +89,7 @@ fn app_with(telemetry: Arc<dyn TelemetrySource>) -> axum::Router {
         openobserve_health: Arc::new(AlwaysHealthy),
         openobserve_mcp_health: None,
         model_configured: true,
+        analysis: None,
     })
 }
 

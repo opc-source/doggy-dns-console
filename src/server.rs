@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use adk_rust::SingleAgentLoader;
 use adk_rust::prelude::{Agent, Llm, Tool};
@@ -10,6 +11,9 @@ use axum::Router;
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::agent::{build_agent, build_model};
+use crate::analysis::drilldown::{Drilldown, OpenObserveDrilldown};
+use crate::analysis::service::AnalysisService;
+use crate::analysis::store::SqliteInvestigationStore;
 use crate::api::state::{ApiState, Probe};
 use crate::config::Config;
 use crate::datasource::fixture::FixtureSource;
@@ -29,6 +33,7 @@ pub struct AppDeps {
     pub openobserve_health: Arc<dyn Probe>,
     pub openobserve_mcp_health: Option<Arc<dyn Probe>>,
     pub model_configured: bool,
+    pub analysis: Option<Arc<AnalysisService>>,
 }
 
 pub async fn build_app(config: Config, deps: AppDeps) -> anyhow::Result<Router> {
@@ -42,6 +47,7 @@ pub async fn build_app(config: Config, deps: AppDeps) -> anyhow::Result<Router> 
         openobserve_health: deps.openobserve_health,
         openobserve_mcp_health: deps.openobserve_mcp_health,
         model_configured: deps.model_configured,
+        analysis: deps.analysis,
     };
     let mut builder =
         ServerBuilder::new(server_config).add_root_routes(crate::api::business_router(state));
@@ -57,69 +63,82 @@ pub async fn build_app(config: Config, deps: AppDeps) -> anyhow::Result<Router> 
 }
 
 pub async fn run(config: Config) -> anyhow::Result<()> {
+    // Both the session database and the investigation store share this path,
+    // so it is prepared before either backend opens it.
+    ensure_sqlite_parent(&config.db_url)?;
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-    let (service, instances, openobserve_health, openobserve_mcp_health, model, extra_tools) =
-        if config.demo {
-            let fixture = Arc::new(FixtureSource::new(clock.clone()));
-            let telemetry = fixture.clone() as Arc<dyn TelemetrySource>;
-            let instances = fixture as Arc<dyn InstanceSource>;
-            let service = Arc::new(ConsoleService::new(telemetry, instances.clone()));
-            (
-                service,
-                instances,
-                Arc::new(AlwaysHealthy) as Arc<dyn Probe>,
-                None,
-                demo_model(),
-                Vec::new(),
-            )
-        } else {
-            let openobserve = Arc::new(OpenObserveClient::new(config.openobserve.clone())?);
-            let telemetry: Arc<dyn TelemetrySource> = Arc::new(OpenObserveTelemetry::new(
-                openobserve.clone(),
-                clock.clone(),
-            ));
-            let mcp = Arc::new(McpInstanceSource::new(
-                config.mcp.endpoints.clone(),
-                Arc::new(RmcpTransport::new(
-                    config.mcp.token.clone(),
-                    config.mcp.timeout,
-                )),
-            ));
-            let instances: Arc<dyn InstanceSource> = Arc::new(MergedInstanceSource::new(
-                mcp,
-                telemetry.clone(),
-                config.mcp.control_port,
-                clock.clone(),
-            ));
-            let service = Arc::new(ConsoleService::new(telemetry, instances.clone()));
+    let (
+        service,
+        instances,
+        openobserve_health,
+        openobserve_mcp_health,
+        model,
+        extra_tools,
+        mcp_client,
+    ) = if config.demo {
+        let fixture = Arc::new(FixtureSource::new(clock.clone()));
+        let telemetry = fixture.clone() as Arc<dyn TelemetrySource>;
+        let instances = fixture as Arc<dyn InstanceSource>;
+        let service = Arc::new(ConsoleService::new(telemetry, instances.clone()));
+        (
+            service,
+            instances,
+            Arc::new(AlwaysHealthy) as Arc<dyn Probe>,
+            None,
+            demo_model(),
+            Vec::new(),
+            None,
+        )
+    } else {
+        let openobserve = Arc::new(OpenObserveClient::new(config.openobserve.clone())?);
+        let telemetry: Arc<dyn TelemetrySource> = Arc::new(OpenObserveTelemetry::new(
+            openobserve.clone(),
+            clock.clone(),
+        ));
+        let mcp = Arc::new(McpInstanceSource::new(
+            config.mcp.endpoints.clone(),
+            Arc::new(RmcpTransport::new(
+                config.mcp.token.clone(),
+                config.mcp.timeout,
+            )),
+        ));
+        let instances: Arc<dyn InstanceSource> = Arc::new(MergedInstanceSource::new(
+            mcp,
+            telemetry.clone(),
+            config.mcp.control_port,
+            clock.clone(),
+        ));
+        let service = Arc::new(ConsoleService::new(telemetry, instances.clone()));
 
-            let (openobserve_mcp_health, extra_tools) = if config.openobserve_mcp.enabled {
-                let client = Arc::new(crate::agent::openobserve_mcp::OpenObserveMcpClient::new(
-                    config.openobserve_mcp.clone(),
-                )?);
-                let tools = match client.allowed_tools().await {
-                    Ok(tools) => tools,
-                    Err(error) => {
-                        tracing::warn!(error = %error, "openobserve mcp tools unavailable");
-                        Vec::new()
-                    }
-                };
-                (Some(client as Arc<dyn Probe>), tools)
-            } else {
-                (None, Vec::new())
+        let (openobserve_mcp_health, extra_tools, mcp_client) = if config.openobserve_mcp.enabled {
+            let client = Arc::new(crate::agent::openobserve_mcp::OpenObserveMcpClient::new(
+                config.openobserve_mcp.clone(),
+            )?);
+            let tools = match client.allowed_tools().await {
+                Ok(tools) => tools,
+                Err(error) => {
+                    tracing::warn!(error = %error, "openobserve mcp tools unavailable");
+                    Vec::new()
+                }
             };
-
-            (
-                service,
-                instances,
-                openobserve as Arc<dyn Probe>,
-                openobserve_mcp_health,
-                build_model(&config.model)?,
-                extra_tools,
-            )
+            (Some(client.clone() as Arc<dyn Probe>), tools, Some(client))
+        } else {
+            (None, Vec::new(), None)
         };
 
-    ensure_sqlite_parent(&config.db_url)?;
+        (
+            service,
+            instances,
+            openobserve as Arc<dyn Probe>,
+            openobserve_mcp_health,
+            build_model(&config.model)?,
+            extra_tools,
+            mcp_client,
+        )
+    };
+
+    let analysis = build_analysis(&config, model.clone(), mcp_client).await;
+
     let sqlite = SqliteSessionService::new(&config.db_url).await?;
     sqlite.migrate().await?;
     let sessions: Arc<dyn SessionService> = Arc::new(sqlite);
@@ -133,6 +152,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         openobserve_health,
         openobserve_mcp_health,
         model_configured,
+        analysis,
     };
     let app = build_app(config.clone(), deps).await?;
     let listener = tokio::net::TcpListener::bind(config.addr).await?;
@@ -141,6 +161,67 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
+}
+
+/// Builds the optional analysis service.
+///
+/// Demo mode has no analysis service: the scripted chat model cannot produce a
+/// valid forensic submission, and persisting guaranteed-invalid attempts would
+/// be misleading. Outside demo mode the service needs both the analysis
+/// feature and a model API key. A store-open failure disables analysis (the
+/// console keeps serving and the endpoints answer 503) because the session
+/// database has already surfaced a fatal error if the file itself is unusable.
+async fn build_analysis(
+    config: &Config,
+    model: Arc<dyn Llm>,
+    mcp_client: Option<Arc<crate::agent::openobserve_mcp::OpenObserveMcpClient>>,
+) -> Option<Arc<AnalysisService>> {
+    if config.demo || !config.analysis.enabled || config.model.api_key.is_empty() {
+        return None;
+    }
+
+    let drilldown: Option<Arc<dyn Drilldown>> = match mcp_client {
+        Some(client) => Some(Arc::new(OpenObserveDrilldown::new(client).await)),
+        None => None,
+    };
+
+    let store = match SqliteInvestigationStore::new(&config.db_url).await {
+        Ok(store) => store,
+        Err(error) => {
+            tracing::error!(%error, "investigation store unavailable; analysis disabled");
+            return None;
+        }
+    };
+    let service = Arc::new(AnalysisService::new(
+        Arc::new(store),
+        config.analysis.clone(),
+        Some(model),
+        drilldown,
+    ));
+
+    match service.prune().await {
+        Ok(deleted) => tracing::info!(deleted, "retained failure investigations pruned"),
+        Err(error) => tracing::warn!(%error, "failure investigation startup prune failed"),
+    }
+    spawn_retention_loop(service.clone());
+    Some(service)
+}
+
+/// Prunes retained investigations once a day (spec §8). The startup prune has
+/// already run; the loop skips the interval's immediate first tick.
+fn spawn_retention_loop(analysis: Arc<AnalysisService>) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            match analysis.prune().await {
+                Ok(deleted) => tracing::info!(deleted, "retained failure investigations pruned"),
+                Err(error) => tracing::warn!(%error, "failure investigation retention failed"),
+            }
+        }
+    });
 }
 
 struct AlwaysHealthy;

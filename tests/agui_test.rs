@@ -76,6 +76,7 @@ async fn spawn_test_app_with_mcp(
         openobserve_health: Arc::new(Healthy),
         openobserve_mcp_health,
         model_configured: true,
+        analysis: None,
     };
     let _ = agent;
     let _ = cfg.clone();
