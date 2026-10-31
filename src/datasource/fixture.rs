@@ -175,16 +175,19 @@ impl TelemetrySource for FixtureSource {
                 id: "dns-node-1".to_string(),
                 host: "dns-node-1".to_string(),
                 last_seen: now,
+                endpoint: None,
             },
             SeenInstance {
                 id: "dns-node-2".to_string(),
                 host: "dns-node-2".to_string(),
                 last_seen: now - 30_000,
+                endpoint: None,
             },
             SeenInstance {
                 id: "dns-node-3".to_string(),
                 host: "dns-node-3".to_string(),
                 last_seen: now - 4 * 60 * 1000,
+                endpoint: None,
             },
         ])
     }

@@ -30,15 +30,24 @@ cd .. && CONSOLE_DEMO=1 cargo run
 1. Copy `.env.example` to `.env` and fill it in.
 2. Set `OPENOBSERVE_BASE_URL`, `OPENOBSERVE_ORG`, and either `OPENOBSERVE_USER`/`OPENOBSERVE_PASSWORD` or `OPENOBSERVE_TOKEN`.
 3. Set `MODEL_*` for any OpenAI-compatible endpoint.
-4. Set `MCP_ENDPOINTS` to the doggy-dns MCP URLs (for example
-   `http://127.0.0.1:19090/mcp`) and `MCP_TOKEN` to the control-plane token, if set.
-5. `cargo run`.
+4. Instances are discovered automatically from OpenObserve telemetry: doggy-dns
+   exports `host.name`, `doggy_dns.ip_addr` and `doggy_dns.control.port`, which
+   the console joins into `http://{ip_addr}:{control_port}/mcp`. Nodes that
+   publish no address are probed at `http://{host}:{MCP_CONTROL_PORT}/mcp`
+   (default `19090`). `doggy_dns.ip_addr` is the DNS listener's reachable
+   address; if the control plane binds a different interface, list that node in
+   `MCP_ENDPOINTS` instead. Set `MCP_TOKEN` to the control-plane token, if set.
+5. Optional: set `MCP_ENDPOINTS` (comma separated) to probe extra or
+   misconfigured nodes that never reach OpenObserve.
+6. `cargo run`.
 
 The console consumes all four read-only tools from each instance's control plane: `get_status`,
 `list_plugins`, `get_config` and `get_runtime_status`. The instance drawer shows pid/status,
 plugins, the redacted TOML (with the masked keys listed) and live signals such as Nacos cache
-size/push freshness and XDP attachment. `MCP_TOKEN` is sent as a bearer token to every endpoint;
-per-node tokens are not supported yet.
+size/push freshness and XDP attachment. `MCP_TOKEN` is sent as a bearer token to every probed
+endpoint — static and discovered alike — so anyone able to publish metrics for this OpenObserve
+org can make the console present that token to an address of their choosing; keep the metric
+stream trusted or leave `MCP_TOKEN` unset. Per-node tokens are not supported yet.
 
 OpenObserve MCP is optional but recommended. If `/api/{org}/mcp` returns 404, enable it on the
 OpenObserve instance (`O2_AI_ENABLED=true`, and `O2_TOOL_API_URL` where required). The console

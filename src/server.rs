@@ -88,6 +88,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             let instances: Arc<dyn InstanceSource> = Arc::new(MergedInstanceSource::new(
                 mcp,
                 telemetry.clone(),
+                config.mcp.control_port,
                 clock.clone(),
             ));
             let service = Arc::new(ConsoleService::new(telemetry, instances.clone()));

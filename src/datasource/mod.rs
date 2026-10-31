@@ -10,6 +10,15 @@ use crate::domain::{
 use crate::error::DataError;
 use async_trait::async_trait;
 
+/// Bracket an IPv6 literal so it can be embedded in a URL authority.
+pub(crate) fn bracketed(host: &str) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
+}
+
 pub trait Clock: Send + Sync {
     fn now_ms(&self) -> i64;
 }
