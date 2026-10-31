@@ -1,9 +1,17 @@
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
+use doggy_dns_console::datasource::fixture::FixtureSource;
+use doggy_dns_console::datasource::{Clock, FixedClock, InstanceSource, TelemetrySource};
 use doggy_dns_console::domain::{
-    FailureGroup, Instance, InstanceDetail, InstanceIdentity, LogRecord, MatchQuality,
-    MetricCounts, PluginInfo, SpanRecord,
+    FailureDetail, FailureFilter, FailureGroup, Instance, InstanceDetail, InstanceIdentity,
+    LogRecord, MatchQuality, MatchedInstance, MetricCounts, Overview, PluginInfo, SeenInstance,
+    SpanRecord, Window, WindowMetrics,
 };
+use doggy_dns_console::error::DataError;
+use doggy_dns_console::evidence::assemble::assemble;
 use doggy_dns_console::evidence::fingerprint::compute_fingerprint;
 use doggy_dns_console::evidence::hash::{log_hash, log_hash_input, short_hash};
 use doggy_dns_console::evidence::ids::IdAllocator;
@@ -13,6 +21,7 @@ use doggy_dns_console::evidence::model::{
     EvidenceSpans, MissingEvidence,
 };
 use doggy_dns_console::evidence::select::{MAX_LOGS, select_logs};
+use doggy_dns_console::service::ConsoleService;
 use serde_json::json;
 
 fn log(ts: i64, severity: &str, message: &str) -> LogRecord {
@@ -1210,4 +1219,1049 @@ fn fingerprint_changes_when_missing_membership_changes() {
         compute_fingerprint(&extra_instance),
         "adding an instance missing reason must change the fingerprint"
     );
+}
+
+// ------------------------------------------------------------------ assembly
+
+const LOG_TS: i64 = 1_793_443_140_000;
+
+#[derive(Default)]
+struct Calls {
+    detail: AtomicUsize,
+    metrics: AtomicUsize,
+    resolve: AtomicUsize,
+    metric_args: Mutex<Vec<(Option<String>, u64, u64)>>,
+}
+
+impl Calls {
+    fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    fn count(&self, counter: &AtomicUsize) -> usize {
+        counter.load(Ordering::SeqCst)
+    }
+
+    fn metric_args(&self) -> Vec<(Option<String>, u64, u64)> {
+        self.metric_args.lock().expect("metric args lock").clone()
+    }
+}
+
+struct FakeTelemetry {
+    detail: FailureDetail,
+    detail_not_found: bool,
+    metrics: Option<WindowMetrics>,
+    calls: Arc<Calls>,
+}
+
+impl FakeTelemetry {
+    fn new(
+        detail: FailureDetail,
+        detail_not_found: bool,
+        metrics: Option<WindowMetrics>,
+        calls: Arc<Calls>,
+    ) -> Self {
+        Self {
+            detail,
+            detail_not_found,
+            metrics,
+            calls,
+        }
+    }
+}
+
+#[async_trait]
+impl TelemetrySource for FakeTelemetry {
+    async fn overview(&self, _window: Window) -> Result<Overview, DataError> {
+        Err(DataError::NotConfigured("overview".to_string()))
+    }
+
+    async fn failures(&self, _filter: FailureFilter) -> Result<Vec<FailureGroup>, DataError> {
+        Err(DataError::NotConfigured("failures".to_string()))
+    }
+
+    async fn failure_detail(
+        &self,
+        _trace_id: &str,
+        _filter: FailureFilter,
+    ) -> Result<FailureDetail, DataError> {
+        self.calls.detail.fetch_add(1, Ordering::SeqCst);
+        if self.detail_not_found {
+            Err(DataError::NotFound("failure trace".to_string()))
+        } else {
+            Ok(self.detail.clone())
+        }
+    }
+
+    async fn seen_instances(&self, _window: Window) -> Result<Vec<SeenInstance>, DataError> {
+        Err(DataError::NotConfigured("seen_instances".to_string()))
+    }
+
+    async fn failure_metrics(
+        &self,
+        host: Option<&str>,
+        start_ms: u64,
+        end_ms: u64,
+    ) -> Result<WindowMetrics, DataError> {
+        self.calls.metrics.fetch_add(1, Ordering::SeqCst);
+        self.calls
+            .metric_args
+            .lock()
+            .expect("metric args lock")
+            .push((host.map(ToString::to_string), start_ms, end_ms));
+        self.metrics
+            .clone()
+            .ok_or_else(|| DataError::NotConfigured("metrics".to_string()))
+    }
+}
+
+enum ResolveMode {
+    Match(Box<MatchedInstance>),
+    None,
+    Unavailable,
+}
+
+fn resolve_match(matched: MatchedInstance) -> ResolveMode {
+    ResolveMode::Match(Box::new(matched))
+}
+
+struct FakeInstances {
+    mode: ResolveMode,
+    calls: Arc<Calls>,
+}
+
+impl FakeInstances {
+    fn new(mode: ResolveMode, calls: Arc<Calls>) -> Self {
+        Self { mode, calls }
+    }
+}
+
+#[async_trait]
+impl InstanceSource for FakeInstances {
+    async fn list(&self) -> Result<Vec<Instance>, DataError> {
+        Err(DataError::NotConfigured("list".to_string()))
+    }
+
+    async fn detail(&self, _id: &str) -> Result<InstanceDetail, DataError> {
+        Err(DataError::NotConfigured("detail".to_string()))
+    }
+
+    async fn resolve(
+        &self,
+        _wanted: &InstanceIdentity,
+    ) -> Result<Option<MatchedInstance>, DataError> {
+        self.calls.resolve.fetch_add(1, Ordering::SeqCst);
+        match &self.mode {
+            ResolveMode::Match(matched) => Ok(Some((**matched).clone())),
+            ResolveMode::None => Ok(None),
+            ResolveMode::Unavailable => Err(DataError::Upstream("probe failed".to_string())),
+        }
+    }
+}
+
+fn assemble_filter() -> FailureFilter {
+    FailureFilter {
+        window: Window::new(60),
+        domain: None,
+        response_code: None,
+        limit: 10,
+    }
+}
+
+fn fake_detail(
+    instance: Option<&str>,
+    logs: Vec<LogRecord>,
+    spans: Vec<SpanRecord>,
+) -> FailureDetail {
+    let mut group = failure_group();
+    group.instance = instance.map(ToString::to_string);
+    FailureDetail {
+        group,
+        logs,
+        spans,
+        spans_unavailable: false,
+    }
+}
+
+fn log_record(
+    ts: i64,
+    severity: &str,
+    message: &str,
+    span_id: Option<&str>,
+    fields: serde_json::Value,
+) -> LogRecord {
+    LogRecord {
+        ts,
+        severity: severity.to_string(),
+        message: message.to_string(),
+        trace_id: Some(TRACE_ID.to_string()),
+        span_id: span_id.map(ToString::to_string),
+        fields,
+    }
+}
+
+fn span_record(span_id: &str, name: &str, duration_ms: f64) -> SpanRecord {
+    SpanRecord {
+        span_id: span_id.to_string(),
+        name: name.to_string(),
+        duration_ms: Some(duration_ms),
+        status: "ERROR".to_string(),
+        attributes: json!({ "dns.qtype": "A" }),
+    }
+}
+
+fn window_metrics() -> WindowMetrics {
+    WindowMetrics {
+        host: Some(MetricCounts {
+            queries: 2,
+            failures: 2,
+        }),
+        global: MetricCounts {
+            queries: 18,
+            failures: 0,
+        },
+    }
+}
+
+fn matched_instance_for(
+    id: &str,
+    host: &str,
+    quality: MatchQuality,
+    reachable: bool,
+) -> MatchedInstance {
+    let mut detail = instance_detail();
+    detail.instance.id = id.to_string();
+    detail.instance.host = host.to_string();
+    detail.instance.mcp_reachable = reachable;
+    MatchedInstance {
+        quality,
+        reachable,
+        detail,
+    }
+}
+
+async fn run_assemble(
+    telemetry: &FakeTelemetry,
+    instances: &FakeInstances,
+    clock: &dyn Clock,
+) -> Result<EvidenceBundle, DataError> {
+    assemble(telemetry, instances, TRACE_ID, &assemble_filter(), clock).await
+}
+
+#[tokio::test]
+async fn assemble_builds_the_full_bundle_for_an_exact_match() {
+    let calls = Calls::new();
+    let first_log = log_record(
+        LOG_TS,
+        "ERROR",
+        "upstream timeout",
+        Some("span-1"),
+        json!({
+            "query": "a.example.",
+            "qtype": "A",
+            "response_code": "SERVFAIL",
+            "error": "timeout",
+            "service_instance_id": "host1-4242",
+            "host_name": "host1",
+            "doggy_dns_ip_addr": "10.0.0.1"
+        }),
+    );
+    let first_hash = log_hash(&first_log);
+    let second_log = log_record(
+        LOG_TS + 1_000,
+        "INFO",
+        "retry",
+        Some("span-2"),
+        json!({
+            "query_name": "a.example.",
+            "query_type": "A"
+        }),
+    );
+    let second_hash = log_hash(&second_log);
+    let detail = fake_detail(
+        Some("group-node"),
+        vec![first_log, second_log],
+        vec![
+            span_record("span-1", "dns.query", 12.5),
+            span_record("span-2", "forward.lookup", 8.0),
+        ],
+    );
+    let telemetry = FakeTelemetry::new(detail, false, Some(window_metrics()), calls.clone());
+    let instances = FakeInstances::new(
+        resolve_match(matched_instance_for(
+            "host1-4242",
+            "host1",
+            MatchQuality::Exact,
+            true,
+        )),
+        calls.clone(),
+    );
+
+    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
+        .await
+        .unwrap();
+
+    assert_eq!(bundle.trace_id, TRACE_ID);
+    assert_eq!(bundle.group.trace_id.as_deref(), Some(TRACE_ID));
+    assert_eq!(bundle.group.instance.as_deref(), Some("group-node"));
+    assert_eq!(
+        bundle.filter,
+        EvidenceFilter {
+            window_minutes: 60,
+            domain: None,
+            response_code: None,
+        }
+    );
+
+    assert_eq!(bundle.logs.total, 2);
+    assert_eq!(bundle.logs.omitted, 0);
+    assert!(!bundle.logs.truncated);
+    let first = &bundle.logs.items[0];
+    assert_eq!(
+        first.id,
+        format!("log:{LOG_TS}:span-1:{first_hash}"),
+        "the log ID must use the same content hash as the displayed fields"
+    );
+    assert_eq!(first.ts, LOG_TS);
+    assert_eq!(first.severity, "ERROR");
+    assert_eq!(first.message, "upstream timeout");
+    assert_eq!(first.span_id.as_deref(), Some("span-1"));
+    assert_eq!(first.query.as_deref(), Some("a.example."));
+    assert_eq!(first.qtype.as_deref(), Some("A"));
+    assert_eq!(first.response_code.as_deref(), Some("SERVFAIL"));
+    assert_eq!(first.error.as_deref(), Some("timeout"));
+    let second = &bundle.logs.items[1];
+    assert_eq!(
+        second.id,
+        format!("log:{}:span-2:{second_hash}", LOG_TS + 1_000),
+        "alias-derived fields must hash through the same aliases they display"
+    );
+    assert_eq!(second.query.as_deref(), Some("a.example."));
+    assert_eq!(second.qtype.as_deref(), Some("A"));
+    assert_eq!(second.response_code, None);
+
+    assert_eq!(bundle.spans.total, 2);
+    assert!(!bundle.spans.truncated);
+    assert_eq!(bundle.spans.items[0].id, "span:span-1");
+    assert_eq!(bundle.spans.items[0].name, "dns.query");
+    assert_eq!(bundle.spans.items[0].duration_ms, Some(12.5));
+    assert_eq!(bundle.spans.items[0].status, "ERROR");
+
+    let instance = bundle.instance.as_ref().expect("instance evidence");
+    assert_eq!(instance.match_quality, MatchQuality::Exact);
+    assert!(instance.reachable);
+    assert_eq!(
+        instance.identity.service_instance_id.as_deref(),
+        Some("host1-4242")
+    );
+    assert_eq!(instance.identity.host.as_deref(), Some("host1"));
+    assert_eq!(instance.identity.ip.as_deref(), Some("10.0.0.1"));
+    assert_eq!(instance.status.as_deref(), Some("running"));
+    assert_eq!(instance.pid, Some(1326));
+    assert_eq!(instance.uptime_seconds, Some(1860));
+    assert_eq!(instance.listen_addr.as_deref(), Some("127.0.0.1:15353"));
+    assert_eq!(instance.plugins.len(), 2);
+    assert_eq!(instance.plugins[0].id, "plugin:host1-4242:0");
+    assert_eq!(instance.plugins[0].order, 0);
+    assert_eq!(instance.plugins[0].kind, "nacos");
+    assert!(!instance.plugins[0].enabled);
+    assert_eq!(instance.plugins[1].id, "plugin:host1-4242:1");
+    let config = instance.config.as_ref().expect("config evidence");
+    assert_eq!(config.id, "config:host1-4242");
+    assert!(config.content.contains("[server]"));
+    assert_eq!(
+        config.redacted_keys,
+        vec!["observability.basic_auth.password"]
+    );
+    assert!(instance.runtime.is_some());
+    assert!(instance.missing.is_empty());
+
+    let center = LOG_TS;
+    let start = center - 15 * 60_000;
+    let end = center + 15 * 60_000;
+    let metrics = bundle.metrics.as_ref().expect("metric evidence");
+    assert_eq!(metrics.range, EvidenceRange { start, end });
+    assert_eq!(
+        metrics.global,
+        MetricCounts {
+            queries: 18,
+            failures: 0
+        }
+    );
+    assert_eq!(
+        metrics.queries_id,
+        format!("metric:global:queries:{start}-{end}")
+    );
+    assert_eq!(
+        metrics.failures_id,
+        format!("metric:global:failures:{start}-{end}")
+    );
+    let host = metrics.host.as_ref().expect("host metric evidence");
+    assert_eq!(host.name, "host1");
+    assert_eq!(
+        host.counts,
+        MetricCounts {
+            queries: 2,
+            failures: 2
+        }
+    );
+    assert_eq!(
+        host.queries_id,
+        format!("metric:host:host1:queries:{start}-{end}")
+    );
+    assert_eq!(
+        host.failures_id,
+        format!("metric:host:host1:failures:{start}-{end}")
+    );
+
+    assert!(bundle.missing.is_empty());
+    assert!(bundle.fingerprint.starts_with("sha256:"));
+    assert_eq!(bundle.fingerprint, compute_fingerprint(&bundle));
+    assert_eq!(bundle.generated_at, GENERATED_AT);
+
+    assert_eq!(
+        calls.count(&calls.detail),
+        1,
+        "detail is fetched exactly once"
+    );
+    assert_eq!(
+        calls.count(&calls.resolve),
+        1,
+        "resolve is called exactly once"
+    );
+    assert_eq!(
+        calls.count(&calls.metrics),
+        1,
+        "metrics are queried exactly once"
+    );
+    assert_eq!(
+        calls.metric_args(),
+        vec![(Some("host1".to_string()), start as u64, end as u64)]
+    );
+}
+
+#[tokio::test]
+async fn assemble_extracts_identity_from_normalized_telemetry_aliases() {
+    let calls = Calls::new();
+    let detail = fake_detail(
+        Some("group-node"),
+        vec![
+            log_record(
+                1_000,
+                "ERROR",
+                "boom",
+                None,
+                json!({ "service.instance.id": "node-b-9" }),
+            ),
+            log_record(
+                2_000,
+                "ERROR",
+                "boom",
+                None,
+                json!({ "host": "node-b", "doggy_dns.ip_addr": "10.0.0.10" }),
+            ),
+        ],
+        vec![],
+    );
+    let telemetry = FakeTelemetry::new(detail, false, Some(window_metrics()), calls.clone());
+    let instances = FakeInstances::new(
+        resolve_match(matched_instance_for(
+            "node-b-9",
+            "node-b",
+            MatchQuality::Exact,
+            true,
+        )),
+        calls.clone(),
+    );
+
+    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
+        .await
+        .unwrap();
+
+    let identity = &bundle.instance.as_ref().unwrap().identity;
+    assert_eq!(identity.service_instance_id.as_deref(), Some("node-b-9"));
+    assert_eq!(identity.host.as_deref(), Some("node-b"));
+    assert_eq!(identity.ip.as_deref(), Some("10.0.0.10"));
+    assert_eq!(calls.count(&calls.resolve), 1);
+}
+
+#[tokio::test]
+async fn assemble_matches_host_and_ip_when_service_instance_id_is_absent() {
+    let calls = Calls::new();
+    let detail = fake_detail(
+        Some("group-node"),
+        vec![log_record(
+            LOG_TS,
+            "ERROR",
+            "boom",
+            None,
+            json!({ "host_name": "node-a", "doggy_dns_ip_addr": "10.0.0.9" }),
+        )],
+        vec![],
+    );
+    let telemetry = FakeTelemetry::new(detail, false, Some(window_metrics()), calls.clone());
+    let instances = FakeInstances::new(
+        resolve_match(matched_instance_for(
+            "node-a",
+            "node-a",
+            MatchQuality::HostIp,
+            true,
+        )),
+        calls.clone(),
+    );
+
+    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
+        .await
+        .unwrap();
+
+    let instance = bundle.instance.as_ref().unwrap();
+    assert_eq!(instance.match_quality, MatchQuality::HostIp);
+    assert_eq!(instance.identity.service_instance_id, None);
+    assert_eq!(instance.identity.host.as_deref(), Some("node-a"));
+    assert_eq!(instance.identity.ip.as_deref(), Some("10.0.0.9"));
+    assert_eq!(
+        calls.metric_args()[0].0.as_deref(),
+        Some("node-a"),
+        "metrics must be scoped to the telemetry host"
+    );
+}
+
+#[tokio::test]
+async fn assemble_falls_back_to_the_group_instance_for_host() {
+    let calls = Calls::new();
+    let detail = fake_detail(
+        Some("dns-node-1"),
+        vec![log_record(LOG_TS, "ERROR", "boom", None, json!({}))],
+        vec![],
+    );
+    let telemetry = FakeTelemetry::new(detail, false, Some(window_metrics()), calls.clone());
+    let instances = FakeInstances::new(
+        resolve_match(matched_instance_for(
+            "dns-node-1",
+            "dns-node-1",
+            MatchQuality::Host,
+            true,
+        )),
+        calls.clone(),
+    );
+
+    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
+        .await
+        .unwrap();
+
+    let instance = bundle.instance.as_ref().unwrap();
+    assert_eq!(instance.identity.service_instance_id, None);
+    assert_eq!(instance.identity.host.as_deref(), Some("dns-node-1"));
+    assert_eq!(instance.identity.ip, None);
+    assert_eq!(instance.match_quality, MatchQuality::Host);
+}
+
+#[tokio::test]
+async fn assemble_reports_instance_not_found_without_identity() {
+    let calls = Calls::new();
+    let detail = fake_detail(None, vec![], vec![]);
+    let telemetry = FakeTelemetry::new(
+        detail,
+        false,
+        Some(WindowMetrics {
+            host: None,
+            global: MetricCounts {
+                queries: 5,
+                failures: 0,
+            },
+        }),
+        calls.clone(),
+    );
+    let instances = FakeInstances::new(ResolveMode::None, calls.clone());
+
+    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
+        .await
+        .unwrap();
+
+    assert!(bundle.instance.is_none());
+    assert!(bundle.missing.contains(&MissingEvidence::InstanceNotFound));
+    assert!(
+        !bundle
+            .missing
+            .contains(&MissingEvidence::InstanceUnreachable)
+    );
+    assert_eq!(
+        calls.count(&calls.resolve),
+        0,
+        "no identity means no instance tool call"
+    );
+    assert_eq!(calls.metric_args()[0].0, None);
+    assert_eq!(bundle.metrics.as_ref().unwrap().host, None);
+}
+
+#[tokio::test]
+async fn assemble_preserves_telemetry_identity_when_resolution_fails() {
+    let calls = Calls::new();
+    let detail = fake_detail(
+        Some("group-node"),
+        vec![log_record(
+            LOG_TS,
+            "ERROR",
+            "boom",
+            None,
+            json!({
+                "service_instance_id": "host1-4242",
+                "host_name": "host1",
+                "doggy_dns_ip_addr": "10.0.0.1"
+            }),
+        )],
+        vec![],
+    );
+    let telemetry = FakeTelemetry::new(detail, false, Some(window_metrics()), calls.clone());
+    let instances = FakeInstances::new(ResolveMode::Unavailable, calls.clone());
+
+    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
+        .await
+        .unwrap();
+
+    let instance = bundle
+        .instance
+        .as_ref()
+        .expect("telemetry identity survives");
+    assert_eq!(instance.match_quality, MatchQuality::None);
+    assert!(!instance.reachable);
+    assert_eq!(
+        instance.identity.service_instance_id.as_deref(),
+        Some("host1-4242")
+    );
+    assert_eq!(instance.identity.host.as_deref(), Some("host1"));
+    assert_eq!(instance.identity.ip.as_deref(), Some("10.0.0.1"));
+    assert_eq!(instance.status, None);
+    assert_eq!(instance.pid, None);
+    assert_eq!(instance.uptime_seconds, None);
+    assert_eq!(instance.listen_addr, None);
+    assert!(instance.plugins.is_empty());
+    assert!(instance.config.is_none());
+    assert!(instance.runtime.is_none());
+    assert_eq!(instance.missing, vec![MissingEvidence::InstanceUnreachable]);
+    assert!(
+        bundle
+            .missing
+            .contains(&MissingEvidence::InstanceUnreachable)
+    );
+    assert!(
+        bundle.metrics.is_some(),
+        "metrics remain independent of the instance"
+    );
+    assert_eq!(calls.count(&calls.resolve), 1);
+}
+
+#[tokio::test]
+async fn assemble_does_not_fabricate_config_for_an_unreachable_match() {
+    let calls = Calls::new();
+    let detail = fake_detail(
+        Some("host1"),
+        vec![log_record(
+            LOG_TS,
+            "ERROR",
+            "boom",
+            None,
+            json!({ "host_name": "host1" }),
+        )],
+        vec![],
+    );
+    let telemetry = FakeTelemetry::new(detail, false, Some(window_metrics()), calls.clone());
+    // The matched detail carries config/plugins/runtime, but reachable=false
+    // must drop them rather than present unverified data.
+    let instances = FakeInstances::new(
+        resolve_match(matched_instance_for(
+            "host1",
+            "host1",
+            MatchQuality::Host,
+            false,
+        )),
+        calls.clone(),
+    );
+
+    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
+        .await
+        .unwrap();
+
+    let instance = bundle.instance.as_ref().unwrap();
+    assert_eq!(instance.match_quality, MatchQuality::Host);
+    assert!(!instance.reachable);
+    assert_eq!(instance.identity.host.as_deref(), Some("host1"));
+    assert_eq!(instance.status, None);
+    assert_eq!(instance.pid, None);
+    assert_eq!(instance.uptime_seconds, None);
+    assert_eq!(instance.listen_addr, None);
+    assert!(instance.plugins.is_empty());
+    assert!(instance.config.is_none());
+    assert!(instance.runtime.is_none());
+    assert_eq!(instance.missing, vec![MissingEvidence::InstanceUnreachable]);
+    assert!(
+        bundle
+            .missing
+            .contains(&MissingEvidence::InstanceUnreachable)
+    );
+}
+
+#[tokio::test]
+async fn assemble_marks_unavailable_spans_without_claiming_absence() {
+    let calls = Calls::new();
+    let mut detail = fake_detail(
+        Some("host1"),
+        vec![log_record(
+            LOG_TS,
+            "ERROR",
+            "boom",
+            None,
+            json!({ "host_name": "host1" }),
+        )],
+        vec![],
+    );
+    detail.spans_unavailable = true;
+    let telemetry = FakeTelemetry::new(detail, false, Some(window_metrics()), calls.clone());
+    let instances = FakeInstances::new(
+        resolve_match(matched_instance_for(
+            "host1",
+            "host1",
+            MatchQuality::Host,
+            true,
+        )),
+        calls.clone(),
+    );
+
+    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
+        .await
+        .unwrap();
+
+    assert!(bundle.spans.items.is_empty());
+    assert_eq!(bundle.spans.total, 0);
+    assert!(!bundle.spans.truncated);
+    assert!(bundle.missing.contains(&MissingEvidence::SpansUnavailable));
+}
+
+#[tokio::test]
+async fn assemble_caps_spans_at_two_hundred_and_reports_truncation() {
+    let calls = Calls::new();
+    let spans = (0..205)
+        .map(|index| span_record(&format!("s{index}"), "dns.query", index as f64))
+        .collect();
+    let detail = fake_detail(
+        Some("host1"),
+        vec![log_record(
+            LOG_TS,
+            "ERROR",
+            "boom",
+            None,
+            json!({ "host_name": "host1" }),
+        )],
+        spans,
+    );
+    let telemetry = FakeTelemetry::new(detail, false, Some(window_metrics()), calls.clone());
+    let instances = FakeInstances::new(
+        resolve_match(matched_instance_for(
+            "host1",
+            "host1",
+            MatchQuality::Host,
+            true,
+        )),
+        calls.clone(),
+    );
+
+    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
+        .await
+        .unwrap();
+
+    assert_eq!(bundle.spans.total, 205);
+    assert_eq!(bundle.spans.items.len(), 200);
+    assert!(bundle.spans.truncated);
+    assert_eq!(bundle.spans.items[0].id, "span:s0");
+    assert_eq!(bundle.spans.items[199].id, "span:s199");
+    assert!(!bundle.missing.contains(&MissingEvidence::SpansUnavailable));
+}
+
+#[tokio::test]
+async fn assemble_marks_unavailable_metrics_without_fabricating_zeroes() {
+    let calls = Calls::new();
+    let detail = fake_detail(
+        Some("host1"),
+        vec![log_record(
+            LOG_TS,
+            "ERROR",
+            "boom",
+            None,
+            json!({ "host_name": "host1" }),
+        )],
+        vec![],
+    );
+    let telemetry = FakeTelemetry::new(detail, false, None, calls.clone());
+    let instances = FakeInstances::new(
+        resolve_match(matched_instance_for(
+            "host1",
+            "host1",
+            MatchQuality::Host,
+            true,
+        )),
+        calls.clone(),
+    );
+
+    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
+        .await
+        .unwrap();
+
+    assert!(bundle.metrics.is_none());
+    assert!(
+        bundle
+            .missing
+            .contains(&MissingEvidence::MetricsUnavailable)
+    );
+    assert!(!bundle.logs.items.is_empty());
+    assert!(bundle.instance.is_some());
+}
+
+#[tokio::test]
+async fn assemble_reports_log_truncation_and_keeps_failure_rows() {
+    let calls = Calls::new();
+    let mut logs: Vec<LogRecord> = (0..250)
+        .map(|index| {
+            log_record(
+                1_000 + index,
+                "INFO",
+                &format!("info {index}"),
+                None,
+                json!({ "host_name": "host1" }),
+            )
+        })
+        .collect();
+    logs[100].severity = "ERROR".to_string();
+    logs[100].message = "boom".to_string();
+    let detail = fake_detail(Some("host1"), logs, vec![]);
+    let telemetry = FakeTelemetry::new(detail, false, Some(window_metrics()), calls.clone());
+    let instances = FakeInstances::new(
+        resolve_match(matched_instance_for(
+            "host1",
+            "host1",
+            MatchQuality::Host,
+            true,
+        )),
+        calls.clone(),
+    );
+
+    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
+        .await
+        .unwrap();
+
+    assert_eq!(bundle.logs.total, 250);
+    assert_eq!(bundle.logs.items.len(), MAX_LOGS);
+    assert_eq!(bundle.logs.omitted, 50);
+    assert!(bundle.logs.truncated);
+    assert!(bundle.missing.contains(&MissingEvidence::LogsTruncated));
+    assert!(
+        bundle.logs.items.iter().any(|log| log.message == "boom"),
+        "failure rows must survive selection"
+    );
+}
+
+#[tokio::test]
+async fn assemble_uses_the_lower_median_trace_time_for_the_metric_window() {
+    let calls = Calls::new();
+    let detail = fake_detail(
+        Some("host1"),
+        vec![
+            log_record(
+                1_000_100,
+                "ERROR",
+                "later",
+                None,
+                json!({ "host_name": "host1" }),
+            ),
+            log_record(
+                1_000_000,
+                "ERROR",
+                "earlier",
+                None,
+                json!({ "host_name": "host1" }),
+            ),
+            log_record(
+                1_000_050,
+                "ERROR",
+                "middle",
+                None,
+                json!({ "host_name": "host1" }),
+            ),
+        ],
+        vec![],
+    );
+    let telemetry = FakeTelemetry::new(detail, false, Some(window_metrics()), calls.clone());
+    let instances = FakeInstances::new(
+        resolve_match(matched_instance_for(
+            "host1",
+            "host1",
+            MatchQuality::Host,
+            true,
+        )),
+        calls.clone(),
+    );
+
+    run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
+        .await
+        .unwrap();
+
+    let center = 1_000_050_i64;
+    assert_eq!(
+        calls.metric_args(),
+        vec![(
+            Some("host1".to_string()),
+            (center - 15 * 60_000) as u64,
+            (center + 15 * 60_000) as u64,
+        )]
+    );
+}
+
+#[tokio::test]
+async fn assemble_falls_back_to_group_last_seen_then_generated_at_for_the_metric_window() {
+    let calls = Calls::new();
+    let mut detail = fake_detail(Some("host1"), vec![], vec![]);
+    detail.group.last_seen = 2_000_000;
+    let telemetry = FakeTelemetry::new(detail, false, Some(window_metrics()), calls.clone());
+    let instances = FakeInstances::new(
+        resolve_match(matched_instance_for(
+            "host1",
+            "host1",
+            MatchQuality::Host,
+            true,
+        )),
+        calls.clone(),
+    );
+
+    run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
+        .await
+        .unwrap();
+    assert_eq!(
+        calls.metric_args().last().unwrap(),
+        &(
+            Some("host1".to_string()),
+            (2_000_000 - 15 * 60_000) as u64,
+            (2_000_000 + 15 * 60_000) as u64,
+        )
+    );
+
+    let calls = Calls::new();
+    let mut detail = fake_detail(Some("host1"), vec![], vec![]);
+    detail.group.last_seen = 0;
+    let telemetry = FakeTelemetry::new(detail, false, Some(window_metrics()), calls.clone());
+    let instances = FakeInstances::new(
+        resolve_match(matched_instance_for(
+            "host1",
+            "host1",
+            MatchQuality::Host,
+            true,
+        )),
+        calls.clone(),
+    );
+
+    run_assemble(&telemetry, &instances, &FixedClock(3_000_000))
+        .await
+        .unwrap();
+    assert_eq!(
+        calls.metric_args().last().unwrap(),
+        &(
+            Some("host1".to_string()),
+            (3_000_000 - 15 * 60_000) as u64,
+            (3_000_000 + 15 * 60_000) as u64,
+        )
+    );
+}
+
+#[tokio::test]
+async fn assemble_fingerprint_is_stable_and_ignores_generated_at() {
+    let calls = Calls::new();
+    let detail = fake_detail(
+        Some("host1"),
+        vec![log_record(
+            LOG_TS,
+            "ERROR",
+            "boom",
+            None,
+            json!({ "host_name": "host1" }),
+        )],
+        vec![span_record("span-1", "dns.query", 12.5)],
+    );
+    let telemetry = FakeTelemetry::new(detail, false, Some(window_metrics()), calls.clone());
+    let instances = FakeInstances::new(
+        resolve_match(matched_instance_for(
+            "host1",
+            "host1",
+            MatchQuality::Host,
+            true,
+        )),
+        calls.clone(),
+    );
+
+    let first = run_assemble(&telemetry, &instances, &FixedClock(1_000))
+        .await
+        .unwrap();
+    let second = run_assemble(&telemetry, &instances, &FixedClock(9_999))
+        .await
+        .unwrap();
+
+    assert_ne!(first.generated_at, second.generated_at);
+    assert_eq!(first.fingerprint, second.fingerprint);
+    assert_eq!(first.fingerprint, compute_fingerprint(&first));
+}
+
+#[tokio::test]
+async fn assemble_propagates_not_found_without_resolving_or_querying_metrics() {
+    let calls = Calls::new();
+    let telemetry = FakeTelemetry::new(
+        fake_detail(None, vec![], vec![]),
+        true,
+        Some(window_metrics()),
+        calls.clone(),
+    );
+    let instances = FakeInstances::new(ResolveMode::None, calls.clone());
+
+    let error = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, DataError::NotFound(_)));
+    assert_eq!(calls.count(&calls.detail), 1);
+    assert_eq!(calls.count(&calls.resolve), 0);
+    assert_eq!(calls.count(&calls.metrics), 0);
+}
+
+#[tokio::test]
+async fn console_service_evidence_delegates_to_assembly_with_fixture_sources() {
+    let fixture = Arc::new(FixtureSource::new(Arc::new(FixedClock(1_761_436_800_000))));
+    let service = ConsoleService::new(
+        fixture.clone() as Arc<dyn TelemetrySource>,
+        fixture as Arc<dyn InstanceSource>,
+    );
+
+    let bundle = service
+        .evidence("4bf92f3577b34da6", &assemble_filter())
+        .await
+        .unwrap();
+
+    assert_eq!(bundle.trace_id, "4bf92f3577b34da6");
+    assert_eq!(bundle.group.trace_id.as_deref(), Some("4bf92f3577b34da6"));
+    assert_eq!(
+        bundle.filter,
+        EvidenceFilter {
+            window_minutes: 60,
+            domain: None,
+            response_code: None,
+        }
+    );
+    assert!(!bundle.logs.items.is_empty());
+    assert!(!bundle.spans.items.is_empty());
+    let instance = bundle.instance.as_ref().expect("fixture instance evidence");
+    assert!(instance.reachable);
+    assert_eq!(instance.match_quality, MatchQuality::Exact);
+    assert_eq!(
+        instance.identity.service_instance_id.as_deref(),
+        Some("dns-node-1")
+    );
+    assert!(!instance.plugins.is_empty());
+    assert!(instance.config.is_some());
+    assert!(bundle.metrics.is_some());
+    assert!(bundle.fingerprint.starts_with("sha256:"));
 }

@@ -29,6 +29,34 @@ pub fn short_hash(input: &str) -> String {
     hex_lower(&digest[..4])
 }
 
+/// Log fields normalized for both hashing and display.
+///
+/// The aliases are shared by [`log_hash_input`] and evidence assembly so an
+/// `EvidenceLog` always displays exactly the values that produced its ID hash.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NormalizedLogFields {
+    pub query: Option<String>,
+    pub qtype: Option<String>,
+    pub response_code: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Extracts the canonical evidence fields from a log's raw field map.
+pub fn normalized_log_fields(log: &LogRecord) -> NormalizedLogFields {
+    NormalizedLogFields {
+        query: field_text(
+            &log.fields,
+            &["query", "query_name", "qname", "dns.question.name"],
+        ),
+        qtype: field_text(&log.fields, &["qtype", "query_type", "dns.question.type"]),
+        response_code: field_text(
+            &log.fields,
+            &["response_code", "responseCode", "dns.response.code"],
+        ),
+        error: field_text(&log.fields, &["error", "error.message"]),
+    }
+}
+
 /// Normalized content used as the `short_hash` input for a log.
 ///
 /// Only stable, content-bearing fields are included. The map-like result is
@@ -41,22 +69,18 @@ pub fn log_hash_input(log: &LogRecord) -> String {
     if !message.is_empty() {
         normalized.insert("message", message.to_string());
     }
-    if let Some(query) = field_text(
-        &log.fields,
-        &["query", "query_name", "qname", "dns.question.name"],
-    ) {
+
+    let fields = normalized_log_fields(log);
+    if let Some(query) = fields.query {
         normalized.insert("query", query);
     }
-    if let Some(qtype) = field_text(&log.fields, &["qtype", "query_type", "dns.question.type"]) {
+    if let Some(qtype) = fields.qtype {
         normalized.insert("qtype", qtype);
     }
-    if let Some(response_code) = field_text(
-        &log.fields,
-        &["response_code", "responseCode", "dns.response.code"],
-    ) {
+    if let Some(response_code) = fields.response_code {
         normalized.insert("response_code", response_code);
     }
-    if let Some(error) = field_text(&log.fields, &["error", "error.message"]) {
+    if let Some(error) = fields.error {
         normalized.insert("error", error);
     }
 

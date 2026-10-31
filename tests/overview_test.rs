@@ -3,12 +3,14 @@ use std::sync::Arc;
 use doggy_dns_console::config::{OpenObserveAuth, OpenObserveConfig};
 use doggy_dns_console::datasource::openobserve::client::OpenObserveClient;
 use doggy_dns_console::datasource::openobserve::overview::{
-    failure_query, failure_series_query, p95_query, series_query, total_query,
+    failure_query, failure_series_query, p95_query, scoped_failure_query, scoped_total_query,
+    series_query, total_query,
 };
 use doggy_dns_console::datasource::openobserve::seen_query;
 use doggy_dns_console::datasource::openobserve::telemetry::OpenObserveTelemetry;
 use doggy_dns_console::datasource::{FixedClock, TelemetrySource};
-use doggy_dns_console::domain::Window;
+use doggy_dns_console::domain::{MetricCounts, Window};
+use doggy_dns_console::error::DataError;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -22,6 +24,13 @@ fn config(base_url: String) -> OpenObserveConfig {
         metric_queries: "dns_queries".to_string(),
         metric_duration: "dns_query_duration_bucket".to_string(),
     }
+}
+
+fn telemetry(server: &MockServer) -> OpenObserveTelemetry {
+    OpenObserveTelemetry::new(
+        Arc::new(OpenObserveClient::new(config(server.uri())).unwrap()),
+        Arc::new(FixedClock(1_761_436_800_000)),
+    )
 }
 
 fn matrix(values: serde_json::Value, labels: serde_json::Value) -> ResponseTemplate {
@@ -200,4 +209,135 @@ async fn seen_instances_tracks_newest_sample_and_builds_control_endpoint() {
     assert_eq!(node5.endpoint.as_deref(), Some("http://10.0.0.5:19090/mcp"));
     let node6 = seen.iter().find(|item| item.host == "dns-node-6").unwrap();
     assert_eq!(node6.endpoint, None);
+}
+
+#[tokio::test]
+async fn failure_metrics_queries_host_and_global_queries_and_failures() {
+    let server = MockServer::start().await;
+    let start = 1_761_436_800_000_i64;
+    let end = start + 30 * 60_000;
+    mount(
+        &server,
+        &scoped_total_query("dns_queries", 30, None),
+        matrix(
+            serde_json::json!([[ts(start), "100"], [ts(end), "120"]]),
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    mount(
+        &server,
+        &scoped_failure_query("dns_queries", 30, None),
+        matrix(
+            serde_json::json!([[ts(start), "5"], [ts(end), "7"]]),
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    mount(
+        &server,
+        &scoped_total_query("dns_queries", 30, Some("dns-node-1")),
+        matrix(
+            serde_json::json!([[ts(start), "10"], [ts(end), "12"]]),
+            serde_json::json!({ "host_name": "dns-node-1" }),
+        ),
+    )
+    .await;
+    mount(
+        &server,
+        &scoped_failure_query("dns_queries", 30, Some("dns-node-1")),
+        matrix(
+            serde_json::json!([[ts(start), "1"], [ts(end), "2"]]),
+            serde_json::json!({ "host_name": "dns-node-1" }),
+        ),
+    )
+    .await;
+
+    let metrics = telemetry(&server)
+        .failure_metrics(Some("dns-node-1"), start as u64, end as u64)
+        .await
+        .unwrap();
+
+    // Only the sample at the end of the range counts: summing every point
+    // would double-count the same trailing `increase` window.
+    assert_eq!(
+        metrics.global,
+        MetricCounts {
+            queries: 120,
+            failures: 7
+        }
+    );
+    assert_eq!(
+        metrics.host,
+        Some(MetricCounts {
+            queries: 12,
+            failures: 2
+        })
+    );
+}
+
+#[tokio::test]
+async fn failure_metrics_without_a_host_queries_global_scope_only() {
+    let server = MockServer::start().await;
+    let start = 1_761_436_800_000_i64;
+    let end = start + 30 * 60_000;
+    mount(
+        &server,
+        &scoped_total_query("dns_queries", 30, None),
+        matrix(serde_json::json!([[ts(end), "120"]]), serde_json::json!({})),
+    )
+    .await;
+    mount(
+        &server,
+        &scoped_failure_query("dns_queries", 30, None),
+        matrix(serde_json::json!([[ts(end), "7"]]), serde_json::json!({})),
+    )
+    .await;
+
+    let metrics = telemetry(&server)
+        .failure_metrics(None, start as u64, end as u64)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        metrics.global,
+        MetricCounts {
+            queries: 120,
+            failures: 7
+        }
+    );
+    assert_eq!(metrics.host, None);
+}
+
+#[tokio::test]
+async fn failure_metrics_propagates_promql_failures() {
+    let server = MockServer::start().await;
+    let start = 1_761_436_800_000_i64;
+    let end = start + 30 * 60_000;
+    Mock::given(method("GET"))
+        .and(path("/api/default/prometheus/api/v1/query_range"))
+        .and(query_param(
+            "query",
+            scoped_total_query("dns_queries", 30, None),
+        ))
+        .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+        .mount(&server)
+        .await;
+
+    let error = telemetry(&server)
+        .failure_metrics(None, start as u64, end as u64)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, DataError::Upstream(_)));
+}
+
+#[test]
+fn scoped_metric_queries_escape_host_label_values() {
+    let query = scoped_total_query("dns_queries", 30, Some("node\"a\\b"));
+
+    assert_eq!(
+        query,
+        r#"sum(increase(dns_queries{host_name="node\"a\\b"}[30m]))"#
+    );
 }

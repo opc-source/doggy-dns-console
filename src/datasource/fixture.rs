@@ -173,6 +173,12 @@ impl TelemetrySource for FixtureSource {
                 "query": group.query,
                 "qtype": group.qtype,
                 "authority": group.authority,
+                // Real telemetry carries the process identity on the failure
+                // row; the demo path must exercise the same extraction.
+                "host_name": group.instance,
+                "service_instance_id": group.instance,
+                "doggy_dns_ip_addr": "127.0.0.1",
+                "doggy_dns_control_port": "19090",
             }),
         }];
         let spans = vec![SpanRecord {

@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
-use crate::datasource::{InstanceSource, TelemetrySource};
+use crate::datasource::{InstanceSource, SystemClock, TelemetrySource};
 use crate::domain::{
     FailureDetail, FailureFilter, FailureGroup, Instance, InstanceDetail, Overview, Window,
 };
 use crate::error::DataError;
+use crate::evidence::assemble::assemble;
+use crate::evidence::model::EvidenceBundle;
 
 #[derive(Clone)]
 pub struct ConsoleService {
@@ -39,6 +41,26 @@ impl ConsoleService {
         filter: FailureFilter,
     ) -> Result<FailureDetail, DataError> {
         self.telemetry.failure_detail(trace_id, filter).await
+    }
+
+    /// Builds the deterministic evidence bundle for one failure trace.
+    ///
+    /// The caller supplies only the trace and the list/detail filter; the
+    /// instance identity is derived from the trace's own telemetry so the
+    /// evidence cannot be pointed at a different process.
+    pub async fn evidence(
+        &self,
+        trace_id: &str,
+        filter: &FailureFilter,
+    ) -> Result<EvidenceBundle, DataError> {
+        assemble(
+            &*self.telemetry,
+            &*self.instances,
+            trace_id,
+            filter,
+            &SystemClock,
+        )
+        .await
     }
 
     pub async fn instances(&self) -> Result<Vec<Instance>, DataError> {
