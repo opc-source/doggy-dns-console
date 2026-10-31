@@ -4,6 +4,7 @@
 //! [`EvidenceBundle`]. Canonicalization:
 //!
 //! - zeroes `generatedAt` and clears `fingerprint`;
+//! - sorts and deduplicates the `missing` sets on the bundle and instance;
 //! - sorts every object key recursively;
 //! - removes all insignificant whitespace;
 //! - sorts arrays whose elements are all objects with a string `id` by `id`;
@@ -31,6 +32,7 @@ pub fn compute_fingerprint(bundle: &EvidenceBundle) -> String {
     let mut normalized = bundle.clone();
     normalized.generated_at = 0;
     normalized.fingerprint.clear();
+    normalize_missing(&mut normalized);
 
     // `EvidenceBundle` only contains strings, integers, booleans, options and
     // JSON values, so serialization cannot fail for a normal bundle.
@@ -40,6 +42,18 @@ pub fn compute_fingerprint(bundle: &EvidenceBundle) -> String {
 
     let digest = Sha256::digest(canonical.as_bytes());
     format!("sha256:{}", hex_lower(&digest))
+}
+
+/// `missing` is a set: sort and deduplicate both the top-level and the
+/// instance-level lists so their input order and repetition cannot affect the
+/// fingerprint.
+fn normalize_missing(bundle: &mut EvidenceBundle) {
+    bundle.missing.sort_unstable();
+    bundle.missing.dedup();
+    if let Some(instance) = bundle.instance.as_mut() {
+        instance.missing.sort_unstable();
+        instance.missing.dedup();
+    }
 }
 
 /// Canonical JSON text: sorted object keys, no insignificant whitespace.

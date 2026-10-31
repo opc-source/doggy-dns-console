@@ -34,7 +34,8 @@ pub struct EvidenceBundle {
     /// `None` when metrics are unavailable for the trace window.
     pub metrics: Option<EvidenceMetrics>,
     /// Top-level degradations. `LogsTruncated` is present whenever
-    /// `logs.truncated` is true.
+    /// `logs.truncated` is true. Order and duplicates are not significant and
+    /// are normalized before fingerprinting.
     pub missing: Vec<MissingEvidence>,
 }
 
@@ -126,6 +127,8 @@ pub struct EvidenceInstance {
     pub plugins: Vec<EvidencePlugin>,
     pub config: Option<EvidenceConfig>,
     pub runtime: Option<Value>,
+    /// Instance-level degradations. Order and duplicates are not significant
+    /// and are normalized before fingerprinting.
     pub missing: Vec<MissingEvidence>,
 }
 
@@ -159,6 +162,30 @@ pub struct EvidenceMetrics {
     /// Per-host counts; absent when the host is unknown or has no series.
     pub host: Option<EvidenceHostMetrics>,
     pub global: MetricCounts,
+    /// `metric:global:queries:<start>-<end>`
+    pub queries_id: String,
+    /// `metric:global:failures:<start>-<end>`
+    pub failures_id: String,
+}
+
+impl EvidenceMetrics {
+    /// Builds global metric evidence with IDs derived from `range`.
+    ///
+    /// Host evidence, when present, must be built through
+    /// [`EvidenceHostMetrics::new`] with the same `range`.
+    pub fn new(
+        range: EvidenceRange,
+        host: Option<EvidenceHostMetrics>,
+        global: MetricCounts,
+    ) -> Self {
+        Self {
+            queries_id: range.metric_id("global", "queries"),
+            failures_id: range.metric_id("global", "failures"),
+            range,
+            host,
+            global,
+        }
+    }
 }
 
 /// Inclusive metric window bounds in epoch milliseconds.
@@ -169,16 +196,48 @@ pub struct EvidenceRange {
     pub end: i64,
 }
 
-/// Host-scoped metric counts, flattened to `{ name, queries, failures }`.
+impl EvidenceRange {
+    /// `metric:<host|global>:<name>:<start>-<end>`
+    ///
+    /// For a host-scoped count the scope is the host name; global counts use
+    /// the literal `global`.
+    pub fn metric_id(&self, scope: &str, name: &str) -> String {
+        format!("metric:{scope}:{name}:{}-{}", self.start, self.end)
+    }
+}
+
+/// Host-scoped metric counts, flattened to
+/// `{ name, queries, failures, queriesId, failuresId }`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EvidenceHostMetrics {
     pub name: String,
     #[serde(flatten)]
     pub counts: MetricCounts,
+    /// `metric:<name>:queries:<start>-<end>`
+    pub queries_id: String,
+    /// `metric:<name>:failures:<start>-<end>`
+    pub failures_id: String,
+}
+
+impl EvidenceHostMetrics {
+    /// Builds host metric evidence with IDs derived from `name` and `range`.
+    pub fn new(name: impl Into<String>, counts: MetricCounts, range: &EvidenceRange) -> Self {
+        let name = name.into();
+        Self {
+            queries_id: range.metric_id(&name, "queries"),
+            failures_id: range.metric_id(&name, "failures"),
+            name,
+            counts,
+        }
+    }
 }
 
 /// Stable reasons why part of the evidence is absent or incomplete.
+///
+/// This is a set value: the fingerprint sorts and deduplicates `missing`
+/// before hashing. The ordering is by the serialized name so it remains
+/// stable if the variants are reordered in source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MissingEvidence {
@@ -187,4 +246,29 @@ pub enum MissingEvidence {
     SpansUnavailable,
     MetricsUnavailable,
     LogsTruncated,
+}
+
+impl MissingEvidence {
+    /// Serialized name, used as the canonical sort key.
+    fn canonical_key(self) -> &'static str {
+        match self {
+            Self::InstanceUnreachable => "instance_unreachable",
+            Self::InstanceNotFound => "instance_not_found",
+            Self::SpansUnavailable => "spans_unavailable",
+            Self::MetricsUnavailable => "metrics_unavailable",
+            Self::LogsTruncated => "logs_truncated",
+        }
+    }
+}
+
+impl PartialOrd for MissingEvidence {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for MissingEvidence {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.canonical_key().cmp(other.canonical_key())
+    }
 }

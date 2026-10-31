@@ -569,6 +569,29 @@ fn evidence_span(span_id: &str, name: &str, duration_ms: f64, status: &str) -> E
     }
 }
 
+fn evidence_metrics() -> EvidenceMetrics {
+    let range = EvidenceRange {
+        start: 1_793_439_600_000,
+        end: 1_793_441_400_000,
+    };
+    let host = EvidenceHostMetrics::new(
+        "dns-node-1",
+        MetricCounts {
+            queries: 2,
+            failures: 2,
+        },
+        &range,
+    );
+    EvidenceMetrics::new(
+        range,
+        Some(host),
+        MetricCounts {
+            queries: 18,
+            failures: 0,
+        },
+    )
+}
+
 fn bundle() -> EvidenceBundle {
     EvidenceBundle {
         trace_id: TRACE_ID.to_string(),
@@ -598,23 +621,7 @@ fn bundle() -> EvidenceBundle {
             total: 2,
             truncated: false,
         },
-        metrics: Some(EvidenceMetrics {
-            range: EvidenceRange {
-                start: 1_793_439_600_000,
-                end: 1_793_441_400_000,
-            },
-            host: Some(EvidenceHostMetrics {
-                name: "dns-node-1".to_string(),
-                counts: MetricCounts {
-                    queries: 2,
-                    failures: 2,
-                },
-            }),
-            global: MetricCounts {
-                queries: 18,
-                failures: 0,
-            },
-        }),
+        metrics: Some(evidence_metrics()),
         missing: Vec::new(),
     }
 }
@@ -669,10 +676,38 @@ fn evidence_bundle_serializes_camel_case_and_snake_case_missing() {
         value["metrics"]["range"]["start"].as_i64(),
         Some(1_793_439_600_000)
     );
+    assert_eq!(
+        value["metrics"]["range"]["end"].as_i64(),
+        Some(1_793_441_400_000)
+    );
+    // Global counts stay numeric and expose spec §4 metric IDs.
     assert_eq!(value["metrics"]["global"]["queries"], 18);
-    // Host metrics keep the domain `MetricCounts` shape flattened.
+    assert_eq!(value["metrics"]["global"]["failures"], 0);
+    assert!(value["metrics"]["global"]["queries"].is_number());
+    assert!(value["metrics"]["global"]["failures"].is_number());
+    assert_eq!(
+        value["metrics"]["queriesId"],
+        "metric:global:queries:1793439600000-1793441400000"
+    );
+    assert_eq!(
+        value["metrics"]["failuresId"],
+        "metric:global:failures:1793439600000-1793441400000"
+    );
+    // Host metrics keep the domain `MetricCounts` shape flattened alongside
+    // the host name and the host-scoped IDs.
     assert_eq!(value["metrics"]["host"]["name"], "dns-node-1");
     assert_eq!(value["metrics"]["host"]["queries"], 2);
+    assert_eq!(value["metrics"]["host"]["failures"], 2);
+    assert!(value["metrics"]["host"]["queries"].is_number());
+    assert!(value["metrics"]["host"]["failures"].is_number());
+    assert_eq!(
+        value["metrics"]["host"]["queriesId"],
+        "metric:dns-node-1:queries:1793439600000-1793441400000"
+    );
+    assert_eq!(
+        value["metrics"]["host"]["failuresId"],
+        "metric:dns-node-1:failures:1793439600000-1793441400000"
+    );
     assert!(value["metrics"]["host"].get("counts").is_none());
 
     let missing = serde_json::to_value([
@@ -1011,6 +1046,44 @@ fn fingerprint_changes_with_metrics() {
         "global metrics failures",
     );
     assert_fingerprint_changes(
+        |bundle| {
+            bundle.metrics.as_mut().unwrap().queries_id = "metric:global:queries:0-1".to_string();
+        },
+        "global metrics queriesId",
+    );
+    assert_fingerprint_changes(
+        |bundle| {
+            bundle.metrics.as_mut().unwrap().failures_id = "metric:global:failures:0-1".to_string();
+        },
+        "global metrics failuresId",
+    );
+    assert_fingerprint_changes(
+        |bundle| {
+            bundle
+                .metrics
+                .as_mut()
+                .unwrap()
+                .host
+                .as_mut()
+                .unwrap()
+                .queries_id = "metric:dns-node-1:queries:0-1".to_string();
+        },
+        "host metrics queriesId",
+    );
+    assert_fingerprint_changes(
+        |bundle| {
+            bundle
+                .metrics
+                .as_mut()
+                .unwrap()
+                .host
+                .as_mut()
+                .unwrap()
+                .failures_id = "metric:dns-node-1:failures:0-1".to_string();
+        },
+        "host metrics failuresId",
+    );
+    assert_fingerprint_changes(
         |bundle| bundle.missing.push(MissingEvidence::MetricsUnavailable),
         "metrics_unavailable missing entry",
     );
@@ -1075,18 +1148,66 @@ fn fingerprint_is_independent_of_equal_timestamp_log_order() {
 }
 
 #[test]
-fn fingerprint_preserves_order_for_arrays_without_ids() {
+fn fingerprint_normalizes_missing_order_and_duplicates() {
     let mut first = bundle();
     first.missing = vec![
         MissingEvidence::MetricsUnavailable,
         MissingEvidence::SpansUnavailable,
+        MissingEvidence::LogsTruncated,
     ];
-    let mut second = first.clone();
-    second.missing.reverse();
+    first.instance.as_mut().unwrap().missing = vec![
+        MissingEvidence::InstanceUnreachable,
+        MissingEvidence::InstanceNotFound,
+    ];
 
-    assert_ne!(
+    // `missing` is a set: reordering and repeating members must not change the
+    // fingerprint, both at bundle level and at instance level.
+    let mut second = first.clone();
+    second.missing = vec![
+        MissingEvidence::LogsTruncated,
+        MissingEvidence::MetricsUnavailable,
+        MissingEvidence::SpansUnavailable,
+        MissingEvidence::MetricsUnavailable,
+    ];
+    second.instance.as_mut().unwrap().missing = vec![
+        MissingEvidence::InstanceNotFound,
+        MissingEvidence::InstanceUnreachable,
+        MissingEvidence::InstanceNotFound,
+    ];
+
+    assert_eq!(
         compute_fingerprint(&first),
         compute_fingerprint(&second),
-        "arrays without a uniform string id must keep their order"
+        "missing order and duplicates must be normalized"
+    );
+}
+
+#[test]
+fn fingerprint_changes_when_missing_membership_changes() {
+    let mut first = bundle();
+    first.missing = vec![MissingEvidence::MetricsUnavailable];
+    first.instance.as_mut().unwrap().missing = vec![MissingEvidence::InstanceUnreachable];
+
+    let mut extra_top_level = first.clone();
+    extra_top_level
+        .missing
+        .push(MissingEvidence::SpansUnavailable);
+    assert_ne!(
+        compute_fingerprint(&first),
+        compute_fingerprint(&extra_top_level),
+        "adding a top-level missing reason must change the fingerprint"
+    );
+
+    let mut extra_instance = first.clone();
+    extra_instance
+        .instance
+        .as_mut()
+        .unwrap()
+        .missing
+        .push(MissingEvidence::InstanceNotFound);
+    assert_ne!(
+        compute_fingerprint(&first),
+        compute_fingerprint(&extra_instance),
+        "adding an instance missing reason must change the fingerprint"
     );
 }
