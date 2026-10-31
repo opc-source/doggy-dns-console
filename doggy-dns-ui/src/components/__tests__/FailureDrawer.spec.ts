@@ -523,6 +523,25 @@ describe('FailureDrawer investigation panel', () => {
     expect(investigation.startAnalysis).toHaveBeenCalledWith()
   })
 
+  it('treats an unavailable conclusion as settled instead of an error', async () => {
+    current = createInvestigation({
+      state: 'analysisDone',
+      evidence: bundle(),
+      analysis: snapshot({ result: result({ status: 'unavailable' }) }),
+    })
+
+    const wrapper = mountDrawer()
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="investigation-state"]').text()).toBe('不可用')
+    expect(wrapper.find('[data-testid="verdict-card"]').exists()).toBe(true)
+    // The card's forced rerun is the only reanalysis action; the error banner
+    // and its cache-hitting non-forced retry must not render.
+    expect(wrapper.findAll('[data-test="reanalyze"]')).toHaveLength(1)
+    expect(wrapper.find('[data-test="retry-analysis"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('分析失败')
+  })
+
   it('shows a retryable analysis error banner after a transient start failure', async () => {
     const investigation = createInvestigation({
       state: 'evidenceReady',

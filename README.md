@@ -203,8 +203,11 @@ evidence is served from the cache. The drawer shows the conclusion card
 (category, confidence, summary, not-determinable gaps), observed and inferred
 findings whose evidence IDs jump to and highlight the matching log/span/config/
 plugin/metric row, tabs for logs, spans, instance and metrics, and a forensics
-block (attempt, tool calls, fingerprint, model, prompt version) with a
-reanalysis button. The chat handoff sends the trace id, fingerprint, conclusion
+block (attempt, tool calls, fingerprint, model, prompt version). A settled
+attempt — including an `unavailable` conclusion — is not an error state; the
+drawer shows one reanalysis action at a time: the forced re-run on the
+conclusion card, or the one in the stale banner once the evidence changes. The
+chat handoff sends the trace id, fingerprint, conclusion
 and analysis id to the chat session. When a reloaded bundle's fingerprint differs
 from the analyzed one, the old analysis is kept but marked stale
 ("证据已变化，需重新分析" — evidence changed, reanalyze) and is never silently

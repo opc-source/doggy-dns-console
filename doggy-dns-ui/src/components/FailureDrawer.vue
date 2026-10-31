@@ -57,6 +57,7 @@ const stateLabel = computed(() => {
     case 'analysisRunning':
       return '分析中'
     case 'analysisDone':
+      if (result.value?.status === 'unavailable') return '不可用'
       return result.value?.status === 'insufficient_evidence' ? '证据不足' : '已完成'
     case 'analysisUnavailable':
       return '不可用'

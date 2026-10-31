@@ -40,7 +40,7 @@ function shortName(query: string) {
         data-testid="analyzed-badge"
         class="rounded-md bg-accent/15 px-1.5 py-0.5 text-[10px] text-accent"
         title="已有调查分析"
-        >已分析</span
+        >已有分析</span
       >
       <ChevronRight :size="14" class="text-muted" />
     </button>

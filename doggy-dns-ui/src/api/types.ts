@@ -290,7 +290,9 @@ export interface AnalysisSnapshot {
   status: InvestigationStatus
   attempt: number
   toolCallCount: number
+  /** Epoch milliseconds, like every evidence timestamp. */
   startedAt: number
+  /** Epoch milliseconds; null while the attempt has not finished. */
   finishedAt: number | null
   filter: EvidenceFilter
   evidenceFingerprint: string
@@ -314,6 +316,8 @@ export interface AnalysisMarker {
   verdictCategory: VerdictCategory | null
   confidence: Confidence | null
   attempt: number
+  /** Epoch milliseconds, like every evidence timestamp. */
   createdAt: number
+  /** Epoch milliseconds; null while the attempt has not finished. */
   finishedAt: number | null
 }

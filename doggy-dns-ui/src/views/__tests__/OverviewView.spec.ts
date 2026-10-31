@@ -114,6 +114,6 @@ describe('OverviewView', () => {
     expect(row.text()).toContain('a.example.')
     const badge = row.find('[data-testid="analyzed-badge"]')
     expect(badge.exists()).toBe(true)
-    expect(badge.text()).toBe('已分析')
+    expect(badge.text()).toBe('已有分析')
   })
 })

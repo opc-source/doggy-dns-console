@@ -193,7 +193,7 @@ describe('useInvestigation', () => {
     expect(getPaths()).toHaveLength(1)
   })
 
-  it('maps_an_unavailable_result_to_analysis_unavailable', async () => {
+  it('keeps_an_unavailable_result_as_analysis_done', async () => {
     const { item } = setup()
     getMock().mockResolvedValueOnce(bundle())
     await item.loadEvidence()
@@ -204,7 +204,9 @@ describe('useInvestigation', () => {
     })
     await item.startAnalysis()
 
-    expect(item.state.value).toBe('analysisUnavailable')
+    // A succeeded job always carries a conclusion; `unavailable` is one of
+    // them (spec §7), so it is a settled result, not an unavailable state.
+    expect(item.state.value).toBe('analysisDone')
     expect(item.analysis.value?.result?.status).toBe('unavailable')
   })
 

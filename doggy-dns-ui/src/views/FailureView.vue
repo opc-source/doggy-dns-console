@@ -8,6 +8,10 @@ const route = useRoute()
 const router = useRouter()
 
 const DEFAULT_WINDOW_MINUTES = 60
+// The backend clamps the evidence window to this range; parsing here keeps the
+// drawer's request (and the restore link) inside it instead of earning a 400.
+const MIN_WINDOW_MINUTES = 5
+const MAX_WINDOW_MINUTES = 1440
 const POSITIVE_INTEGER = /^\d+$/
 
 function firstQueryValue(value: unknown): string | null {
@@ -24,7 +28,8 @@ const windowMinutes = computed(() => {
   const raw = firstQueryValue(route.query.windowMinutes)?.trim()
   if (!raw || !POSITIVE_INTEGER.test(raw)) return DEFAULT_WINDOW_MINUTES
   const parsed = Number(raw)
-  return parsed > 0 ? parsed : DEFAULT_WINDOW_MINUTES
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_WINDOW_MINUTES
+  return Math.min(Math.max(parsed, MIN_WINDOW_MINUTES), MAX_WINDOW_MINUTES)
 })
 
 const analysisId = computed(() => {

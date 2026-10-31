@@ -26,12 +26,10 @@ function isInFlight(snapshot: AnalysisSnapshot): boolean {
 function snapshotState(snapshot: AnalysisSnapshot): InvestigationState {
   if (snapshot.status === 'queued') return 'analysisQueued'
   if (snapshot.status === 'running') return 'analysisRunning'
-  if (snapshot.status === 'succeeded') {
-    const status = snapshot.result?.status
-    return status === 'ok' || status === 'insufficient_evidence'
-      ? 'analysisDone'
-      : 'analysisUnavailable'
-  }
+  // A succeeded job always carries a conclusion: `ok`, `insufficient_evidence`
+  // and `unavailable` are all settled results (spec §7), so none of them is an
+  // unavailable state.
+  if (snapshot.status === 'succeeded') return 'analysisDone'
   return 'analysisUnavailable'
 }
 
