@@ -77,6 +77,7 @@ describe('FailureView', () => {
     ['below the backend minimum', '/failures/t6?windowMinutes=1', 5],
     ['above the backend maximum', '/failures/t6?windowMinutes=5000', 1440],
     ['beyond u32', '/failures/t6?windowMinutes=99999999999999999999', 1440],
+    ['too large for a finite float', `/failures/t6?windowMinutes=${'9'.repeat(400)}`, 1440],
   ])('clamps a window %s to the backend range', async (_label, path, expected) => {
     const { wrapper } = await mountView(path)
 

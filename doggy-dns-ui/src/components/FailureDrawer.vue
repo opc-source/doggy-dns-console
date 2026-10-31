@@ -105,6 +105,10 @@ const failedSnapshot = computed(
 )
 
 const analysisError = computed(() => {
+  // A result-bearing snapshot may still carry a stale error string; it is a
+  // conclusion, not a failed analysis, so the banner belongs only to the
+  // no-result states.
+  if (result.value !== null) return null
   if (state.value !== 'analysisUnavailable' && !failedSnapshot.value) return null
   return analysis.value?.error ?? error.value ?? '分析失败，请稍后重试'
 })

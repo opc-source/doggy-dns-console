@@ -179,7 +179,8 @@ status, verdict category/confidence, result JSON, tool-call audit JSON, error
 and timestamps. Raw logs and spans are **never** persisted. Retention defaults
 to 30 days and is pruned at startup and once a day. At startup, `queued` or
 `running` rows left behind by a previous process are marked `failed` as
-interrupted, so no status request waits on a job nothing owns.
+interrupted, so no status request waits on a job nothing owns. This assumes one
+console process per database file; analysis state is process-local by design.
 
 ### Configuration
 

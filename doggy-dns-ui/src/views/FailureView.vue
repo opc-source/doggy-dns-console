@@ -28,7 +28,9 @@ const windowMinutes = computed(() => {
   const raw = firstQueryValue(route.query.windowMinutes)?.trim()
   if (!raw || !POSITIVE_INTEGER.test(raw)) return DEFAULT_WINDOW_MINUTES
   const parsed = Number(raw)
-  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_WINDOW_MINUTES
+  if (Number.isNaN(parsed) || parsed <= 0) return DEFAULT_WINDOW_MINUTES
+  // Clamp before the infinity check: a value too large for a finite float is
+  // still "too large", not invalid.
   return Math.min(Math.max(parsed, MIN_WINDOW_MINUTES), MAX_WINDOW_MINUTES)
 })
 
