@@ -124,18 +124,24 @@ impl TelemetrySource for OpenObserveTelemetry {
         logs.sort_by_key(|log| log.ts);
 
         let span_sql = trace_spans_query(trace_stream, trace_id, 200);
-        let spans = match self.client.search_traces(&span_sql, start, end, 200).await {
-            Ok(rows) => rows.iter().filter_map(normalize_span_row).collect(),
-            Err(error) => {
-                tracing::warn!(
-                    trace_id = trace_id,
-                    error = %error,
-                    "trace span lookup failed"
-                );
-                Vec::new()
-            }
-        };
-        Ok(FailureDetail { group, logs, spans })
+        let (spans, spans_unavailable) =
+            match self.client.search_traces(&span_sql, start, end, 200).await {
+                Ok(rows) => (rows.iter().filter_map(normalize_span_row).collect(), false),
+                Err(error) => {
+                    tracing::warn!(
+                        trace_id = trace_id,
+                        error = %error,
+                        "trace span lookup failed"
+                    );
+                    (Vec::new(), true)
+                }
+            };
+        Ok(FailureDetail {
+            group,
+            logs,
+            spans,
+            spans_unavailable,
+        })
     }
 
     async fn seen_instances(&self, window: Window) -> Result<Vec<SeenInstance>, DataError> {

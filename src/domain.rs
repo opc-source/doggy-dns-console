@@ -105,6 +105,59 @@ pub struct FailureDetail {
     pub group: FailureGroup,
     pub logs: Vec<LogRecord>,
     pub spans: Vec<SpanRecord>,
+    /// True when the span lookup failed. The detail remains usable: logs and
+    /// instance evidence are still valid, but spans must not be read as absent.
+    #[serde(default)]
+    pub spans_unavailable: bool,
+}
+
+/// How a telemetry identity was matched to a seen instance, strongest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchQuality {
+    Exact,
+    HostIp,
+    Host,
+    None,
+}
+
+/// Instance identity carried by failure telemetry rows.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceIdentity {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_instance_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
+}
+
+/// A seen instance matched to a telemetry identity. `detail` carries the
+/// telemetry identity even when the probe failed; `reachable` says whether
+/// config/runtime/plugin evidence was actually collected.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchedInstance {
+    pub quality: MatchQuality,
+    pub reachable: bool,
+    pub detail: InstanceDetail,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricCounts {
+    pub queries: u64,
+    pub failures: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowMetrics {
+    /// Per-host counts; absent when the host is unknown or has no series.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<MetricCounts>,
+    pub global: MetricCounts,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

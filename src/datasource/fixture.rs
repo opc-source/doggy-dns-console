@@ -5,8 +5,8 @@ use serde_json::json;
 
 use crate::datasource::{Clock, InstanceSource, TelemetrySource};
 use crate::domain::{
-    FailureDetail, FailureFilter, FailureGroup, Instance, InstanceDetail, LogRecord, Overview,
-    PluginInfo, SeenInstance, SeriesPoint, SpanRecord, Window,
+    FailureDetail, FailureFilter, FailureGroup, Instance, InstanceDetail, LogRecord, MetricCounts,
+    Overview, PluginInfo, SeenInstance, SeriesPoint, SpanRecord, Window, WindowMetrics,
 };
 use crate::error::DataError;
 
@@ -185,7 +185,12 @@ impl TelemetrySource for FixtureSource {
                 "dns.question.name": group.query,
             }),
         }];
-        Ok(FailureDetail { group, logs, spans })
+        Ok(FailureDetail {
+            group,
+            logs,
+            spans,
+            spans_unavailable: false,
+        })
     }
 
     async fn seen_instances(&self, _window: Window) -> Result<Vec<SeenInstance>, DataError> {
@@ -210,6 +215,24 @@ impl TelemetrySource for FixtureSource {
                 endpoint: None,
             },
         ])
+    }
+
+    async fn failure_metrics(
+        &self,
+        host: Option<&str>,
+        _start_ms: u64,
+        _end_ms: u64,
+    ) -> Result<WindowMetrics, DataError> {
+        Ok(WindowMetrics {
+            host: host.map(|_| MetricCounts {
+                queries: 120,
+                failures: 12,
+            }),
+            global: MetricCounts {
+                queries: 4800,
+                failures: 421,
+            },
+        })
     }
 }
 

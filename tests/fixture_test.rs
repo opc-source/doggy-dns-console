@@ -46,6 +46,7 @@ async fn fixture_failure_detail_contains_trace_evidence() {
     assert_eq!(detail.group.trace_id.as_deref(), Some(trace_id.as_str()));
     assert!(!detail.logs.is_empty());
     assert!(!detail.spans.is_empty());
+    assert!(!detail.spans_unavailable);
 }
 
 #[tokio::test]
