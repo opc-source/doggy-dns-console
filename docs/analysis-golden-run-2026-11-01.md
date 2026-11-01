@@ -17,7 +17,7 @@ filled table below is this run's result.
 | `CONSOLE_ANALYSIS_RATE_PER_MIN` | `10` (default) |
 | `CONSOLE_ANALYSIS_TIMEOUT_SECONDS` | **non-default**: run started at the documented `60`, raised to `180`, then `300` (see blocker B2) |
 | Telemetry | OpenObserve at `127.0.0.1:5080`, streams `doggy_dns` (logs + traces), read-only |
-| Serving instance | local `doggy-dns` debug build with MCP enabled, `127.0.0.1:15353`, pid 96916, instance id `CherishCai-96916` |
+| Serving instance | local `doggy-dns` debug build with MCP enabled, `127.0.0.1:15353`, pid 96916, instance id `<host>-96916` (the synthesised hostname-and-pid form; host redacted) |
 | Failure factory | scripted UDP DNS upstream on `127.0.0.1:15354` with per-qname behaviour (silence / REFUSED / NXDOMAIN), harness config and scratch under `/tmp/doggy-live/` (outside both repos) |
 | Case 4 check 2 | local OpenAI-compatible stub on `127.0.0.1:8899`, `MODEL_BASE_URL`/`MODEL_NAME` pointed at it (deployment change only, no code change) |
 
@@ -29,8 +29,8 @@ investigation rows, metadata and tool audits.
 | Case | Result status / category | Confidence | Observed IDs valid? | Tool calls | Duration (s) | POST result (200/202) | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 upstream timeout | `succeeded` / `upstream_timeout`, result `ok` | high | yes (all bundle IDs hand-checked) | 6 | 160 | 202 | trace `ef8366b0…`; four earlier attempts on this case were killed by the 60 s default and stored `unavailable`/`low`; forced re-run `0b80c071` 144 s and a second non-forced `36383c5f` 166 s both re-called the model (B1) |
-| 2 connection refused | **not run** | — | — | — | — | — | The condition as written cannot be produced: with the upstream port closed doggy-dns logs `error=request timed out` + `rcode=ServFail`, not `connection refused`/`ECONNREFUSED` (macOS UDP gives no ICMP to hickory). Exploratory attempt `5dfbc44e` (trace `4e1c2fa3…`) returned `upstream_timeout`/high and explicitly refused to invent a refusal — honest, but counts as a miss. The case has since been restated around the RCODE, and the upstream-REFUSED attempt booked under case 3 (`84073c5b`) meets that restated condition — but it ran under the original spec, so this row stays `not run` and the 5/8 score is unchanged |
-| 3 policy REFUSED | **not run** | — | — | — | — | — | No policy/ACL plugin exists in doggy-dns: the live instance exposes only `native`(order 0) and `forward`(order 1), and its builtin plugin set is exactly those two (a re-check of the workspace finds `policy`/`acl` only in comments, one of them about a *future* view/ACL-per-client handler), so the case has no reproducible condition. Exploratory upstream-REFUSED attempt `84073c5b` (trace `7c6863b7…`) returned `upstream_refused`/high with valid citations and did **not** blame a policy component — recorded as an observation, counts as a miss |
+| 2 connection refused | **not run** | — | — | — | — | — | The condition as written could not be produced on this harness: with the upstream port closed doggy-dns logged `error=request timed out` + `rcode=ServFail`, not `connection refused`/`ECONNREFUSED` (macOS UDP gives no ICMP to hickory). Exploratory attempt `5dfbc44e` (trace `4e1c2fa3…`) returned `upstream_timeout`/high and explicitly refused to invent a refusal — honest, but counts as a miss. The case has since been restated around the RCODE, and the upstream-REFUSED attempt booked under case 3 (`84073c5b`) meets that restated condition — but it ran under the original spec, so this row stays `not run` and the 5/8 score is unchanged |
+| 3 policy REFUSED | **not run** | — | — | — | — | — | No policy/ACL plugin exists in doggy-dns: the live instance exposes only `native`(order 0) and `forward`(order 1), and its builtin plugin set is exactly those two (the resolver's only ACL reference is a comment about a *future* view/ACL-per-client handler in `authority_chain.rs`; `axfr_policy`, which is live code, is a zone-transfer policy and not a recursion ACL), so the case has no reproducible condition. Exploratory upstream-REFUSED attempt `84073c5b` (trace `7c6863b7…`) returned `upstream_refused`/high with valid citations and did **not** blame a policy component — recorded as an observation, counts as a miss |
 | 4 NXDOMAIN exclusion | `n/a` (rejection run stored `invalid`, `result = null`) | — | `n/a` | 0 | 0 | `202` (forced rejection run) | **Hit — both checks.** Check 1: an NXDOMAIN-only trace is absent from the failure list and detail, and evidence returns `404`. Check 2: the stub's submission was rejected on the first pass, the tool reply carried `{"error":"NXDOMAIN is not a failure cause"}`, exactly one repair attempt was sent, the stub repeated the answer, and the job stored `invalid` with `result = null`, `verdictCategory = null` and `error` = the capped raw submission. No stored result in the database mentions NXDOMAIN (0 of 14) |
 | 5 instance unreachable | `succeeded` / `upstream_timeout`, result `ok` | medium | yes | 6 | 101 | 202, then **200** on the identical-evidence re-POST | doggy-dns stopped before the POST: `missing=["instance_unreachable"]`, `reachable=false`, `status/pid/uptimeSeconds/listenAddr` null, 0 plugins, no config, no runtime, `matchQuality` degraded from `exact` to `host`. Confidence `medium` and 7 `notDeterminable` entries, one of which is the exhausted budget. This is also the run that proves the cache works once the fingerprint is stable |
 | 6 spans missing | `succeeded` / `upstream_timeout`, result `ok` | high | yes — no `span:` ID cited | 6 | 93 | 202 | bundle degraded exactly as specified: `missing=["spans_unavailable"]`, `logs=6`, `spans.items=[]`, assembly succeeded. `notDeterminable` names the span gap; no span-duration claim. High confidence is legitimate here because the instance was reachable. The first attempt of this case (`d0478a18`) died on the 180 s wall and stored `unavailable`/`low` |
@@ -46,11 +46,11 @@ count as misses per the runbook's denominator.
 | --- | --- | --- | --- |
 | Verdict accuracy | ≥ 80% (≥ 7 of 8) | 5/8 = 62.5% (5/5 of the cases that could be produced) | **miss** |
 | Citation validity | 100% | 100%. No result carries an unknown bundle ID (server-enforced and re-checked per case against the captured bundle). Two exploratory runs cite `tool:<n>:result`, which the offline check cannot resolve because tool payloads are not persisted — only canonical args, duration, result hash and structural summary | met |
-| Unsupported-conclusion rate | ≤ 10% | 0 of 5 scored results asserted an unavailable fact as observed; instance/config/plugin claims were absent or marked `inferred`, and both unreachable-instance runs disclosed it | met |
-| Average tool calls | ≤ 6 (budget recorded) | 6.0 over the four verdict-scored runs that called the model (cases 1, 5, 6, 8) — each exhausted the budget, and 2–4 of those 6 calls came back as server-side errors rather than data. Case 4's stub run made 0 calls and is excluded from this mean | at the bound, not usable headroom |
+| Unsupported-conclusion rate | ≤ 10% | 0 of the 4 scored results that stored a verdict (cases 1, 5, 6, 8) asserted an unavailable fact as observed; case 4's run stored `invalid` with `result = null`, so it asserted nothing at all. Instance/config/plugin claims were absent or marked `inferred`, and both unreachable-instance runs disclosed it | met |
+| Average tool calls | ≤ 6 (budget recorded) | 6.0 over the 4 scored runs that called the model (cases 1, 5, 6, 8 — case 8 scores on stale detection rather than on its verdict). Each exhausted the budget, and 2-4 of those 6 calls came back as server-side errors rather than data. Excluded from the mean: case 4's 3 stub attempts (0 calls), the 5 attempts killed on a deadline (no submission), and cases 2, 3, 7 (`not run`) | at the bound, not usable headroom |
 | p95 analysis duration | ≤ 60 s | 180 s nearest-rank over 14 model attempts (60, 60, 60, 60, 93, 101, 127, 144, 156, 160, 162, 166, 166, 180; mean 121 s) | **miss** |
 | Cost per analysis | report only | Not measured — the harness has no provider billing readout. 14 billed `qwen3.8-flash` attempts, 5 of them deadline kills (four at the then-default 60 s, one at 180 s) plus 3 free stub attempts | reported |
-| Cache-hit rate | report only | 1 of 11 non-forced POSTs returned `200` (9%). Of the three intentional identical-evidence repeats, only the one taken with the instance unreachable hit | reported (B1) |
+| Cache-hit rate | report only | 1 of 11 non-forced POSTs returned `200` (9%). The denominator is the round's live tally of every POST issued **without** `force` — each case's first drawer/API run, the identical-evidence repeats, and the deadline-killed attempts that were re-POSTed — with the 3 forced re-runs and the 3 stub attempts excluded; it is not re-derivable from the database afterwards, because `failure_investigations` does not persist whether a POST was forced. Of the three intentional identical-evidence repeats, only the one taken with the instance unreachable hit | reported (B1) |
 
 ## Blockers
 
@@ -97,7 +97,7 @@ per-turn rather than whole-job.
   put the log/trace stream names (and the accepted argument shape) into the bundle, and do not
   count server-side validation failures against the tool budget.
 * `/api/instances` degrades the synthesised instance id when the MCP probe fails
-  (`CherishCai-96916` → `CherishCai`) and `matchQuality` moves `exact` → `host`, so identity
+  (`<host>-96916` → `<host>`) and `matchQuality` moves `exact` → `host`, so identity
   quality changes with liveness. Instance id remains host-and-pid derived until doggy-dns
   publishes a stable `serviceInstanceId`.
 * Case 4's stub run showed the agent's HTTP call to the OpenAI-compatible endpoint carrying
@@ -167,7 +167,9 @@ it as a gap. No call in the audit guessed a stream name — the model wrote
 `FROM doggy_dns` and passed `stream_name: doggy_dns`, against 2-4 "stream not
 found"/argument-shape rejections in this round.
 
-Two caveats worth recording, both now stated in the runbook and README:
+Two caveats worth recording. Both are stated on the `fix/analysis-budget-alignment`
+branch (PR #7) — in the runbook's p95 row and the README's Boundaries note —
+rather than only here:
 
 * 180 s is not headroom at the top of the budget. A separate attempt on the same
   build used all 6 evidence calls (525 ms of tool time in total) and was cut at
@@ -188,7 +190,12 @@ prompt's stream guidance entirely.
 
 ## Artefacts
 
-Harness, per-case snapshots and tool audits live in `/tmp/doggy-live/` and
-`/tmp/doggy-live/eval/` (deliberately outside both repositories). Investigation rows are in
-`data/console.db` (`failure_investigations`), 17 rows: 14 `qwen3.8-flash` attempts, 3
-`stub-nx` attempts.
+Harness, per-case snapshots and tool audits lived in `/tmp/doggy-live/` and
+`/tmp/doggy-live/eval/` (deliberately outside both repositories, so they are
+session-local scratch and are not archived here). Investigation rows are in the
+local `data/console.db` (`failure_investigations`); this round accounts for 17 of
+them — 14 `qwen3.8-flash` attempts and 3 `stub-nx` attempts — and that file also
+holds the 2026-11-02 re-check rows described above. The one durable artefact kept
+in the repository is the recorded `tools/list` parameter shape, in
+`tests/fixtures/openobserve_tools_list_2026-11-02.json` (on the
+`fix/analysis-budget-alignment` branch, PR #7).

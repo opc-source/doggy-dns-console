@@ -35,10 +35,12 @@ finishes inside the budget. That is what these eight cases measure.
   rows. If a condition cannot be produced, mark the case **not run**, not
   passed.
 - Three of those conditions are not what they assumed, as the 2026-11-01 run
-  found: a closed upstream port is logged as a timeout rather than a refusal (so
-  case 2 is reproduced by an upstream that *answers* REFUSED, not by a closed
-  port), there is no policy/ACL plugin in the resolver (case 3), and a read-only
-  harness cannot build a >200-row trace (case 7). Cases 3 and 7 are therefore
+  found: on that harness a closed upstream port was logged as a timeout rather
+  than a refusal (the forward plugin tries UDP first and macOS sends no ICMP
+  port-unreachable, so no refusal text appeared — case 2 is instead reproduced by
+  an upstream that *answers* REFUSED, and checked on the RCODE, not on a string),
+  there is no policy/ACL plugin in the resolver (case 3), and a read-only harness
+  cannot build a >200-row trace (case 7). Cases 3 and 7 are therefore
   **fixture-only** against a real instance; say which capability each `not run`
   is waiting for, because the scored ceiling with a real instance is 6 of 8 (see
   [Metrics](#metrics)).
@@ -160,15 +162,20 @@ cannot support the case.
   RCODE `REFUSED`, send a query, open the resulting failure trace.
 - **Reachability (added after the 2026-11-01 run):** the case used to be written
   as "stop the upstream resolver, leave the port closed" and to require a
-  `connection refused` / `ECONNREFUSED` log line. That condition is not
-  producible: over UDP on macOS a closed upstream port gives doggy-dns no ICMP
-  port-unreachable, so the resolver logs the identical
-  `error=request timed out` + `response_code=ServFail` row as case 1 — the two
-  are indistinguishable at error-string level, and the observable distinction is
-  the RCODE. An upstream answering REFUSED was in fact exercised in that round and
-  produced `upstream_refused` with valid citations, but it was booked as a case-3
-  observation under the original spec, so it did not score as case 2 — see the
-  [2026-11-01 record](analysis-golden-run-2026-11-01.md).
+  `connection refused` / `ECONNREFUSED` log line. That condition did not hold on
+  this harness: the forward plugin registers UDP *and* TCP for every upstream and
+  hickory tries UDP first, and macOS sends no ICMP port-unreachable back for a
+  closed UDP port, so the resolver logged the identical
+  `error=request timed out` + `response_code=ServFail` row as case 1. Timeout and
+  refusal were then indistinguishable in the error text, and the observable
+  distinction was the RCODE. This is a property of that route on that platform,
+  not a guarantee: when the failing connection really is TCP (or the platform
+  reports the ICMP error), the same WARN row carries the refusal's own text,
+  because `classify_error` keeps the raw error in `error`. So never require a
+  string — check the RCODE. An upstream answering REFUSED was in fact exercised
+  in that round and produced `upstream_refused` with valid citations, but it was
+  booked as a case-3 observation under the original spec, so it did not score as
+  case 2 — see the [2026-11-01 record](analysis-golden-run-2026-11-01.md).
 - **Expected:** `ok`, category `upstream_refused`.
 - **Mandatory citation:** the `log:` row or `group.responseCode` carrying the
   refusal, or the `span:` whose error status carries it. If the upstream address
@@ -176,10 +183,10 @@ cannot support the case.
 - **Failure signs:** conflating refused with timeout or with
   `upstream_unreachable`; blaming policy or the client; `ok` without a cited
   refusal row; invented endpoint facts; requiring the literal string
-  `connection refused`, which the closed-port route never produced — the forward
-  plugin maps lookup errors to `ServFail` and keeps the raw text in the `error`
-  field (`crates/doggy-dns-plugin/src/builtin/forward.rs`), and over UDP that text
-  was `request timed out`.
+  `connection refused` — `classify_error` preserves the RCODE an upstream
+  actually sent (`crates/doggy-dns-plugin/src/builtin/forward.rs`) and reaches
+  `ServFail` only for errors that carry none, keeping the raw text in `error`, and
+  on this harness the closed-port route put `request timed out` there instead.
 
 ### 3. Policy REFUSED
 
