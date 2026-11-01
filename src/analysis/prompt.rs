@@ -44,8 +44,13 @@ pub struct PromptFacts {
 }
 
 /// Tools that query a stream through a parameter of their own, as opposed to
-/// naming it inside SQL.
-const STREAM_PARAMETER_TOOLS: [&str; 3] = [
+/// naming it inside SQL. The list is the live OpenObserve MCP `tools/list` of
+/// 2026-11-02: `openobserve_latest_traces`, `openobserve_search_around`,
+/// `openobserve_stream_schema` and `openobserve_trace_dag` all carry
+/// `stream_name` in their required parameters, so leaving one out of this list
+/// means the model has to guess whether to pass it.
+const STREAM_PARAMETER_TOOLS: [&str; 4] = [
+    "openobserve_latest_traces",
     "openobserve_stream_schema",
     "openobserve_search_around",
     "openobserve_trace_dag",
@@ -133,8 +138,16 @@ fn data_sources(facts: &PromptFacts) -> String {
         .filter(|name| facts.declares(name))
         .collect();
     if !parameter_tools.is_empty() {
+        // Singular when only one stream exists: "one of the names above" invites
+        // the model to choose between names that are not both there, and a trace
+        // tool handed a log stream only costs a call.
+        let choice = if facts.trace_stream.is_some() && facts.log_stream.is_some() {
+            "one of the names above"
+        } else {
+            "the name above"
+        };
         paragraph.push_str(&format!(
-            "\n{} take the stream as an argument: pass one of the names above exactly \
+            "\n{} take the stream as an argument: pass {choice} exactly \
              as written.",
             parameter_tools.join(", ")
         ));

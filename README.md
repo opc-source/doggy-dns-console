@@ -165,9 +165,14 @@ bodies) and is used only to badge the failure list.
   its time, because a refusal still costs one model round-trip. That round-trip is
   the whole cost: drill-downs answer in milliseconds, while the 2026-11-01 round
   measured 15-27 s per turn, so an attempt needs roughly `(calls + 1) × 30 s` of
-  deadline. Raising `CONSOLE_ANALYSIS_MAX_TOOL_CALLS` without raising
-  `CONSOLE_ANALYSIS_TIMEOUT_SECONDS` with it just converts the extra calls into
-  `unavailable` results.
+  deadline. The defaults do not satisfy that rule at the top of the budget — a
+  full 6-call attempt needs ~210 s against a 180 s deadline, and on 2026-11-02 one
+  such attempt was cut at the wall and stored `unavailable`, while an attempt that
+  submitted after 4 evidence calls finished in 120 s. An attempt that uses
+  everything the budget allows is therefore expected to degrade at the defaults;
+  raise `CONSOLE_ANALYSIS_MAX_TOOL_CALLS` and `CONSOLE_ANALYSIS_TIMEOUT_SECONDS`
+  together if full-budget runs have to submit. Raising the budget alone just
+  converts the extra calls into `unavailable` results.
 - The final result must arrive through `submit_failure_analysis` and is validated
   server-side: every cited ID must exist in the bundle or a tool result, every
   `observed` finding must cite one, an `ok` result needs at least one observed

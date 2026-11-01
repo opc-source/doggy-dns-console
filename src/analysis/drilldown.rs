@@ -120,8 +120,7 @@ mod tests {
         let streams = DrilldownStreams::new("  ", "doggy_dns");
         assert_eq!(
             streams.log_stream, None,
-            "a blank name must not be \
-declared to the model as a stream"
+            "a blank name must not reach the model as a stream"
         );
         assert_eq!(streams.trace_stream.as_deref(), Some("doggy_dns"));
     }

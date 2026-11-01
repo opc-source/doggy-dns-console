@@ -409,6 +409,11 @@ fn prompt_names_only_the_stream_that_exists() {
         !prompt.contains("no drill-down tools are available"),
         "tools are available here; only one of the two streams is"
     );
+    assert!(
+        paragraph_containing(&prompt, "take the stream as an argument").contains("the name above"),
+        "with a single configured stream the prompt must not offer a choice of names — \
+         a trace tool handed two names picks one at random"
+    );
 }
 
 #[test]
@@ -427,6 +432,93 @@ fn prompt_scopes_the_stream_names_to_the_tools_that_take_them() {
         prompt.contains("no stream"),
         "PromQL and stream-list tools take no stream at all; telling the model \
          otherwise produces calls rejected for an unknown field"
+    );
+    assert!(
+        paragraph_containing(&prompt, "take no stream argument")
+            .contains("openobserve_promql_query"),
+        "the no-stream sentence has to name the tool, not just contain the words \
+         \"no stream\" — which `openobserve_search_sql has no stream parameter` also satisfies"
+    );
+    assert!(
+        paragraph_containing(&prompt, "take the stream as an argument")
+            .contains("one of the names above"),
+        "with both streams configured the model has to be told to pick one of them"
+    );
+}
+
+/// The OpenObserve MCP tool set as a live `tools/list` answered on 2026-11-02:
+/// four tools require `stream_name`, `openobserve_search_sql` names the stream
+/// inside its SQL, and three have no stream to name at all. A declared tool the
+/// prompt gives no instruction for is a tool the model has to guess about, and
+/// guessing is what spent drill-down calls in the 2026-11-01 round.
+const REAL_UPSTREAM_TOOLS: [&str; 8] = [
+    "openobserve_latest_traces",
+    "openobserve_promql_query",
+    "openobserve_promql_range",
+    "openobserve_search_around",
+    "openobserve_search_sql",
+    "openobserve_stream_list",
+    "openobserve_stream_schema",
+    "openobserve_trace_dag",
+];
+
+/// The one prompt line that carries the given instruction, so an assertion can
+/// not be satisfied by the same words appearing in a different sentence.
+fn paragraph_containing(prompt: &str, needle: &str) -> String {
+    prompt
+        .lines()
+        .find(|line| line.contains(needle))
+        .unwrap_or_else(|| panic!("no prompt line contains {needle:?}:\n{prompt}"))
+        .to_string()
+}
+
+#[test]
+fn prompt_places_the_stream_for_every_tool_the_upstream_declares() {
+    let mut facts = prompt_facts();
+    facts.tool_names = REAL_UPSTREAM_TOOLS
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    let prompt = system_prompt(&facts);
+
+    let as_argument = paragraph_containing(&prompt, "take the stream as an argument");
+    for tool in [
+        "openobserve_latest_traces",
+        "openobserve_search_around",
+        "openobserve_stream_schema",
+        "openobserve_trace_dag",
+    ] {
+        assert!(
+            as_argument.contains(tool),
+            "{tool} requires `stream_name` upstream, so the prompt has to list it among \
+             the tools that pass the stream as an argument; that line reads: {as_argument}"
+        );
+    }
+
+    let no_stream = paragraph_containing(&prompt, "take no stream argument");
+    for tool in [
+        "openobserve_promql_query",
+        "openobserve_promql_range",
+        "openobserve_stream_list",
+    ] {
+        assert!(
+            no_stream.contains(tool),
+            "{tool} has no stream parameter upstream, so the prompt has to say so; that \
+             line reads: {no_stream}"
+        );
+    }
+    for tool in ["openobserve_latest_traces", "openobserve_search_sql"] {
+        assert!(
+            !no_stream.contains(tool),
+            "{tool} does take a stream upstream; telling the model otherwise makes it \
+             drop the only required parameter"
+        );
+    }
+
+    assert!(
+        paragraph_containing(&prompt, "the stream goes in the SQL itself")
+            .contains("openobserve_search_sql"),
+        "the SQL guidance has to be attached to the tool it applies to"
     );
 }
 
@@ -918,8 +1010,10 @@ async fn forensic_loop_gives_failed_drilldowns_their_own_cap() {
         .unwrap();
 
     assert_eq!(outcome.result.status, AnalysisStatus::Ok);
-    // Four attempts that return no evidence are allowed; the fifth is refused so
-    // a model stuck on a bad stream name cannot loop forever.
+    // Four attempts that return no evidence are allowed; the fifth is refused, so
+    // a model stuck on a bad stream name stops reaching the telemetry source. The
+    // refusal still answers every later call, so only the deadline bounds how many
+    // turns it can keep burning.
     assert_eq!(drilldown.calls().len(), 4);
     assert_eq!(outcome.tool_calls.len(), 4);
     let refusal = llm
