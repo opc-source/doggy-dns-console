@@ -92,8 +92,10 @@ that was clicked. The response contains:
 - `metrics`: host and global query/failure counts for trace time ±15 minutes,
   or `null` when the metric series is unavailable.
 - `fingerprint`: `sha256:` over the canonical evidence JSON. It excludes
-  `generatedAt` and carries no model, prompt or tool metadata, so the same
-  evidence always yields the same fingerprint.
+  `generatedAt`, the instance fields the control plane samples at call time
+  (`uptimeSeconds`, `runtime`) and all model, prompt and tool metadata, so the
+  same evidence always yields the same fingerprint while the instance is up and
+  reporting.
 - `missing`: `instance_unreachable`, `instance_not_found`, `spans_unavailable`,
   `metrics_unavailable`, `logs_truncated`.
 
