@@ -165,8 +165,10 @@ cannot support the case.
   port-unreachable, so the resolver logs the identical
   `error=request timed out` + `response_code=ServFail` row as case 1 — the two
   are indistinguishable at error-string level, and the observable distinction is
-  the RCODE. This restatement is what the run actually exercised: an upstream
-  answering REFUSED produced `upstream_refused` with valid citations.
+  the RCODE. An upstream answering REFUSED was in fact exercised in that round and
+  produced `upstream_refused` with valid citations, but it was booked as a case-3
+  observation under the original spec, so it did not score as case 2 — see the
+  [2026-11-01 record](analysis-golden-run-2026-11-01.md).
 - **Expected:** `ok`, category `upstream_refused`.
 - **Mandatory citation:** the `log:` row or `group.responseCode` carrying the
   refusal, or the `span:` whose error status carries it. If the upstream address
@@ -174,20 +176,25 @@ cannot support the case.
 - **Failure signs:** conflating refused with timeout or with
   `upstream_unreachable`; blaming policy or the client; `ok` without a cited
   refusal row; invented endpoint facts; requiring the literal string
-  `connection refused`, which doggy-dns never emits for a UDP upstream.
+  `connection refused`, which the closed-port route never produced — the forward
+  plugin maps lookup errors to `ServFail` and keeps the raw text in the `error`
+  field (`crates/doggy-dns-plugin/src/builtin/forward.rs`), and over UDP that text
+  was `request timed out`.
 
 ### 3. Policy REFUSED
 
 - **ID / expected category:** `policy_refused`.
 - **Reachability: fixture-only.** doggy-dns has no policy/ACL plugin to refuse a
-  name: its builtin plugin set is `native` and `forward`
-  (`crates/doggy-dns-plugin/src/builtin/` in that repository), the only ACL
-  mention in the workspace is a comment about a *future* view/ACL-per-client
-  handler (`crates/doggy-dns-plugin/src/authority_chain.rs`), and the live
-  instance's ordered chain reported exactly those two (`native` order 0,
-  `forward` order 1). This case cannot be produced against a real instance until
-  such a plugin exists, and an upstream that answers REFUSED is case 2, not this
-  one — the 2026-11-01 run confirmed the model classifies that trace
+  name: `PluginKind` is `nacos`, `native` and `forward`
+  (`crates/doggy-dns-basic/src/plugin.rs`), the builtin chain is `native` and
+  `forward` (`crates/doggy-dns-plugin/src/builtin/`), and the live instance's
+  ordered chain reported exactly those two (`native` order 0, `forward` order 1).
+  The only ACL reference in the code is a comment about a *future*
+  view/ACL-per-client handler (`crates/doggy-dns-plugin/src/authority_chain.rs`),
+  and the project's phase-1 spec lists an ACL/blocklist plugin as future work —
+  neither is implemented. This case cannot be produced against a real instance
+  until one exists, and an upstream that answers REFUSED is case 2, not this one
+  — the 2026-11-01 run confirmed the model classifies that trace
   `upstream_refused`. Mark it **not run** with that reason; do not "pass" it by
   pointing it at a REFUSED upstream, which would test case 2 twice and let a
   policy claim go uncited.
