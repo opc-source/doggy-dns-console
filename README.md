@@ -151,19 +151,23 @@ bodies) and is used only to badge the failure list.
 
 ### Boundaries
 
-- Drill-down is a server-enforced allowlist of eight read-only OpenObserve tools;
-  the model never sees a write tool. Budget: at most 6 calls that return evidence
+- Drill-down is a server-enforced allowlist of eight read-only OpenObserve tools,
+  of which the prompt only offers the ones this deployment actually declared; the
+  model never sees a write tool. Budget: at most 6 calls that return evidence
   by default, a 180 s deadline and 8 KB per tool result preview. Attempts that
   return nothing — a tool error, an unknown tool name or a repeated call with the
-  same canonical arguments — do not spend that budget, but they are capped at 4
-  so a model stuck on bad arguments cannot loop. The prompt states the numbers and
-  deadline this process actually enforced, plus the configured log and trace
-  stream names, so the model never has to guess a stream. The two limits are
-  linked: drill-downs answer in milliseconds, so almost every second of an
-  attempt is one model round-trip (~30 s measured), and an attempt needs one per
-  call plus the submission. Raising `CONSOLE_ANALYSIS_MAX_TOOL_CALLS` without
-  raising `CONSOLE_ANALYSIS_TIMEOUT_SECONDS` past `calls × 30 s` just converts
-  over-budget attempts into `unavailable` results.
+  same canonical arguments — do not spend that budget, but only 4 of them are
+  tolerated, and their IDs are never citable, so an attempt cannot rest a verdict
+  on a call that returned an error. The prompt states the limits, the deadline and
+  the tool list this process actually has, plus the configured log and trace stream
+  names, so the model never has to guess a stream or call a tool that is not there.
+  The caps stop the attempt from spending more calls; the deadline is what bounds
+  its time, because a refusal still costs one model round-trip. That round-trip is
+  the whole cost: drill-downs answer in milliseconds, while the 2026-11-01 round
+  measured 15-27 s per turn, so an attempt needs roughly `(calls + 1) × 30 s` of
+  deadline. Raising `CONSOLE_ANALYSIS_MAX_TOOL_CALLS` without raising
+  `CONSOLE_ANALYSIS_TIMEOUT_SECONDS` with it just converts the extra calls into
+  `unavailable` results.
 - The final result must arrive through `submit_failure_analysis` and is validated
   server-side: every cited ID must exist in the bundle or a tool result, every
   `observed` finding must cite one, an `ok` result needs at least one observed

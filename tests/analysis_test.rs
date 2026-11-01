@@ -293,16 +293,30 @@ async fn validation_requires_observed_finding_for_high_confidence() {
 
 // -------------------------------------------------------------------- prompt
 
+/// The OpenObserve tool names the tests render as declared drill-downs, so the
+/// prompt can be asserted on exactly what the drill-down advertised.
+const SCRIPTED_TOOLS: [&str; 3] = [
+    "openobserve_search_sql",
+    "openobserve_stream_schema",
+    "openobserve_promql_query",
+];
+
 /// The limits a test prompt is rendered with. Deliberately different from every
-/// default so a hardcoded value in the prompt cannot pass by accident.
+/// default so a hardcoded value in the prompt cannot pass by accident: the
+/// unproductive allowance and the result cap have to differ from
+/// `MAX_UNPRODUCTIVE_ATTEMPTS` and `MAX_TOOL_RESULT_BYTES` too.
 fn prompt_facts() -> PromptFacts {
     PromptFacts {
         max_tool_calls: 9,
-        max_unproductive_attempts: 4,
+        max_unproductive_attempts: 7,
         timeout: Duration::from_secs(150),
-        max_result_bytes: 8 * 1024,
-        log_stream: Some("doggy_dns".to_string()),
-        trace_stream: Some("doggy_dns_trace".to_string()),
+        max_result_bytes: 4096,
+        log_stream: Some("app_logs".to_string()),
+        trace_stream: Some("app_traces".to_string()),
+        tool_names: SCRIPTED_TOOLS
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect(),
     }
 }
 
@@ -332,16 +346,21 @@ fn prompt_states_the_limits_the_loop_enforces() {
         "prompt must state the configured drill-down budget"
     );
     assert!(
-        prompt.contains("4 refused attempts"),
-        "prompt must state the cap on attempts that return no evidence"
+        prompt.contains("7 attempts that return no evidence"),
+        "prompt must state the cap on attempts that return no evidence, and call \
+         them what they are: a tool error is executed, not refused"
     );
     assert!(
         prompt.contains("150 seconds"),
         "prompt must state the configured deadline"
     );
     assert!(
-        prompt.contains("8192 bytes"),
+        prompt.contains("4096 bytes"),
         "prompt must state the configured result cap"
+    );
+    assert!(
+        !prompt.contains("4 refused"),
+        "the prompt must not restate the constant it was handed"
     );
     assert!(
         !prompt.contains("60 seconds") && !prompt.contains("at most 6"),
@@ -354,7 +373,7 @@ fn prompt_states_the_limits_the_loop_enforces() {
 fn prompt_names_the_streams_the_drilldown_can_read() {
     let prompt = system_prompt(&prompt_facts());
     assert!(
-        prompt.contains("doggy_dns") && prompt.contains("doggy_dns_trace"),
+        prompt.contains("app_logs") && prompt.contains("app_traces"),
         "the model must be told the stream names, otherwise it guesses `logs` \
          or `traces` and every SQL drill-down fails"
     );
@@ -364,12 +383,96 @@ fn prompt_names_the_streams_the_drilldown_can_read() {
     without.trace_stream = None;
     let prompt = system_prompt(&without);
     assert!(
-        !prompt.contains("doggy_dns"),
+        !prompt.contains("app_logs") && !prompt.contains("app_traces"),
         "no stream names may be claimed when no drill-down source is configured"
     );
     assert!(
-        prompt.contains("no drill-down source is configured"),
-        "the prompt must say the drill-down is unavailable instead of staying silent"
+        prompt.contains("no stream is configured"),
+        "the prompt must say the streams are missing instead of staying silent"
+    );
+}
+
+#[test]
+fn prompt_names_only_the_stream_that_exists() {
+    let mut half = prompt_facts();
+    half.trace_stream = None;
+    let prompt = system_prompt(&half);
+    assert!(
+        prompt.contains("app_logs"),
+        "a configured log stream stays usable when the trace stream is missing"
+    );
+    assert!(
+        !prompt.contains("app_traces"),
+        "the prompt must not name a stream the drill-down cannot read"
+    );
+    assert!(
+        !prompt.contains("no drill-down tools are available"),
+        "tools are available here; only one of the two streams is"
+    );
+}
+
+#[test]
+fn prompt_scopes_the_stream_names_to_the_tools_that_take_them() {
+    let prompt = system_prompt(&prompt_facts());
+    assert!(
+        prompt.contains("FROM app_logs"),
+        "openobserve_search_sql puts the stream in the SQL, so the prompt has to \
+         show where the name goes instead of telling the model to pass it"
+    );
+    assert!(
+        prompt.contains("FROM app_traces"),
+        "the span stream has to be placed in the SQL the same way the log stream is"
+    );
+    assert!(
+        prompt.contains("no stream"),
+        "PromQL and stream-list tools take no stream at all; telling the model \
+         otherwise produces calls rejected for an unknown field"
+    );
+}
+
+#[test]
+fn prompt_offers_only_the_tools_the_drilldown_declared() {
+    let mut facts = prompt_facts();
+    facts
+        .tool_names
+        .retain(|name| name != "openobserve_promql_query");
+    let prompt = system_prompt(&facts);
+    assert!(
+        !prompt.contains("openobserve_promql_query"),
+        "a tool the drill-down never declared must not appear in the prompt: the \
+         model would call it and spend a refusal on an unknown tool"
+    );
+    assert!(
+        prompt.contains("openobserve_search_sql"),
+        "declared tools still have to be listed"
+    );
+
+    let mut none = prompt_facts();
+    none.tool_names.clear();
+    let prompt = system_prompt(&none);
+    assert!(
+        !prompt.contains("app_logs"),
+        "with no declared tools the prompt cannot claim any stream is readable"
+    );
+    assert!(
+        prompt.contains("no drill-down tools are available"),
+        "no declared tools must be stated, not left for the model to discover"
+    );
+    assert!(
+        !prompt.contains("openobserve_search_sql"),
+        "the tool list must be built from the declarations, not hardcoded"
+    );
+}
+
+#[test]
+fn prompt_states_a_deadline_of_at_least_one_second() {
+    let mut facts = prompt_facts();
+    facts.timeout = Duration::from_millis(500);
+    let prompt = system_prompt(&facts);
+    assert!(
+        prompt.contains("1 second") && !prompt.contains("0 seconds"),
+        "a sub-second deadline must not be rendered as zero, which the loop does \
+         not enforce as zero"
     );
 }
 
@@ -392,6 +495,7 @@ struct ScriptedDrilldown {
     /// Number of leading calls that report an error before `result` is returned.
     fail_first: usize,
     streams: DrilldownStreams,
+    declarations: Vec<Value>,
 }
 
 impl ScriptedDrilldown {
@@ -403,6 +507,7 @@ impl ScriptedDrilldown {
             delay: None,
             fail_first: 0,
             streams: DrilldownStreams::default(),
+            declarations: default_declarations(),
         }
     }
 
@@ -414,6 +519,7 @@ impl ScriptedDrilldown {
             delay: None,
             fail_first: usize::MAX,
             streams: DrilldownStreams::default(),
+            declarations: default_declarations(),
         }
     }
 
@@ -433,6 +539,7 @@ impl ScriptedDrilldown {
             delay: None,
             fail_first: error_first,
             streams: DrilldownStreams::default(),
+            declarations: default_declarations(),
         }
     }
 
@@ -447,16 +554,19 @@ impl ScriptedDrilldown {
         };
         self
     }
+
+    /// Simulates tool discovery failing: the streams are configured but no tool
+    /// declaration reached the loop.
+    fn without_tools(mut self) -> Self {
+        self.declarations = Vec::new();
+        self
+    }
 }
 
 #[async_trait]
 impl Drilldown for ScriptedDrilldown {
     fn tool_declarations(&self) -> Vec<Value> {
-        vec![json!({
-            "name": "openobserve_search_sql",
-            "description": "run a read-only SQL query",
-            "parameters": {"type": "object"}
-        })]
+        self.declarations.clone()
     }
 
     fn streams(&self) -> DrilldownStreams {
@@ -480,6 +590,19 @@ impl Drilldown for ScriptedDrilldown {
         }
         Ok(self.result.clone())
     }
+}
+
+fn default_declarations() -> Vec<Value> {
+    SCRIPTED_TOOLS
+        .iter()
+        .map(|name| {
+            json!({
+                "name": name,
+                "description": format!("read-only drill-down: {name}"),
+                "parameters": {"type": "object"}
+            })
+        })
+        .collect()
 }
 
 fn submit(result: &AnalysisResult) -> ScriptedResponse {
@@ -559,8 +682,30 @@ async fn forensic_loop_puts_the_drilldown_streams_in_the_prompt() {
         .await
         .unwrap();
     assert!(
-        system_text(&llm.requests()[0]).contains("no drill-down source is configured"),
+        system_text(&llm.requests()[0]).contains("no stream is configured"),
         "a drill-down that reports no streams must be stated, not left to guesswork"
+    );
+}
+
+#[tokio::test]
+async fn forensic_loop_does_not_promise_tools_the_drilldown_never_discovered() {
+    // Tool discovery fails when the MCP server is unreachable, and the drilldown
+    // then holds an empty declaration list while the streams stay configured. A
+    // prompt that still advertises them turns every call into an unknown tool.
+    let bundle = fixture_bundle().await;
+    let drilldown = ScriptedDrilldown::new(json!({"rows": []}))
+        .with_streams("app_logs", "app_traces")
+        .without_tools();
+    let llm = ScriptedLlm::new("test", vec![submit(&valid_result(&first_log_id(&bundle)))]);
+
+    run_forensic_loop(&llm, &bundle, &drilldown, 6, Duration::from_secs(60))
+        .await
+        .unwrap();
+
+    let prompt = system_text(&llm.requests()[0]);
+    assert!(
+        !prompt.contains("app_logs") && prompt.contains("no drill-down tools are available"),
+        "the prompt must follow the tool list it was given, not the config alone"
     );
 }
 
@@ -708,6 +853,50 @@ async fn forensic_loop_rejects_duplicate_canonical_arguments() {
 }
 
 #[tokio::test]
+async fn forensic_loop_does_not_make_a_failed_drilldown_citable() {
+    let bundle = fixture_bundle().await;
+    let log_id = first_log_id(&bundle);
+    // Call 1 errors, call 2 succeeds: only the second produced evidence, so only
+    // `tool:2:result` may be cited.
+    let drilldown = ScriptedDrilldown::flaky(1, json!({"rows": []}));
+    let mut bad = drilled_result(&bundle, "tool:1:result");
+    bad.findings[0].evidence_ids = vec![log_id.clone(), "tool:1:result".to_string()];
+    let good = drilled_result(&bundle, "tool:2:result");
+    let llm = ScriptedLlm::new(
+        "test",
+        vec![
+            ScriptedResponse::function_call("openobserve_search_sql", json!({"q": 1})),
+            ScriptedResponse::function_call("openobserve_search_sql", json!({"q": 2})),
+            submit(&bad),
+            submit(&good),
+        ],
+    );
+
+    let outcome = run_forensic_loop(&llm, &bundle, &drilldown, 6, Duration::from_secs(60))
+        .await
+        .unwrap();
+
+    let after_failed_call = serde_json::to_string(&function_responses(&llm.requests()[1])).unwrap();
+    assert!(
+        !after_failed_call.contains("tool:1:result"),
+        "an attempt that returned only an error must not be handed back a citable \
+         evidence ID: {after_failed_call}"
+    );
+    let after_good_call = serde_json::to_string(&function_responses(&llm.requests()[2])).unwrap();
+    assert!(
+        after_good_call.contains("tool:2:result"),
+        "the call that did return evidence stays citable: {after_good_call}"
+    );
+
+    assert_eq!(outcome.result.status, AnalysisStatus::Ok);
+    assert_eq!(
+        outcome.result.findings[0].evidence_ids,
+        vec![log_id, "tool:2:result".to_string()],
+        "the submission that cited the failed attempt must have been refused"
+    );
+}
+
+#[tokio::test]
 async fn forensic_loop_gives_failed_drilldowns_their_own_cap() {
     let bundle = fixture_bundle().await;
     let drilldown = ScriptedDrilldown::failing("Search stream not found: logs");
@@ -719,7 +908,9 @@ async fn forensic_loop_gives_failed_drilldowns_their_own_cap() {
             )
         })
         .collect();
-    script.push(submit(&drilled_result(&bundle, "tool:1:result")));
+    // Nothing this attempt ran returned evidence, so the verdict can only rest on
+    // the bundle.
+    script.push(submit(&valid_result(&first_log_id(&bundle))));
     let llm = ScriptedLlm::new("test", script);
 
     let outcome = run_forensic_loop(&llm, &bundle, &drilldown, 6, Duration::from_secs(60))
@@ -891,7 +1082,7 @@ async fn forensic_loop_caps_tool_result_summaries() {
         "test",
         vec![
             ScriptedResponse::function_call("openobserve_search_sql", json!({"query": "SELECT 1"})),
-            submit(&drilled_result(&bundle, "tool:1:result")),
+            submit(&valid_result(&first_log_id(&bundle))),
         ],
     );
 
@@ -919,7 +1110,8 @@ async fn forensic_loop_audits_tool_errors() {
         "test",
         vec![
             ScriptedResponse::function_call("openobserve_search_sql", json!({"query": "SELECT 1"})),
-            submit(&drilled_result(&bundle, "tool:1:result")),
+            // The one call errored, so the verdict rests on the bundle alone.
+            submit(&valid_result(&first_log_id(&bundle))),
         ],
     );
 

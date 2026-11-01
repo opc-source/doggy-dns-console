@@ -150,7 +150,7 @@ ID 冲突时按确定性顺序追加序号，不使用随机值。
 
 ### 6.1 执行模型
 
-分析 Agent 与聊天会话解耦，输入为证据包，系统提示版本固定为 `failure-analyst/v2`。提示词里的数字与流名一律由运行期事实渲染（`PromptFacts`），不写死：把 6 次/60 秒刻进文本，运维一改 `CONSOLE_ANALYSIS_*` 提示词就开始说谎；不告诉模型日志与 trace 的流名，它就只能猜 `logs`/`traces`，而 2026-11-01 的实测里这类猜错每次白烧一次调用。
+分析 Agent 与聊天会话解耦，输入为证据包，系统提示版本固定为 `failure-analyst/v2`。提示词里的数字、流名与工具清单一律由运行期事实渲染（`PromptFacts`），不写死：把 6 次/60 秒刻进文本，运维一改 `CONSOLE_ANALYSIS_*` 提示词就开始说谎；不告诉模型日志与 trace 的流名，它就只能猜 `logs`/`traces`，而 2026-11-01 的实测里这类猜错每次白烧一次调用；把没声明的工具写进提示词，模型会去调它并把一次拒绝花掉。缓存键里的 `promptVersion` 只锁住规则文本，不锁这些运行期数字与流名（代价：同一份 DB 上换配置不会让缓存失效；收益：调参不必重跑全量分析）。
 
 - 先读证据包；仅当缺口明确时调用下钻工具。
 - 工具允许列表：`openobserve_stream_list`、`openobserve_stream_schema`、`openobserve_search_sql`、`openobserve_promql_query`、`openobserve_promql_range`、`openobserve_latest_traces`、`openobserve_trace_dag`、`openobserve_search_around`。

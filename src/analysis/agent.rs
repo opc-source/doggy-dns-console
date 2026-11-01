@@ -78,6 +78,7 @@ pub async fn run_forensic_loop(
         max_result_bytes: MAX_TOOL_RESULT_BYTES,
         log_stream: streams.log_stream,
         trace_stream: streams.trace_stream,
+        tool_names: declared_tool_names(drilldown),
     };
     let mut messages = vec![
         Content::new("system").with_text(system_prompt(&facts)),
@@ -242,7 +243,6 @@ pub async fn run_forensic_loop(
             }
 
             let call_number = audits.len() + 1;
-            let evidence_id = format!("tool:{call_number}:result");
             let left = match remaining(deadline) {
                 Some(left) => left,
                 None => {
@@ -296,13 +296,22 @@ pub async fn run_forensic_loop(
                 result_hash,
                 summary,
             });
-            index.insert(evidence_id.clone());
 
-            push_response(
-                &mut messages,
-                &call,
-                json!({"evidenceId": evidence_id, "result": capped}),
-            );
+            if is_error {
+                // A call that returned only an error produced no evidence, so it
+                // must not mint a citable ID either: the loop would otherwise
+                // define the call as unproductive in its budget and still let a
+                // verdict stand on it.
+                push_response(&mut messages, &call, json!({"result": capped}));
+            } else {
+                let evidence_id = format!("tool:{call_number}:result");
+                index.insert(evidence_id.clone());
+                push_response(
+                    &mut messages,
+                    &call,
+                    json!({"evidenceId": evidence_id, "result": capped}),
+                );
+            }
         }
 
         if let Some(mut result) = submitted {
@@ -373,6 +382,23 @@ async fn call_model(
 fn remaining(deadline: Instant) -> Option<Duration> {
     let left = deadline.saturating_duration_since(Instant::now());
     (!left.is_zero()).then_some(left)
+}
+
+/// The names the drill-down actually declared. The prompt lists these and nothing
+/// else: a model told about a tool that is not there spends a refusal discovering
+/// it, and upstream descriptions stay out of the system prompt because they arrive
+/// over the wire with the tool list rather than from this repo.
+fn declared_tool_names(drilldown: &dyn Drilldown) -> Vec<String> {
+    drilldown
+        .tool_declarations()
+        .iter()
+        .filter_map(|declaration| {
+            declaration
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect()
 }
 
 fn tool_map(drilldown: &dyn Drilldown) -> HashMap<String, Value> {

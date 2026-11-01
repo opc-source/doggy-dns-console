@@ -21,10 +21,16 @@ pub struct DrilldownStreams {
 }
 
 impl DrilldownStreams {
+    /// Blank and whitespace-only names are treated as absent: the prompt states
+    /// "no stream is configured" rather than offering an empty stream to query.
     pub fn new(log_stream: impl Into<String>, trace_stream: impl Into<String>) -> Self {
+        fn named(value: String) -> Option<String> {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }
         Self {
-            log_stream: Some(log_stream.into()),
-            trace_stream: Some(trace_stream.into()),
+            log_stream: named(log_stream.into()),
+            trace_stream: named(trace_stream.into()),
         }
     }
 }
@@ -107,7 +113,18 @@ impl Drilldown for OpenObserveDrilldown {
 
 #[cfg(test)]
 mod tests {
-    use super::upstream_tool_name;
+    use super::{DrilldownStreams, upstream_tool_name};
+
+    #[test]
+    fn blank_stream_names_are_treated_as_absent() {
+        let streams = DrilldownStreams::new("  ", "doggy_dns");
+        assert_eq!(
+            streams.log_stream, None,
+            "a blank name must not be \
+declared to the model as a stream"
+        );
+        assert_eq!(streams.trace_stream.as_deref(), Some("doggy_dns"));
+    }
 
     #[test]
     fn exposed_names_map_to_upstream_names() {
