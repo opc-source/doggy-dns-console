@@ -34,6 +34,14 @@ finishes inside the budget. That is what these eight cases measure.
   doggy-dns process, a failing trace stream, and a trace with more than 200 log
   rows. If a condition cannot be produced, mark the case **not run**, not
   passed.
+- Three of those conditions are not what they assumed, as the 2026-11-01 run
+  found: a closed upstream port is logged as a timeout rather than a refusal (so
+  case 2 is reproduced by an upstream that *answers* REFUSED, not by a closed
+  port), there is no policy/ACL plugin in the resolver (case 3), and a read-only
+  harness cannot build a >200-row trace (case 7). Cases 3 and 7 are therefore
+  **fixture-only** against a real instance; say which capability each `not run`
+  is waiting for, because the scored ceiling with a real instance is 6 of 8 (see
+  [Metrics](#metrics)).
 - All calls below assume the console on `http://127.0.0.1:8787`. Use
   `jq` to capture snapshots.
 
@@ -143,25 +151,42 @@ cannot support the case.
   configuration with no cited config/plugin ID; instance claimed reachable when
   `instance.reachable` is false.
 
-### 2. Connection refused
+### 2. Upstream refused the query
 
 - **ID / expected category:** `upstream_refused`.
-- **Evidence condition:** the failure log rows report a refused connection
-  (`connection refused` / `ECONNREFUSED`) to the upstream, with no successful
-  answer.
-- **Reproduce:** stop the upstream resolver (leave the port closed), send a
-  query, open the failure trace.
+- **Evidence condition:** the failure group's `responseCode` is `REFUSED` and a
+  log row or span carries that refusal, with no successful answer.
+- **Reproduce:** point doggy-dns at a test upstream that answers the query with
+  RCODE `REFUSED`, send a query, open the resulting failure trace.
+- **Reachability (added after the 2026-11-01 run):** the case used to be written
+  as "stop the upstream resolver, leave the port closed" and to require a
+  `connection refused` / `ECONNREFUSED` log line. That condition is not
+  producible: over UDP on macOS a closed upstream port gives doggy-dns no ICMP
+  port-unreachable, so the resolver logs the identical
+  `error=request timed out` + `response_code=ServFail` row as case 1 — the two
+  are indistinguishable at error-string level, and the observable distinction is
+  the RCODE. This restatement is what the run actually exercised: an upstream
+  answering REFUSED produced `upstream_refused` with valid citations.
 - **Expected:** `ok`, category `upstream_refused`.
-- **Mandatory citation:** the `log:` row with the refusal, or the `span:` whose
-  error status carries it. If the upstream address is only inferred from the
-  authority string, mark that finding `inferred`.
+- **Mandatory citation:** the `log:` row or `group.responseCode` carrying the
+  refusal, or the `span:` whose error status carries it. If the upstream address
+  is only inferred from the authority string, mark that finding `inferred`.
 - **Failure signs:** conflating refused with timeout or with
   `upstream_unreachable`; blaming policy or the client; `ok` without a cited
-  refusal row; invented endpoint facts.
+  refusal row; invented endpoint facts; requiring the literal string
+  `connection refused`, which doggy-dns never emits for a UDP upstream.
 
 ### 3. Policy REFUSED
 
 - **ID / expected category:** `policy_refused`.
+- **Reachability: fixture-only.** doggy-dns has no policy/ACL plugin to refuse a
+  name: the resolver exposes only `native` (order 0) and `forward` (order 1), and
+  a source grep for `policy|acl` finds nothing. This case cannot be produced
+  against a real instance until such a plugin exists, and an upstream that
+  answers REFUSED is case 2, not this one — the 2026-11-01 run confirmed the
+  model classifies that trace `upstream_refused`. Mark it **not run** with that
+  reason; do not "pass" it by pointing it at a REFUSED upstream, which would test
+  case 2 twice and let a policy claim go uncited.
 - **Evidence condition:** a failure group with `responseCode=REFUSED` and a log
   row (or plugin detail) from the policy/ACL plugin that names the blocked
   query, or the ordered plugin chain from a reachable instance that shows the
@@ -263,6 +288,16 @@ cannot support the case.
   `logs_truncated` to `missing`.
 - **Reproduce:** generate a chatty trace (>200 rows, e.g. debug logging or a
   repeated query loop) with at least one failure row, then open it.
+- **Reachability: fixture-only.** one doggy-dns request yields ~6 log rows under
+  a single trace id, and a repeated-query loop mints a *new* trace id each time
+  rather than making one trace chatty, so >200 rows for one trace cannot be
+  produced without writing telemetry into OpenObserve — out of scope for a
+  read-only round. The selection rule this case checks (keep failure/WARN/ERROR
+  rows, first and last INFO, neighbours of failures, cap at 200, report
+  `total`/`omitted`/`truncated`) is covered deterministically by the
+  `select_logs_*` tests in `tests/evidence_test.rs`; mark this case **not run**
+  with that pointer instead of inventing a synthetic trace. Running it for real
+  needs a staging instance with debug logging enabled.
 - **Expected:** a verdict based on the selected rows plus an explicit
   `notDeterminable` entry that logs were truncated, including the omitted count
   when relevant. Never "no other errors occurred" or "all logs were checked".
@@ -303,6 +338,14 @@ exclusion. Cases 1–3 and 5–7 are scored on the verdict, case 8 on the observ
 stale behaviour, and case 4 on its own two-part pass criterion (exclusion plus
 rejection, no verdict category). `≥ 80%` therefore means at least 7 of 8.
 
+That target cannot be met against a real doggy-dns instance today: cases 3 and 7
+have no producible condition (no policy/ACL plugin, no >200-row trace from a
+read-only harness), so the reachable ceiling is **6 of 8 = 75%**. Report both
+numbers — the 8-denominator score and the reachable-denominator score — and list
+which capability each `not run` is waiting for. The point of the second number is
+that it isolates model quality from harness gaps: 6 of 6 on the reachable set
+means the analysis behaved, and the shortfall is a feature request, not a verdict.
+
 Measured over the eight cases, using the snapshot fields (`status`,
 `verdictCategory`, `result.status`, `findings[].kind`, `findings[].evidenceIds`,
 `toolCallCount`, `startedAt`, `finishedAt`). The API returns `startedAt` and
@@ -332,7 +375,7 @@ produced is recorded `not run` with its reason and counts as a miss.
 | Case | Result status / category | Confidence | Observed IDs valid? | Tool calls | Duration (s) | POST result (200/202) | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 upstream timeout | | | | | | | |
-| 2 connection refused | | | | | | | |
+| 2 upstream refused | | | | | | | |
 | 3 policy REFUSED | | | | | | | |
 | 4 NXDOMAIN exclusion | `n/a` (no verdict; the rejection run should store `invalid` with `result = null`) | — | — | — | — | `202` (forced rejection run) | check 1 — NXDOMAIN-only trace absent from list/detail and evidence `404`: yes/no; check 2 — NXDOMAIN attribution rejected, job `invalid` with no result: yes/no. Both required for a hit. |
 | 5 instance unreachable | | | | | | | |
