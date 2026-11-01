@@ -11,7 +11,7 @@ use axum::Router;
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::agent::{build_agent, build_model};
-use crate::analysis::drilldown::{Drilldown, OpenObserveDrilldown};
+use crate::analysis::drilldown::{Drilldown, DrilldownStreams, OpenObserveDrilldown};
 use crate::analysis::service::AnalysisService;
 use crate::analysis::store::SqliteInvestigationStore;
 use crate::api::state::{ApiState, Probe};
@@ -181,7 +181,16 @@ async fn build_analysis(
     }
 
     let drilldown: Option<Arc<dyn Drilldown>> = match mcp_client {
-        Some(client) => Some(Arc::new(OpenObserveDrilldown::new(client).await)),
+        Some(client) => Some(Arc::new(
+            OpenObserveDrilldown::new(
+                client,
+                DrilldownStreams::new(
+                    config.openobserve.log_stream.clone(),
+                    config.openobserve.trace_stream.clone(),
+                ),
+            )
+            .await,
+        )),
         None => None,
     };
 

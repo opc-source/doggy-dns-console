@@ -173,7 +173,9 @@ fn analysis_config_defaults_are_secure() {
     assert!(cfg.analysis.enabled);
     assert_eq!(cfg.analysis.retention_days, 30);
     assert_eq!(cfg.analysis.rate_per_minute, 10);
-    assert_eq!(cfg.analysis.timeout, std::time::Duration::from_secs(60));
+    // The 9 attempts that submitted in the 2026-11-01 golden run took 93-166 s,
+    // all of them killed by nothing except the old 60 s default when it was 60.
+    assert_eq!(cfg.analysis.timeout, std::time::Duration::from_secs(180));
     assert_eq!(cfg.analysis.max_tool_calls, 6);
 }
 

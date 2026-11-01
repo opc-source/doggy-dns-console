@@ -116,7 +116,7 @@ GET  /api/analysis/markers?traceIds=<comma separated, max 200>
 `POST` builds the evidence server-side and then:
 
 - `200` with the stored snapshot when an attempt for the same evidence
-  fingerprint, model name and prompt version (`failure-analyst/v1`) already
+  fingerprint, model name and prompt version (`failure-analyst/v2`) already
   **succeeded**. The model is not called.
 - `202 { "analysisId": "…" }` for a newly queued job **or** when an attempt with
   the same key is already queued/running (the existing id is returned).
@@ -153,10 +153,28 @@ bodies) and is used only to badge the failure list.
 
 ### Boundaries
 
-- Drill-down is a server-enforced allowlist of eight read-only OpenObserve tools;
-  the model never sees a write tool. Budget: at most 6 calls by default, a 60 s
-  deadline and 8 KB per tool result preview. Repeating a tool with the same
-  canonical arguments is refused.
+- Drill-down is a server-enforced allowlist of eight read-only OpenObserve tools,
+  of which the prompt only offers the ones this deployment actually declared; the
+  model never sees a write tool. Budget: at most 6 calls that return evidence
+  by default, a 180 s deadline and 8 KB per tool result preview. Attempts that
+  return nothing — a tool error, an unknown tool name or a repeated call with the
+  same canonical arguments — do not spend that budget, but only 4 of them are
+  tolerated, and their IDs are never citable, so an attempt cannot rest a verdict
+  on a call that returned an error. The prompt states the limits, the deadline and
+  the tool list this process actually has, plus the configured log and trace stream
+  names, so the model never has to guess a stream or call a tool that is not there.
+  The caps stop the attempt from spending more calls; the deadline is what bounds
+  its time, because a refusal still costs one model round-trip. That round-trip is
+  the whole cost: drill-downs answer in milliseconds, while the 2026-11-01 round
+  measured 15-27 s per turn, so an attempt needs roughly `(calls + 1) × 30 s` of
+  deadline. The defaults do not satisfy that rule at the top of the budget — a
+  full 6-call attempt needs ~210 s against a 180 s deadline, and on 2026-11-02 one
+  such attempt was cut at the wall and stored `unavailable`, while an attempt that
+  submitted after 4 evidence calls finished in 120 s. An attempt that uses
+  everything the budget allows is therefore expected to degrade at the defaults;
+  raise `CONSOLE_ANALYSIS_MAX_TOOL_CALLS` and `CONSOLE_ANALYSIS_TIMEOUT_SECONDS`
+  together if full-budget runs have to submit. Raising the budget alone just
+  converts the extra calls into `unavailable` results.
 - The final result must arrive through `submit_failure_analysis` and is validated
   server-side: every cited ID must exist in the bundle or a tool result, every
   `observed` finding must cite one, an `ok` result needs at least one observed
@@ -191,7 +209,7 @@ console process per database file; analysis state is process-local by design.
 | `CONSOLE_ANALYSIS_ENABLED` | `true` | — | Master switch; `false` makes the analysis endpoints answer `503` |
 | `CONSOLE_ANALYSIS_RETENTION_DAYS` | `30` | `1` | Days to keep investigation rows |
 | `CONSOLE_ANALYSIS_RATE_PER_MIN` | `10` | `1` | Process-wide analysis starts per minute |
-| `CONSOLE_ANALYSIS_TIMEOUT_SECONDS` | `60` | `1` | Deadline for one analysis attempt |
+| `CONSOLE_ANALYSIS_TIMEOUT_SECONDS` | `180` | `1` | Deadline for one analysis attempt |
 | `CONSOLE_ANALYSIS_MAX_TOOL_CALLS` | `6` | `1` | Server-enforced drill-down budget |
 
 Analysis also requires a model API key (`MODEL_API_KEY`, falling back to

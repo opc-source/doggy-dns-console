@@ -1,0 +1,72 @@
+{
+  "recordedAt": "2026-11-02",
+  "source": "OpenObserve MCP tools/list as the console forwarded it to a local stub model during the read-only 2026-11-01/02 golden round. Names are the console's exposed names. Only parameter shape is recorded: upstream descriptions are untrusted wire text and are deliberately left out.",
+  "note": "requiresStreamName is the required-parameter list verbatim, which is what decides where the prompt places a stream name. openobserve_search_sql carries the stream inside its SQL request_body, so it is false here without being a no-stream tool.",
+  "tools": [
+    {
+      "name": "openobserve_latest_traces",
+      "requiresStreamName": true,
+      "required": [
+        "end_time",
+        "from",
+        "size",
+        "start_time",
+        "stream_name"
+      ]
+    },
+    {
+      "name": "openobserve_promql_query",
+      "requiresStreamName": false,
+      "required": [
+        "query"
+      ]
+    },
+    {
+      "name": "openobserve_promql_range",
+      "requiresStreamName": false,
+      "required": [
+        "end",
+        "query",
+        "start"
+      ]
+    },
+    {
+      "name": "openobserve_search_around",
+      "requiresStreamName": true,
+      "required": [
+        "key",
+        "size",
+        "stream_name"
+      ]
+    },
+    {
+      "name": "openobserve_search_sql",
+      "requiresStreamName": false,
+      "required": [
+        "request_body"
+      ]
+    },
+    {
+      "name": "openobserve_stream_list",
+      "requiresStreamName": false,
+      "required": []
+    },
+    {
+      "name": "openobserve_stream_schema",
+      "requiresStreamName": true,
+      "required": [
+        "stream_name"
+      ]
+    },
+    {
+      "name": "openobserve_trace_dag",
+      "requiresStreamName": true,
+      "required": [
+        "end_time",
+        "start_time",
+        "stream_name",
+        "trace_id"
+      ]
+    }
+  ]
+}

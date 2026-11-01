@@ -102,10 +102,16 @@ impl AnalysisConfig {
             10,
             1,
         )?;
+        // The 9 qwen3.8-flash attempts of the 2026-11-01 golden run that reached a
+        // submission took 93-166 s; of the five that were cut, four died on the
+        // then-default 60 and one on 180. Drill-downs answer in milliseconds, so
+        // the time is model round-trips (15-27 s measured) and the loop needs one
+        // per call plus the submission: an operator who raises the tool budget
+        // raises this with it.
         let timeout_secs = parse_u64(
             "CONSOLE_ANALYSIS_TIMEOUT_SECONDS",
             get("CONSOLE_ANALYSIS_TIMEOUT_SECONDS"),
-            60,
+            180,
             1,
         )?;
         let max_tool_calls = parse_u64(
