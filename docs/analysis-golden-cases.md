@@ -180,13 +180,17 @@ cannot support the case.
 
 - **ID / expected category:** `policy_refused`.
 - **Reachability: fixture-only.** doggy-dns has no policy/ACL plugin to refuse a
-  name: the resolver exposes only `native` (order 0) and `forward` (order 1), and
-  a source grep for `policy|acl` finds nothing. This case cannot be produced
-  against a real instance until such a plugin exists, and an upstream that
-  answers REFUSED is case 2, not this one — the 2026-11-01 run confirmed the
-  model classifies that trace `upstream_refused`. Mark it **not run** with that
-  reason; do not "pass" it by pointing it at a REFUSED upstream, which would test
-  case 2 twice and let a policy claim go uncited.
+  name: its builtin plugin set is `native` and `forward`
+  (`crates/doggy-dns-plugin/src/builtin/` in that repository), the only ACL
+  mention in the workspace is a comment about a *future* view/ACL-per-client
+  handler (`crates/doggy-dns-plugin/src/authority_chain.rs`), and the live
+  instance's ordered chain reported exactly those two (`native` order 0,
+  `forward` order 1). This case cannot be produced against a real instance until
+  such a plugin exists, and an upstream that answers REFUSED is case 2, not this
+  one — the 2026-11-01 run confirmed the model classifies that trace
+  `upstream_refused`. Mark it **not run** with that reason; do not "pass" it by
+  pointing it at a REFUSED upstream, which would test case 2 twice and let a
+  policy claim go uncited.
 - **Evidence condition:** a failure group with `responseCode=REFUSED` and a log
   row (or plugin detail) from the policy/ACL plugin that names the blocked
   query, or the ordered plugin chain from a reachable instance that shows the
