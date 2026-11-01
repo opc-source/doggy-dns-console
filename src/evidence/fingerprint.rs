@@ -3,7 +3,8 @@
 //! A fingerprint is `sha256:<64 lowercase hex>` over the canonical JSON of an
 //! [`EvidenceBundle`]. Canonicalization:
 //!
-//! - zeroes `generatedAt` and clears `fingerprint`;
+//! - zeroes `generatedAt`, clears `fingerprint` and drops the instance fields
+//!   sampled at call time (`uptimeSeconds`, `runtime`);
 //! - sorts and deduplicates the `missing` sets on the bundle and instance;
 //! - sorts every object key recursively;
 //! - removes all insignificant whitespace;
@@ -17,9 +18,13 @@
 //!
 //! Every evidence field participates in the fingerprint: trace ID, filter,
 //! group, logs and spans including totals/truncation, instance identity,
-//! plugins, config and runtime, metrics, and `missing`. Model, prompt and
-//! tool-call metadata are absent from [`EvidenceBundle`] by construction and
-//! can therefore never leak into the hash.
+//! plugins and config, metrics, and `missing`. The two instance fields the
+//! control plane samples at call time — `uptimeSeconds` and the `runtime`
+//! snapshot — are normalized away like `generatedAt`, because they move on
+//! every read of unchanged evidence and would otherwise defeat the analysis
+//! cache. Model, prompt and tool-call metadata are absent from
+//! [`EvidenceBundle`] by construction and can therefore never leak into the
+//! hash.
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -33,6 +38,7 @@ pub fn compute_fingerprint(bundle: &EvidenceBundle) -> String {
     normalized.generated_at = 0;
     normalized.fingerprint.clear();
     normalize_missing(&mut normalized);
+    normalize_sampled_instance_fields(&mut normalized);
 
     // `EvidenceBundle` only contains strings, integers, booleans, options and
     // JSON values, so serialization cannot fail for a normal bundle.
@@ -53,6 +59,21 @@ fn normalize_missing(bundle: &mut EvidenceBundle) {
     if let Some(instance) = bundle.instance.as_mut() {
         instance.missing.sort_unstable();
         instance.missing.dedup();
+    }
+}
+
+/// Drops the instance fields the control plane samples at call time.
+///
+/// `uptimeSeconds` is derived from the process start time and `runtime` is the
+/// `get_runtime_status` snapshot, so both move on every read while the instance
+/// is up, without saying anything about the failure under investigation.
+/// Hashing them made the cache key churn once per second, which re-billed the
+/// model on every repeated request; they stay in the bundle where the reader
+/// can see them, and only leave the hash.
+fn normalize_sampled_instance_fields(bundle: &mut EvidenceBundle) {
+    if let Some(instance) = bundle.instance.as_mut() {
+        instance.uptime_seconds = None;
+        instance.runtime = None;
     }
 }
 

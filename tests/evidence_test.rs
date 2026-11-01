@@ -645,6 +645,16 @@ fn assert_fingerprint_changes(mutate: impl FnOnce(&mut EvidenceBundle), context:
     assert_ne!(compute_fingerprint(&bundle()), mutated(mutate), "{context}");
 }
 
+/// Asserts that `mutate` cannot move the fingerprint, for evidence fields that
+/// are sampled at call time rather than records of the failure itself.
+fn assert_fingerprint_stable(mutate: impl FnOnce(&mut EvidenceBundle), context: &str) {
+    assert_eq!(
+        compute_fingerprint(&bundle()),
+        mutated(mutate),
+        "{context} must not change the fingerprint"
+    );
+}
+
 #[test]
 fn evidence_bundle_serializes_camel_case_and_snake_case_missing() {
     let bundle = bundle();
@@ -792,6 +802,33 @@ fn fingerprint_ignores_preexisting_fingerprint() {
     assert_eq!(with_old_fingerprint, compute_fingerprint(&bundle()));
 }
 
+/// The instance block is partly sampled at call time (`uptimeSeconds` and the
+/// `get_runtime_status` snapshot), so two reads of unchanged evidence must not
+/// produce two different keys. Live runs proved the fingerprint churned every
+/// second while the instance was reachable, which defeated the analysis cache.
+#[test]
+fn fingerprint_ignores_instance_fields_sampled_at_call_time() {
+    assert_fingerprint_stable(
+        |bundle| bundle.instance.as_mut().unwrap().uptime_seconds = Some(1),
+        "instance uptimeSeconds",
+    );
+    assert_fingerprint_stable(
+        |bundle| bundle.instance.as_mut().unwrap().uptime_seconds = None,
+        "absent instance uptimeSeconds",
+    );
+    assert_fingerprint_stable(
+        |bundle| {
+            bundle.instance.as_mut().unwrap().runtime =
+                Some(json!({ "signals": { "cacheSize": 9_000 } }));
+        },
+        "instance runtime snapshot",
+    );
+    assert_fingerprint_stable(
+        |bundle| bundle.instance.as_mut().unwrap().runtime = None,
+        "absent instance runtime",
+    );
+}
+
 #[test]
 fn fingerprint_changes_with_trace_id_and_filter() {
     assert_fingerprint_changes(|bundle| bundle.trace_id = "trace-2".to_string(), "traceId");
@@ -921,10 +958,6 @@ fn fingerprint_changes_with_instance() {
         "instance pid",
     );
     assert_fingerprint_changes(
-        |bundle| bundle.instance.as_mut().unwrap().uptime_seconds = Some(1),
-        "instance uptimeSeconds",
-    );
-    assert_fingerprint_changes(
         |bundle| {
             bundle.instance.as_mut().unwrap().listen_addr = Some("0.0.0.0:53".to_string());
         },
@@ -974,10 +1007,6 @@ fn fingerprint_changes_with_instance() {
                 .push("other".to_string());
         },
         "instance config redactedKeys",
-    );
-    assert_fingerprint_changes(
-        |bundle| bundle.instance.as_mut().unwrap().runtime = Some(json!({ "signals": {} })),
-        "instance runtime",
     );
     assert_fingerprint_changes(
         |bundle| {

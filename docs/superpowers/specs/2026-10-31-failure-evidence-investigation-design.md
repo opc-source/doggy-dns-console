@@ -125,11 +125,11 @@ ID 冲突时按确定性顺序追加序号，不使用随机值。
 - filter、traceId、group；
 - 日志的 ID + 规范化字段（不存原文也可复算）；
 - span 的 ID + name + duration + status；
-- 实例身份、reachable、插件、配置原文（脱敏后）、运行时；
+- 实例身份、reachable、插件、配置原文（脱敏后）；
 - 指标数值；
 - `missing` 与截断标记。
 
-排除 `generatedAt`、模型名、prompt 版本与工具调用。同一证据重复请求必须得到相同指纹。
+排除 `generatedAt`、模型名、prompt 版本与工具调用，并同样排除控制面按调用时刻采样的实例字段 `uptimeSeconds` 与 `runtime`：它们在证据完全未变时也会每次读取都抖动（实测同一 trace 每秒换一次指纹），留在哈希里等于让缓存永不命中。两者仍出现在 bundle 中供人阅读，只是不参与哈希。同一证据重复请求必须得到相同指纹。
 
 ## 5. 证据装配规则
 
@@ -292,7 +292,7 @@ FailureDrawer 升级为“调查面板”：
 ### 12.1 确定性测试
 
 - 证据装配：精确匹配、host+ip 回退、host 回退、none；实例不可达；span 缺失；指标缺失。
-- 指纹：同证据稳定；generatedAt/模型变化不影响；任一证据字段变化会变。
+- 指纹：同证据稳定；generatedAt/模型变化不影响；按调用时刻采样的 `uptimeSeconds`/`runtime` 变化不影响；其余任一证据字段变化会变。
 - 截断：失败行优先、INFO 首尾保留、omitted 计数正确。
 - 过滤一致性：测试断言列表项与证据 group 相等（共用聚合查询）。
 - 证据 ID 唯一且稳定；冲突追加序号。
