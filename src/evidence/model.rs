@@ -122,10 +122,14 @@ pub struct EvidenceInstance {
     pub reachable: bool,
     pub status: Option<String>,
     pub pid: Option<u32>,
+    /// Seconds since the process started, sampled by the control plane at call
+    /// time. Excluded from the fingerprint.
     pub uptime_seconds: Option<u64>,
     pub listen_addr: Option<String>,
     pub plugins: Vec<EvidencePlugin>,
     pub config: Option<EvidenceConfig>,
+    /// Raw `get_runtime_status` snapshot, sampled at call time (counters and
+    /// ages move on every read). Excluded from the fingerprint.
     pub runtime: Option<Value>,
     /// Instance-level degradations. Order and duplicates are not significant
     /// and are normalized before fingerprinting.

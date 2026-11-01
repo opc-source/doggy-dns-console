@@ -1129,19 +1129,15 @@ fn fingerprint_changes_with_metrics() {
 
 #[test]
 fn fingerprint_ignores_object_key_order() {
+    // Only `plugins[].details` is hashed here: `instance.runtime` leaves the
+    // fingerprint with the rest of the call-time samples, so reordering its keys
+    // would prove nothing about canonicalization.
     let mut first = bundle();
-    let first_instance = first.instance.as_mut().unwrap();
-    first_instance.runtime =
-        Some(serde_json::from_str(r#"{"z":1,"a":{"q":2,"b":3}}"#).expect("valid runtime JSON"));
-    first_instance.plugins[0].details =
+    first.instance.as_mut().unwrap().plugins[0].details =
         serde_json::from_str(r#"{"z":1,"a":2,"nested":{"y":3,"x":4}}"#).expect("valid plugin JSON");
 
     let mut second = bundle();
-    let second_instance = second.instance.as_mut().unwrap();
-    second_instance.runtime = Some(
-        serde_json::from_str(r#"{"a":{"b":3,"q":2},"z":1}"#).expect("valid reordered runtime JSON"),
-    );
-    second_instance.plugins[0].details =
+    second.instance.as_mut().unwrap().plugins[0].details =
         serde_json::from_str(r#"{"nested":{"x":4,"y":3},"a":2,"z":1}"#)
             .expect("valid reordered plugin JSON");
 
@@ -1357,11 +1353,25 @@ fn resolve_match(matched: MatchedInstance) -> ResolveMode {
 struct FakeInstances {
     mode: ResolveMode,
     calls: Arc<Calls>,
+    /// When set, every `resolve` reports a fresher control-plane sample, the way
+    /// a live instance advances `uptimeSeconds` and its `runtime` snapshot
+    /// between reads. Used to prove those call-time values cannot move the
+    /// fingerprint end to end, not just inside `compute_fingerprint`.
+    samples: Option<Arc<AtomicUsize>>,
 }
 
 impl FakeInstances {
     fn new(mode: ResolveMode, calls: Arc<Calls>) -> Self {
-        Self { mode, calls }
+        Self {
+            mode,
+            calls,
+            samples: None,
+        }
+    }
+
+    fn with_moving_samples(mut self) -> Self {
+        self.samples = Some(Arc::new(AtomicUsize::new(0)));
+        self
     }
 }
 
@@ -1381,7 +1391,20 @@ impl InstanceSource for FakeInstances {
     ) -> Result<Option<MatchedInstance>, DataError> {
         self.calls.resolve.fetch_add(1, Ordering::SeqCst);
         match &self.mode {
-            ResolveMode::Match(matched) => Ok(Some((**matched).clone())),
+            ResolveMode::Match(matched) => {
+                let mut matched = (**matched).clone();
+                if let Some(samples) = &self.samples {
+                    let read = samples.fetch_add(1, Ordering::SeqCst) as u64;
+                    matched.detail.uptime_seconds = Some(1_860 + read);
+                    matched.detail.runtime = Some(json!({
+                        "signals": {
+                            "uptimeSeconds": 1_860 + read,
+                            "cacheSize": 100 + read,
+                        }
+                    }));
+                }
+                Ok(Some(matched))
+            }
             ResolveMode::None => Ok(None),
             ResolveMode::Unavailable => Err(DataError::Upstream("probe failed".to_string())),
         }
@@ -2200,7 +2223,7 @@ async fn assemble_falls_back_to_group_last_seen_then_generated_at_for_the_metric
 }
 
 #[tokio::test]
-async fn assemble_fingerprint_is_stable_and_ignores_generated_at() {
+async fn assemble_fingerprint_is_stable_across_reads() {
     let calls = Calls::new();
     let detail = fake_detail(
         Some("host1"),
@@ -2222,7 +2245,8 @@ async fn assemble_fingerprint_is_stable_and_ignores_generated_at() {
             true,
         )),
         calls.clone(),
-    );
+    )
+    .with_moving_samples();
 
     let first = run_assemble(&telemetry, &instances, &FixedClock(1_000))
         .await
@@ -2232,6 +2256,12 @@ async fn assemble_fingerprint_is_stable_and_ignores_generated_at() {
         .unwrap();
 
     assert_ne!(first.generated_at, second.generated_at);
+    let uptime = |bundle: &EvidenceBundle| bundle.instance.as_ref().unwrap().uptime_seconds;
+    assert_ne!(
+        uptime(&first),
+        uptime(&second),
+        "the fake must re-sample the instance, otherwise this proves nothing"
+    );
     assert_eq!(first.fingerprint, second.fingerprint);
     assert_eq!(first.fingerprint, compute_fingerprint(&first));
 }
