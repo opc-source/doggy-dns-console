@@ -315,11 +315,11 @@ analysis endpoints:
 | Citation validity | 100% | Server-enforced: a succeeded result cannot contain an unknown ID, and every `observed` finding must cite at least one log/span/config/metric/plugin ID (a `tool:` result alone is rejected). Additionally check every bundle ID by hand. For IDs produced by a drill-down call, the tool result payload is **not persisted** — only the canonical arguments, duration, result hash and a structural summary — so the audit can be inspected but the payload cannot be recomputed; the hash is not an independent validation of the cited content. |
 | Unsupported-conclusion rate | ≤ 10% | Manually review claims: an `inferred` claim asserted as fact, or a next step that assumes unavailable evidence, counts as unsupported. |
 | Average tool calls | ≤ configured budget (default 6) | Mean of `toolCallCount` over cases. With the default budget of 6 calls a higher count is impossible; a non-default `CONSOLE_ANALYSIS_MAX_TOOL_CALLS` changes that bound, so record the budget with the results. A low mean is fine. |
-| p95 analysis duration | ≤ 60 s | `(finishedAt − startedAt) / 1000` seconds per case (includes queue time), nearest-rank p95. |
+| p95 analysis duration | ≤ 180 s | `(finishedAt − startedAt) / 1000` seconds per case (includes queue time), nearest-rank p95. The default deadline is 180 s: the 9 attempts that submitted in the 2026-11-01 round took 93-166 s, and the previous 60 s default cut every one of them. It is not headroom for the tail - on 2026-11-02 an attempt that used the whole 6-call drill-down budget was cut at the 180 s wall and stored `unavailable`. Each drill-down costs about 30 s of model round-trip, so raising `CONSOLE_ANALYSIS_MAX_TOOL_CALLS` means raising `CONSOLE_ANALYSIS_TIMEOUT_SECONDS` with it. |
 | Cost per analysis | report only | Provider spend divided by attempts actually billed; a `200` cache hit costs nothing. |
 | Cache-hit rate | report only | `200` responses ÷ POSTs issued **without** `force` across the run (step 4). Forced re-runs from step 6 create a new attempt (`202` unless rate-limited or errored) and are excluded. |
 
-Record the model name, prompt version (`failure-analyst/v1`), console commit,
+Record the model name, prompt version (`failure-analyst/v2`), console commit,
 date and any non-default budgets with the results — the cache key and the
 verdicts depend on them.
 

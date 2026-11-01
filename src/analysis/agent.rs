@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::analysis::drilldown::Drilldown;
-use crate::analysis::prompt::system_prompt;
+use crate::analysis::prompt::{PromptFacts, system_prompt};
 use crate::analysis::validate::{EvidenceIndex, validate_result};
 use crate::analysis::{
     AnalysisResult, AnalysisStatus, AnalysisVerdict, Confidence, ToolCallAudit, VerdictCategory,
@@ -28,6 +28,14 @@ pub const SUBMIT_TOOL: &str = "submit_failure_analysis";
 
 /// Maximum bytes kept for one tool result summary (spec §6.1).
 pub const MAX_TOOL_RESULT_BYTES: usize = 8 * 1024;
+
+/// Attempts that produced no evidence — a tool error, an unknown tool name or a
+/// duplicate call — get their own allowance instead of spending the drill-down
+/// budget. In the 2026-11-01 golden run 2 to 4 of the 6 allowed calls died on
+/// argument shape and guessed stream names, so the model could exhaust the
+/// evidence budget without ever collecting evidence. The allowance still bounds a
+/// model that retries with slightly different arguments forever.
+pub const MAX_UNPRODUCTIVE_ATTEMPTS: usize = 4;
 
 /// A completed attempt: the contract plus the audit trail persisted beside it.
 /// Audits stay out of `AnalysisResult` because spec §6.2 has no field for them.
@@ -62,8 +70,17 @@ pub async fn run_forensic_loop(
     let deadline = Instant::now() + timeout;
     let evidence_json = serde_json::to_string_pretty(bundle).map_err(|error| error.to_string())?;
 
+    let streams = drilldown.streams();
+    let facts = PromptFacts {
+        max_tool_calls,
+        max_unproductive_attempts: MAX_UNPRODUCTIVE_ATTEMPTS,
+        timeout,
+        max_result_bytes: MAX_TOOL_RESULT_BYTES,
+        log_stream: streams.log_stream,
+        trace_stream: streams.trace_stream,
+    };
     let mut messages = vec![
-        Content::new("system").with_text(system_prompt()),
+        Content::new("system").with_text(system_prompt(&facts)),
         Content::new("user").with_text(format!(
             "Investigate this failure evidence bundle and submit the structured analysis.\n\n{evidence_json}"
         )),
@@ -77,8 +94,13 @@ pub async fn run_forensic_loop(
     let mut seen_calls = HashSet::new();
     let mut repair_used = false;
     // Counts rejected calls across turns so a submission that follows a
-    // budget rejection can disclose the gap (spec §6.3.3).
+    // rejection can disclose the gap (spec §6.3.3).
     let mut budget_rejections = 0usize;
+    let mut unproductive_rejections = 0usize;
+    // Calls that returned evidence are the ones the budget pays for; attempts
+    // that failed get MAX_UNPRODUCTIVE_ATTEMPTS of their own.
+    let mut productive_calls = 0usize;
+    let mut unproductive_attempts = 0usize;
 
     loop {
         if remaining(deadline).is_none() {
@@ -169,7 +191,20 @@ pub async fn run_forensic_loop(
                 }
             }
 
+            if unproductive_attempts >= MAX_UNPRODUCTIVE_ATTEMPTS {
+                unproductive_rejections += 1;
+                push_response(
+                    &mut messages,
+                    &call,
+                    json!({"error": format!(
+                        "too many failed drill-down attempts ({MAX_UNPRODUCTIVE_ATTEMPTS} produced no evidence); submit with the evidence you have"
+                    )}),
+                );
+                continue;
+            }
+
             if !tools.contains_key(&call.name) {
+                unproductive_attempts += 1;
                 push_response(
                     &mut messages,
                     &call,
@@ -178,7 +213,7 @@ pub async fn run_forensic_loop(
                 continue;
             }
 
-            if audits.len() >= max_tool_calls {
+            if productive_calls >= max_tool_calls {
                 budget_rejections += 1;
                 push_response(
                     &mut messages,
@@ -197,6 +232,7 @@ pub async fn run_forensic_loop(
                 serde_json::to_string(&canonical).unwrap_or_default()
             );
             if !seen_calls.insert(fingerprint) {
+                unproductive_attempts += 1;
                 push_response(
                     &mut messages,
                     &call,
@@ -244,6 +280,11 @@ pub async fn run_forensic_loop(
             };
 
             let canonical_result = canonicalize(&payload);
+            if is_error {
+                unproductive_attempts += 1;
+            } else {
+                productive_calls += 1;
+            }
             let result_hash = hash_json(&canonical_result);
             let capped = cap_result(&canonical_result, &result_hash);
             let summary = summary_of(&canonical_result, &result_hash, is_error);
@@ -270,6 +311,14 @@ pub async fn run_forensic_loop(
                     &mut result,
                     &format!(
                         "drill-down budget exhausted after {max_tool_calls} calls; the verdict uses only the evidence collected before the limit"
+                    ),
+                );
+            }
+            if unproductive_rejections > 0 {
+                push_gap(
+                    &mut result,
+                    &format!(
+                        "drill-down stopped after {unproductive_attempts} failed drill-down attempts; the verdict uses only the evidence collected before that"
                     ),
                 );
             }

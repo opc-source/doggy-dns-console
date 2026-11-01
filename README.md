@@ -114,7 +114,7 @@ GET  /api/analysis/markers?traceIds=<comma separated, max 200>
 `POST` builds the evidence server-side and then:
 
 - `200` with the stored snapshot when an attempt for the same evidence
-  fingerprint, model name and prompt version (`failure-analyst/v1`) already
+  fingerprint, model name and prompt version (`failure-analyst/v2`) already
   **succeeded**. The model is not called.
 - `202 { "analysisId": "…" }` for a newly queued job **or** when an attempt with
   the same key is already queued/running (the existing id is returned).
@@ -152,9 +152,18 @@ bodies) and is used only to badge the failure list.
 ### Boundaries
 
 - Drill-down is a server-enforced allowlist of eight read-only OpenObserve tools;
-  the model never sees a write tool. Budget: at most 6 calls by default, a 60 s
-  deadline and 8 KB per tool result preview. Repeating a tool with the same
-  canonical arguments is refused.
+  the model never sees a write tool. Budget: at most 6 calls that return evidence
+  by default, a 180 s deadline and 8 KB per tool result preview. Attempts that
+  return nothing — a tool error, an unknown tool name or a repeated call with the
+  same canonical arguments — do not spend that budget, but they are capped at 4
+  so a model stuck on bad arguments cannot loop. The prompt states the numbers and
+  deadline this process actually enforced, plus the configured log and trace
+  stream names, so the model never has to guess a stream. The two limits are
+  linked: drill-downs answer in milliseconds, so almost every second of an
+  attempt is one model round-trip (~30 s measured), and an attempt needs one per
+  call plus the submission. Raising `CONSOLE_ANALYSIS_MAX_TOOL_CALLS` without
+  raising `CONSOLE_ANALYSIS_TIMEOUT_SECONDS` past `calls × 30 s` just converts
+  over-budget attempts into `unavailable` results.
 - The final result must arrive through `submit_failure_analysis` and is validated
   server-side: every cited ID must exist in the bundle or a tool result, every
   `observed` finding must cite one, an `ok` result needs at least one observed
@@ -189,7 +198,7 @@ console process per database file; analysis state is process-local by design.
 | `CONSOLE_ANALYSIS_ENABLED` | `true` | — | Master switch; `false` makes the analysis endpoints answer `503` |
 | `CONSOLE_ANALYSIS_RETENTION_DAYS` | `30` | `1` | Days to keep investigation rows |
 | `CONSOLE_ANALYSIS_RATE_PER_MIN` | `10` | `1` | Process-wide analysis starts per minute |
-| `CONSOLE_ANALYSIS_TIMEOUT_SECONDS` | `60` | `1` | Deadline for one analysis attempt |
+| `CONSOLE_ANALYSIS_TIMEOUT_SECONDS` | `180` | `1` | Deadline for one analysis attempt |
 | `CONSOLE_ANALYSIS_MAX_TOOL_CALLS` | `6` | `1` | Server-enforced drill-down budget |
 
 Analysis also requires a model API key (`MODEL_API_KEY`, falling back to

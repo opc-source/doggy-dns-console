@@ -12,6 +12,23 @@ use serde_json::Value;
 
 use crate::agent::openobserve_mcp::{ALLOWED_OPENOBSERVE_TOOLS, OpenObserveMcpClient};
 
+/// The streams a drill-down can read, so the prompt can name them instead of
+/// letting the model guess and burn calls on "stream not found".
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DrilldownStreams {
+    pub log_stream: Option<String>,
+    pub trace_stream: Option<String>,
+}
+
+impl DrilldownStreams {
+    pub fn new(log_stream: impl Into<String>, trace_stream: impl Into<String>) -> Self {
+        Self {
+            log_stream: Some(log_stream.into()),
+            trace_stream: Some(trace_stream.into()),
+        }
+    }
+}
+
 /// Executes the read-only tools an analysis attempt may use.
 #[async_trait]
 pub trait Drilldown: Send + Sync {
@@ -21,6 +38,12 @@ pub trait Drilldown: Send + Sync {
     /// Runs one exposed tool name. Errors are returned to the model, never
     /// escalated as analysis failures.
     async fn call_tool(&self, tool_name: &str, args: Value) -> Result<Value, String>;
+
+    /// Streams the tools above query. The default (no streams) tells the prompt
+    /// there is nothing to query, which is what a source-less drill-down is.
+    fn streams(&self) -> DrilldownStreams {
+        DrilldownStreams::default()
+    }
 }
 
 /// Maps an exposed tool name back to the upstream MCP name.
@@ -35,12 +58,15 @@ pub fn upstream_tool_name(exposed: &str) -> Option<&'static str> {
 pub struct OpenObserveDrilldown {
     client: Arc<OpenObserveMcpClient>,
     declarations: Vec<Value>,
+    streams: DrilldownStreams,
 }
 
 impl OpenObserveDrilldown {
     /// Discovers the exposed declarations. Discovery failure leaves the agent
     /// with no drill-down tools; it can still submit from the bundle alone.
-    pub async fn new(client: Arc<OpenObserveMcpClient>) -> Self {
+    /// `streams` are the configured query streams, reported to the model so its
+    /// SQL names a stream that exists.
+    pub async fn new(client: Arc<OpenObserveMcpClient>, streams: DrilldownStreams) -> Self {
         let declarations = match client.allowed_tools().await {
             Ok(tools) => tools
                 .iter()
@@ -54,6 +80,7 @@ impl OpenObserveDrilldown {
         Self {
             client,
             declarations,
+            streams,
         }
     }
 }
@@ -62,6 +89,10 @@ impl OpenObserveDrilldown {
 impl Drilldown for OpenObserveDrilldown {
     fn tool_declarations(&self) -> Vec<Value> {
         self.declarations.clone()
+    }
+
+    fn streams(&self) -> DrilldownStreams {
+        self.streams.clone()
     }
 
     async fn call_tool(&self, tool_name: &str, args: Value) -> Result<Value, String> {

@@ -13,7 +13,7 @@ pub mod service;
 pub mod store;
 pub mod validate;
 
-pub use prompt::{PROMPT_VERSION, system_prompt};
+pub use prompt::{PROMPT_VERSION, PromptFacts, system_prompt};
 
 use serde::{Deserialize, Serialize};
 

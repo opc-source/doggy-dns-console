@@ -52,7 +52,7 @@ process_pid         = "1326"
 | D2 | 打开证据包自动分析；按证据指纹缓存，可显式重新分析。 |
 | D3 | 只持久化分析结果、证据清单/哈希与工具调用记录；不落原始日志/span。 |
 | D4 | 实例精确匹配用 `service_instance_id`；稳定展示身份用 `host_name + doggy_dns_ip_addr`；回退链 `exact → host_ip → host → none`，并标注 `matchQuality`。 |
-| D5 | 分析 Agent 允许调用受限只读 OpenObserve 工具补证，预算 6 次调用 / 60 秒；最终必须通过 `submit_failure_analysis` 提交结构化结果。 |
+| D5 | 分析 Agent 允许调用受限只读 OpenObserve 工具补证，预算 6 次「拿到证据」的调用 / 默认 180 秒；提示词按本进程实际生效的配置渲染预算、时限与流名（见 §6.1）；最终必须通过 `submit_failure_analysis` 提交结构化结果。 |
 | D6 | 分析以异步任务执行，抽屉轮询；证据接口始终同步且不触发模型。 |
 | D7 | A1 保持 loopback/无登录；分析入口限流并提供总开关，团队共享认证单独排期。 |
 | D8 | 证据指纹为规范化证据 JSON 的 SHA-256（排除 `generatedAt` 与模型元数据）。 |
@@ -150,12 +150,13 @@ ID 冲突时按确定性顺序追加序号，不使用随机值。
 
 ### 6.1 执行模型
 
-分析 Agent 与聊天会话解耦，输入为证据包，系统提示版本固定为 `failure-analyst/v1`。
+分析 Agent 与聊天会话解耦，输入为证据包，系统提示版本固定为 `failure-analyst/v2`。提示词里的数字与流名一律由运行期事实渲染（`PromptFacts`），不写死：把 6 次/60 秒刻进文本，运维一改 `CONSOLE_ANALYSIS_*` 提示词就开始说谎；不告诉模型日志与 trace 的流名，它就只能猜 `logs`/`traces`，而 2026-11-01 的实测里这类猜错每次白烧一次调用。
 
 - 先读证据包；仅当缺口明确时调用下钻工具。
 - 工具允许列表：`openobserve_stream_list`、`openobserve_stream_schema`、`openobserve_search_sql`、`openobserve_promql_query`、`openobserve_promql_range`、`openobserve_latest_traces`、`openobserve_trace_dag`、`openobserve_search_around`。
 - 终止工具：`submit_failure_analysis`，服务端以 JSON Schema 校验最终产物。
-- 预算：最多 6 次下钻调用、60 秒墙钟、单次工具结果摘要不超过 8 KB；相同工具 + 规范化参数重复调用直接拒绝。
+- 预算：最多 6 次「拿到证据」的下钻调用、默认 180 秒墙钟、单次工具结果摘要不超过 8 KB；相同工具 + 规范化参数重复调用直接拒绝。
+- 空转的尝试（工具报错、未知工具名、重复调用）不吃这 6 次预算，但整轮最多 4 次；否则模型光靠试错就能把预算耗光却一条证据都没拿到——2026-11-01 那轮 6 次里有 2–4 次死在参数形状和流名猜错上。
 - 超预算或超时：以已有证据提交，并在 `notDeterminable` 说明缺口。
 
 ### 6.2 输出契约
@@ -316,7 +317,7 @@ FailureDrawer 升级为“调查面板”：
 - verdict 准确率 ≥ 80%；
 - 引用有效率 100%（服务端强制）；
 - 无依据结论率 ≤ 10%；
-- 平均工具调用 ≤ 6，p95 分析时长 ≤ 60 秒；
+- 平均「拿到证据」的工具调用 ≤ 6，p95 分析时长 ≤ 180 秒（默认时限即 180 秒：2026-11-01 轮次中 9 个成功提交的 qwen3.8-flash 分析耗时 93–166 秒，旧的 60 秒把它们全部判成超时；2026-11-02 复核时一次用满 6 次下钻预算的尝试在 180 秒处被切断、降级为 `unavailable`。时限与预算是联动的：每次下钻约需 30 秒模型往返，调高 `CONSOLE_ANALYSIS_MAX_TOOL_CALLS` 时必须同步调高 `CONSOLE_ANALYSIS_TIMEOUT_SECONDS`）；
 - 单次分析成本与缓存命中率记录在报告中。
 
 ## 13. 实施阶段
@@ -338,7 +339,7 @@ FailureDrawer 升级为“调查面板”：
 ## 15. A1 验收标准
 
 1. 对任一真实失败 trace，证据接口返回的 group 与 `/api/failures` 列表项完全相等。
-2. 抽屉先展示证据，再在 60 秒内给出分析或显式不可用；缓存命中时立即返回。
+2. 抽屉先展示证据，再在默认 180 秒内给出分析或显式不可用；缓存命中时立即返回。
 3. 每条 `observed` 结论至少引用一个有效证据 ID；非法输出不会以 `ok` 展示。
 4. 实例不可达、span/指标缺失、日志截断均有明确标记，分析不得声称缺失证据中的事实。
 5. `force` 产生新 attempt，历史保留；保留期清理可验证。

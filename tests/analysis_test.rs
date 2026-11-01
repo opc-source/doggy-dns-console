@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use doggy_dns_console::analysis::prompt::system_prompt;
+use doggy_dns_console::analysis::prompt::{PromptFacts, system_prompt};
 use doggy_dns_console::analysis::validate::{EvidenceIndex, ValidationError, validate_result};
 use doggy_dns_console::analysis::{
     AnalysisResult, AnalysisStatus, AnalysisVerdict, Confidence, Finding, FindingKind, NextStep,
@@ -293,22 +293,84 @@ async fn validation_requires_observed_finding_for_high_confidence() {
 
 // -------------------------------------------------------------------- prompt
 
+/// The limits a test prompt is rendered with. Deliberately different from every
+/// default so a hardcoded value in the prompt cannot pass by accident.
+fn prompt_facts() -> PromptFacts {
+    PromptFacts {
+        max_tool_calls: 9,
+        max_unproductive_attempts: 4,
+        timeout: Duration::from_secs(150),
+        max_result_bytes: 8 * 1024,
+        log_stream: Some("doggy_dns".to_string()),
+        trace_stream: Some("doggy_dns_trace".to_string()),
+    }
+}
+
 #[test]
 fn prompt_is_versioned_and_states_the_contract() {
-    assert_eq!(PROMPT_VERSION, "failure-analyst/v1");
+    assert_eq!(PROMPT_VERSION, "failure-analyst/v2");
 
-    let prompt = system_prompt();
+    let prompt = system_prompt(&prompt_facts());
     for needle in [
         "notDeterminable",
         "evidenceIds",
         "insufficient_evidence",
         "NXDOMAIN",
         "submit_failure_analysis",
-        "6",
         "openobserve_search_sql",
     ] {
         assert!(prompt.contains(needle), "prompt is missing {needle:?}");
     }
+}
+
+#[test]
+fn prompt_states_the_limits_the_loop_enforces() {
+    let prompt = system_prompt(&prompt_facts());
+
+    assert!(
+        prompt.contains("9 drill-down"),
+        "prompt must state the configured drill-down budget"
+    );
+    assert!(
+        prompt.contains("4 refused attempts"),
+        "prompt must state the cap on attempts that return no evidence"
+    );
+    assert!(
+        prompt.contains("150 seconds"),
+        "prompt must state the configured deadline"
+    );
+    assert!(
+        prompt.contains("8192 bytes"),
+        "prompt must state the configured result cap"
+    );
+    assert!(
+        !prompt.contains("60 seconds") && !prompt.contains("at most 6"),
+        "the prompt must not carry a hardcoded deadline or budget: it then lies \
+         about the limits the loop enforces"
+    );
+}
+
+#[test]
+fn prompt_names_the_streams_the_drilldown_can_read() {
+    let prompt = system_prompt(&prompt_facts());
+    assert!(
+        prompt.contains("doggy_dns") && prompt.contains("doggy_dns_trace"),
+        "the model must be told the stream names, otherwise it guesses `logs` \
+         or `traces` and every SQL drill-down fails"
+    );
+
+    let mut without = prompt_facts();
+    without.log_stream = None;
+    without.trace_stream = None;
+    let prompt = system_prompt(&without);
+    assert!(
+        !prompt.contains("doggy_dns"),
+        "no stream names may be claimed when no drill-down source is configured"
+    );
+    assert!(
+        prompt.contains("no drill-down source is configured"),
+        "the prompt must say the drill-down is unavailable instead of staying silent"
+    );
 }
 
 // ------------------------------------------------------ forensic agent loop
@@ -319,7 +381,7 @@ use std::time::Duration;
 use adk_rust::model::{ScriptedLlm, ScriptedResponse};
 use async_trait::async_trait;
 use doggy_dns_console::analysis::agent::{MAX_TOOL_RESULT_BYTES, SUBMIT_TOOL, run_forensic_loop};
-use doggy_dns_console::analysis::drilldown::{Drilldown, upstream_tool_name};
+use doggy_dns_console::analysis::drilldown::{Drilldown, DrilldownStreams, upstream_tool_name};
 use serde_json::Value;
 
 struct ScriptedDrilldown {
@@ -327,6 +389,9 @@ struct ScriptedDrilldown {
     result: Value,
     error: Option<String>,
     delay: Option<Duration>,
+    /// Number of leading calls that report an error before `result` is returned.
+    fail_first: usize,
+    streams: DrilldownStreams,
 }
 
 impl ScriptedDrilldown {
@@ -336,6 +401,8 @@ impl ScriptedDrilldown {
             result,
             error: None,
             delay: None,
+            fail_first: 0,
+            streams: DrilldownStreams::default(),
         }
     }
 
@@ -345,6 +412,8 @@ impl ScriptedDrilldown {
             result: json!({}),
             error: Some(message.to_string()),
             delay: None,
+            fail_first: usize::MAX,
+            streams: DrilldownStreams::default(),
         }
     }
 
@@ -353,8 +422,30 @@ impl ScriptedDrilldown {
         self
     }
 
+    /// Fails the first `error_first` calls, then returns `result`. Models hit
+    /// real argument and stream-name errors before a query succeeds, so the loop
+    /// has to distinguish those attempts from ones that returned evidence.
+    fn flaky(error_first: usize, result: Value) -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            result,
+            error: None,
+            delay: None,
+            fail_first: error_first,
+            streams: DrilldownStreams::default(),
+        }
+    }
+
     fn calls(&self) -> Vec<(String, Value)> {
         self.calls.lock().unwrap().clone()
+    }
+
+    fn with_streams(mut self, log_stream: &str, trace_stream: &str) -> Self {
+        self.streams = DrilldownStreams {
+            log_stream: Some(log_stream.to_string()),
+            trace_stream: Some(trace_stream.to_string()),
+        };
+        self
     }
 }
 
@@ -368,18 +459,26 @@ impl Drilldown for ScriptedDrilldown {
         })]
     }
 
+    fn streams(&self) -> DrilldownStreams {
+        self.streams.clone()
+    }
+
     async fn call_tool(&self, tool_name: &str, args: Value) -> Result<Value, String> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push((tool_name.to_string(), args));
+        let attempt = {
+            let mut calls = self.calls.lock().unwrap();
+            calls.push((tool_name.to_string(), args));
+            calls.len()
+        };
         if let Some(delay) = self.delay {
             tokio::time::sleep(delay).await;
         }
-        match &self.error {
-            Some(error) => Err(error.clone()),
-            None => Ok(self.result.clone()),
+        if let Some(error) = &self.error {
+            return Err(error.clone());
         }
+        if attempt <= self.fail_first {
+            return Err("Search stream not found: logs".to_string());
+        }
+        Ok(self.result.clone())
     }
 }
 
@@ -414,6 +513,19 @@ fn function_responses(request: &adk_rust::LlmRequest) -> Vec<Value> {
         .collect()
 }
 
+fn system_text(request: &adk_rust::LlmRequest) -> String {
+    request
+        .contents
+        .iter()
+        .filter(|content| content.role == "system")
+        .flat_map(|content| &content.parts)
+        .filter_map(|part| match part {
+            adk_rust::Part::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
 fn exposed_drilldown_names_map_to_upstream_names() {
     assert_eq!(
@@ -422,6 +534,34 @@ fn exposed_drilldown_names_map_to_upstream_names() {
     );
     assert_eq!(upstream_tool_name("SearchSQL"), None);
     assert_eq!(upstream_tool_name("unknown"), None);
+}
+
+#[tokio::test]
+async fn forensic_loop_puts_the_drilldown_streams_in_the_prompt() {
+    let bundle = fixture_bundle().await;
+    let drilldown =
+        ScriptedDrilldown::new(json!({"rows": []})).with_streams("doggy_dns", "doggy_dns_trace");
+    let llm = ScriptedLlm::new("test", vec![submit(&valid_result(&first_log_id(&bundle)))]);
+
+    run_forensic_loop(&llm, &bundle, &drilldown, 6, Duration::from_secs(60))
+        .await
+        .unwrap();
+
+    let prompt = system_text(&llm.requests()[0]);
+    assert!(
+        prompt.contains("doggy_dns") && prompt.contains("doggy_dns_trace"),
+        "the model has to be told the stream names the drill-down reads"
+    );
+
+    let without = ScriptedDrilldown::new(json!({"rows": []}));
+    let llm = ScriptedLlm::new("test", vec![submit(&valid_result(&first_log_id(&bundle)))]);
+    run_forensic_loop(&llm, &bundle, &without, 6, Duration::from_secs(60))
+        .await
+        .unwrap();
+    assert!(
+        system_text(&llm.requests()[0]).contains("no drill-down source is configured"),
+        "a drill-down that reports no streams must be stated, not left to guesswork"
+    );
 }
 
 #[tokio::test]
@@ -564,6 +704,96 @@ async fn forensic_loop_rejects_duplicate_canonical_arguments() {
     assert_eq!(
         outcome.tool_calls[0].canonical_args,
         json!({"limit": 5, "query": "SELECT 1"})
+    );
+}
+
+#[tokio::test]
+async fn forensic_loop_gives_failed_drilldowns_their_own_cap() {
+    let bundle = fixture_bundle().await;
+    let drilldown = ScriptedDrilldown::failing("Search stream not found: logs");
+    let mut script: Vec<ScriptedResponse> = (0..6)
+        .map(|index| {
+            ScriptedResponse::function_call(
+                "openobserve_search_sql",
+                json!({"query": format!("SELECT {index}")}),
+            )
+        })
+        .collect();
+    script.push(submit(&drilled_result(&bundle, "tool:1:result")));
+    let llm = ScriptedLlm::new("test", script);
+
+    let outcome = run_forensic_loop(&llm, &bundle, &drilldown, 6, Duration::from_secs(60))
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.result.status, AnalysisStatus::Ok);
+    // Four attempts that return no evidence are allowed; the fifth is refused so
+    // a model stuck on a bad stream name cannot loop forever.
+    assert_eq!(drilldown.calls().len(), 4);
+    assert_eq!(outcome.tool_calls.len(), 4);
+    let refusal = llm
+        .requests()
+        .iter()
+        .rev()
+        .flat_map(|request| request.contents.iter().rev())
+        .flat_map(|content| content.parts.iter().rev())
+        .find_map(|part| match part {
+            adk_rust::Part::FunctionResponse {
+                function_response, ..
+            } => Some(function_response.response.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        refusal.to_string().contains("failed drill-down"),
+        "the refusal must name the reason: {refusal}"
+    );
+    assert!(
+        outcome
+            .result
+            .not_determinable
+            .iter()
+            .any(|gap| gap.contains("failed drill-down")),
+        "a submission after a refusal must disclose the gap"
+    );
+}
+
+#[tokio::test]
+async fn forensic_loop_does_not_bill_the_budget_for_failed_drilldowns() {
+    let bundle = fixture_bundle().await;
+    // Three argument errors (the stream name the model guessed does not exist)
+    // followed by four queries that do return evidence.
+    let drilldown = ScriptedDrilldown::flaky(3, json!({"rows": []}));
+    let mut script: Vec<ScriptedResponse> = (0..7)
+        .map(|index| {
+            ScriptedResponse::function_call(
+                "openobserve_search_sql",
+                json!({"query": format!("SELECT {index}")}),
+            )
+        })
+        .collect();
+    script.push(submit(&drilled_result(&bundle, "tool:7:result")));
+    let llm = ScriptedLlm::new("test", script);
+
+    let outcome = run_forensic_loop(&llm, &bundle, &drilldown, 6, Duration::from_secs(60))
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.result.status, AnalysisStatus::Ok);
+    assert_eq!(
+        drilldown.calls().len(),
+        7,
+        "only the four calls that returned evidence may spend the 6-call budget"
+    );
+    assert_eq!(outcome.tool_calls.len(), 7);
+    assert!(
+        !outcome
+            .result
+            .not_determinable
+            .iter()
+            .any(|gap| gap.contains("budget exhausted")),
+        "the verdict must not claim an exhausted budget it never hit: {:?}",
+        outcome.result.not_determinable
     );
 }
 
