@@ -159,8 +159,12 @@ fn data_sources(facts: &PromptFacts) -> String {
         .filter(|name| facts.declares(name))
         .collect();
     if !no_stream.is_empty() {
+        // Only say what this console enforces. Arguments are forwarded to the
+        // transport as the model wrote them (`Drilldown::call_tool` checks the tool
+        // name, not the fields), so promising that an added stream gets rejected
+        // would be a claim about the upstream that this build cannot keep.
         paragraph.push_str(&format!(
-            "\n{} take no stream argument; adding one only gets the call rejected.",
+            "\n{} take no stream argument: they have no stream to name, so do not add one.",
             no_stream.join(", ")
         ));
     }

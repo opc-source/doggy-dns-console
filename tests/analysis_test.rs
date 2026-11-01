@@ -417,6 +417,34 @@ fn prompt_names_only_the_stream_that_exists() {
 }
 
 #[test]
+fn prompt_places_the_span_stream_when_only_a_trace_stream_exists() {
+    // The mirror of the log-only case: the SQL guidance and the argument sentence
+    // are built from the two streams separately, so a trace-only console has its
+    // own rendering path, and the one thing that must not happen is the prompt
+    // naming a log stream this drill-down cannot read.
+    let mut trace_only = prompt_facts();
+    trace_only.log_stream = None;
+    let prompt = system_prompt(&trace_only);
+    assert!(
+        prompt.contains("app_traces"),
+        "a configured trace stream has to be named even when no log stream is"
+    );
+    assert!(
+        !prompt.contains("app_logs"),
+        "the prompt must not name a log stream the drill-down cannot read"
+    );
+    assert!(
+        paragraph_containing(&prompt, "the stream goes in the SQL itself")
+            .contains("FROM app_traces"),
+        "with only a trace stream, the SQL guidance has to place that name"
+    );
+    assert!(
+        paragraph_containing(&prompt, "take the stream as an argument").contains("the name above"),
+        "one configured stream means one possible argument, whoever the tool is"
+    );
+}
+
+#[test]
 fn prompt_scopes_the_stream_names_to_the_tools_that_take_them() {
     let prompt = system_prompt(&prompt_facts());
     assert!(
@@ -443,6 +471,103 @@ fn prompt_scopes_the_stream_names_to_the_tools_that_take_them() {
         paragraph_containing(&prompt, "take the stream as an argument")
             .contains("one of the names above"),
         "with both streams configured the model has to be told to pick one of them"
+    );
+}
+
+/// The parameter shape a live OpenObserve MCP answered `tools/list` with on
+/// 2026-11-02, kept in `tests/fixtures/openobserve_tools_list_2026-11-02.json`.
+/// The prompt has to place each stream the way that record says, because the
+/// classification lists in `prompt.rs` and the expectations below would else be
+/// the same hand-written guess and could agree while both were wrong.
+const LIVE_TOOLS_RECORD: &str = include_str!("fixtures/openobserve_tools_list_2026-11-02.json");
+
+#[test]
+fn prompt_places_the_stream_the_way_the_recorded_upstream_declares_it() {
+    let record: serde_json::Value =
+        serde_json::from_str(LIVE_TOOLS_RECORD).expect("the recorded tools/list must parse");
+    let tools = record["tools"]
+        .as_array()
+        .expect("the record must carry a tools array");
+
+    let mut recorded_names: Vec<&str> = tools
+        .iter()
+        .map(|tool| tool["name"].as_str().expect("tool name"))
+        .collect();
+    let mut menu = REAL_UPSTREAM_TOOLS.to_vec();
+    recorded_names.sort();
+    menu.sort();
+    assert_eq!(
+        recorded_names, menu,
+        "the record and the live tool menu the prompt is tested against must be the same set"
+    );
+
+    let mut facts = prompt_facts();
+    facts.tool_names = recorded_names
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    let prompt = system_prompt(&facts);
+
+    let as_argument = paragraph_containing(&prompt, "take the stream as an argument");
+    let no_stream = paragraph_containing(&prompt, "take no stream argument");
+    let in_sql = paragraph_containing(&prompt, "the stream goes in the SQL itself");
+
+    for tool in tools {
+        let name = tool["name"].as_str().unwrap();
+        if tool["requiresStreamName"].as_bool().unwrap() {
+            assert!(
+                as_argument.contains(name) && !no_stream.contains(name),
+                "{name} requires `stream_name` in the recorded upstream schema, so the prompt \
+                 has to place it with the tools that pass the stream as an argument; it reads: \
+                 {as_argument}"
+            );
+        } else if name == "openobserve_search_sql" {
+            assert!(
+                in_sql.contains(name) && !as_argument.contains(name),
+                "{name} carries the stream inside its SQL body rather than as an argument, so the \
+                 prompt has to say where the name goes: {in_sql}"
+            );
+        } else {
+            assert!(
+                no_stream.contains(name) && !as_argument.contains(name),
+                "{name} has no required `stream_name` in the recorded upstream schema, so the \
+                 prompt must not tell the model to pass one: {no_stream}"
+            );
+        }
+    }
+}
+
+#[test]
+fn prompt_promises_only_what_the_console_itself_enforces() {
+    let prompt = system_prompt(&prompt_facts());
+
+    // `Drilldown::call_tool` forwards the model's arguments to the transport after
+    // checking the tool name, so an extra `stream_name` on a streamless tool is
+    // rejected by the upstream or ignored by it — the console cannot know which.
+    // A promise about that is the same class of lie as a wrong budget.
+    for (needle, what) in [
+        (
+            "take no stream argument",
+            "whether the upstream rejects the call",
+        ),
+        (
+            "take the stream as an argument",
+            "what a wrong stream costs",
+        ),
+    ] {
+        let line = paragraph_containing(&prompt, needle);
+        assert!(
+            !line.contains("rejected") && !line.contains("refused"),
+            "the prompt must not promise how the upstream validates an argument it does not \
+             validate itself ({what}); the line reads: {line}"
+        );
+    }
+
+    // What the console does enforce may be stated: the duplicate-call refusal is
+    // its own check in the loop.
+    assert!(
+        prompt.contains("Repeating the same tool with the same canonical arguments is refused"),
+        "duplicate calls are refused by this loop, so the prompt may say so"
     );
 }
 
@@ -1030,7 +1155,7 @@ async fn forensic_loop_gives_failed_drilldowns_their_own_cap() {
         })
         .unwrap();
     assert!(
-        refusal.to_string().contains("failed drill-down"),
+        refusal.to_string().contains("produced no evidence"),
         "the refusal must name the reason: {refusal}"
     );
     assert!(
@@ -1038,7 +1163,7 @@ async fn forensic_loop_gives_failed_drilldowns_their_own_cap() {
             .result
             .not_determinable
             .iter()
-            .any(|gap| gap.contains("failed drill-down")),
+            .any(|gap| gap.contains("produced no evidence")),
         "a submission after a refusal must disclose the gap"
     );
 }
@@ -1176,7 +1301,10 @@ async fn forensic_loop_caps_tool_result_summaries() {
         "test",
         vec![
             ScriptedResponse::function_call("openobserve_search_sql", json!({"query": "SELECT 1"})),
-            submit(&valid_result(&first_log_id(&bundle))),
+            // The cap shortens the preview, not the call: it returned evidence, so
+            // citing `tool:1:result` has to stay valid even though the model only
+            // saw the first 8 KB of it.
+            submit(&drilled_result(&bundle, "tool:1:result")),
         ],
     );
 

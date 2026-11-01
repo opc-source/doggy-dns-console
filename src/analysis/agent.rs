@@ -198,7 +198,7 @@ pub async fn run_forensic_loop(
                     &mut messages,
                     &call,
                     json!({"error": format!(
-                        "too many failed drill-down attempts ({MAX_UNPRODUCTIVE_ATTEMPTS} produced no evidence); submit with the evidence you have"
+                        "too many drill-down attempts that produced no evidence ({MAX_UNPRODUCTIVE_ATTEMPTS}); submit with the evidence you have"
                     )}),
                 );
                 continue;
@@ -327,7 +327,8 @@ pub async fn run_forensic_loop(
                 push_gap(
                     &mut result,
                     &format!(
-                        "drill-down stopped after {unproductive_attempts} failed drill-down attempts; the verdict uses only the evidence collected before that"
+                        "drill-down refused after {unproductive_attempts} attempts that produced \
+                         no evidence; the verdict uses only the evidence collected before that"
                     ),
                 );
             }
