@@ -292,7 +292,7 @@ function revealEvidence(id: string) {
   <div class="fixed inset-0 z-40 flex justify-end bg-black/40 backdrop-blur-[2px]" @click.self="emit('close')">
     <aside
       ref="dialog"
-      class="flex h-full w-full max-w-[480px] flex-col border-l border-border bg-surface shadow-2xl"
+      class="flex h-full w-full max-w-[1200px] flex-col border-l border-border bg-surface shadow-2xl sm:w-[70%]"
       data-testid="failure-drawer"
       role="dialog"
       aria-modal="true"
