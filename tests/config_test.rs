@@ -173,9 +173,10 @@ fn analysis_config_defaults_are_secure() {
     assert!(cfg.analysis.enabled);
     assert_eq!(cfg.analysis.retention_days, 30);
     assert_eq!(cfg.analysis.rate_per_minute, 10);
-    // The 9 attempts that submitted in the 2026-11-01 golden run took 93-166 s,
-    // all of them killed by nothing except the old 60 s default when it was 60.
-    assert_eq!(cfg.analysis.timeout, std::time::Duration::from_secs(180));
+    // The deadline is a kill-switch, not a target: a full 6-call attempt pays one
+    // model round-trip per call plus the submission (~300 s at the 2026-11-01
+    // measured 15-27 s per turn), so the default sits above that estimate.
+    assert_eq!(cfg.analysis.timeout, std::time::Duration::from_secs(600));
     assert_eq!(cfg.analysis.max_tool_calls, 6);
 }
 
