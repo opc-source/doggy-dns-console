@@ -67,7 +67,7 @@ function describeSignal(signal: unknown): string | null {
       @keydown.esc="selected = null"
     >
       <aside
-        class="flex h-full w-full max-w-[560px] flex-col border-l border-border bg-surface shadow-2xl"
+        class="flex h-full w-full max-w-[1200px] flex-col border-l border-border bg-surface shadow-2xl sm:w-[70%]"
         role="dialog"
         aria-modal="true"
         aria-label="Instance detail"
