@@ -7,6 +7,7 @@ import type { AnalysisResult, AnalysisSnapshot, EvidenceBundle } from '@/api/typ
 import FailureDrawer from '@/components/FailureDrawer.vue'
 import type { InvestigationState } from '@/composables/useInvestigation'
 import { useChatStore } from '@/stores/chat'
+import { useUiStore } from '@/stores/ui'
 
 interface Investigation {
   state: Ref<InvestigationState>
@@ -37,9 +38,13 @@ function createInvestigation(overrides: InvestigationOverrides = {}): Investigat
     analysis: ref<AnalysisSnapshot | null>(overrides.analysis ?? null),
     error: ref<string | null>(overrides.error ?? null),
     stale: ref(overrides.stale ?? false),
-    loadEvidence: vi.fn(overrides.loadEvidence ?? (async () => true)),
-    startAnalysis: vi.fn(overrides.startAnalysis ?? (async () => true)),
-    loadAnalysis: vi.fn(overrides.loadAnalysis ?? (async () => true)),
+    loadEvidence: vi.fn<() => Promise<boolean>>(overrides.loadEvidence ?? (async () => true)),
+    startAnalysis: vi.fn<(force?: boolean) => Promise<boolean>>(
+      overrides.startAnalysis ?? (async () => true),
+    ),
+    loadAnalysis: vi.fn<(analysisId?: string) => Promise<boolean>>(
+      overrides.loadAnalysis ?? (async () => true),
+    ),
   }
 }
 
@@ -224,11 +229,18 @@ function refButton(wrapper: VueWrapper, evidenceId: string) {
 
 beforeEach(() => {
   current = createInvestigation()
+  // jsdom never matches media queries; the handoff picks the panel mode from this.
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: query.includes('1280px'),
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  }))
 })
 
 afterEach(() => {
   for (const wrapper of wrappers.splice(0)) wrapper.unmount()
   document.body.innerHTML = ''
+  vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 
@@ -630,11 +642,20 @@ describe('FailureDrawer investigation panel', () => {
     expect(forensics.text()).toContain('获取 5 条日志')
   })
 
-  it('hands the investigation to chat and closes', async () => {
+  it('hands the investigation to chat without waiting for the answer', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const chat = useChatStore()
-    const send = vi.spyOn(chat, 'send').mockResolvedValue(true)
+    const ui = useUiStore()
+    let resolveSend: (value: boolean) => void = () => undefined
+    const send = vi
+      .spyOn(chat, 'send')
+      .mockImplementation(
+        () =>
+          new Promise<boolean>((resolve) => {
+            resolveSend = resolve
+          }),
+      )
 
     current = createInvestigation({
       state: 'analysisDone',
@@ -646,16 +667,72 @@ describe('FailureDrawer investigation panel', () => {
     await flushPromises()
 
     await wrapper.find('[data-test="handoff"]').trigger('click')
+
+    // The drawer is gone as soon as the question is dispatched; the answer may take a minute.
+    expect(wrapper.emitted('close')).toBeTruthy()
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(ui.aiPanelMode).toBe('docked')
+    expect(ui.handoff).toMatchObject({
+      traceId: 't1',
+      verdict: 'upstream_timeout',
+      summary: '上游转发超时导致 SERVFAIL',
+      windowMinutes: 60,
+    })
+
+    resolveSend(true)
     await flushPromises()
 
-    expect(send).toHaveBeenCalledTimes(1)
     const message = String(send.mock.calls[0]?.[0])
     expect(message).toContain('t1')
     expect(message).toContain('sha256:abc123')
     expect(message).toContain('upstream_timeout')
     expect(message).toContain('上游转发超时导致 SERVFAIL')
     expect(message).toContain('an-1')
+  })
+
+  it('still hands over when the analysis has no conclusion yet', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const ui = useUiStore()
+    const send = vi.spyOn(useChatStore(), 'send').mockResolvedValue(true)
+
+    current = createInvestigation({
+      state: 'analysisUnavailable',
+      evidence: bundle(),
+      error: 'model failed',
+    })
+
+    const wrapper = mountDrawer(pinia)
+    await flushPromises()
+
+    await wrapper.find('[data-test="handoff"]').trigger('click')
+    await flushPromises()
+
+    expect(send).toHaveBeenCalledTimes(1)
     expect(wrapper.emitted('close')).toBeTruthy()
+    expect(ui.handoff?.verdict).toBe('未定结论')
+  })
+
+  it('opens the panel as an overlay when there is no room to dock', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const ui = useUiStore()
+    vi.spyOn(useChatStore(), 'send').mockResolvedValue(true)
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    }))
+
+    current = createInvestigation({ state: 'analysisDone', evidence: bundle(), analysis: snapshot() })
+    const wrapper = mountDrawer(pinia)
+    await flushPromises()
+
+    await wrapper.find('[data-test="handoff"]').trigger('click')
+    await flushPromises()
+
+    expect(ui.aiPanelMode).toBe('fullscreen')
   })
 
   it('keeps dialog semantics: close button focused on mount and Escape closes', async () => {

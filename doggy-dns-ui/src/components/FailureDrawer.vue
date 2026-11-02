@@ -3,12 +3,16 @@ import { computed, nextTick, onMounted, onUnmounted, ref, toRef, watch } from 'v
 import { Copy, Send, TriangleAlert, X } from '@lucide/vue'
 
 import type { MissingEvidence } from '@/api/types'
+import { useMediaQuery } from '@/composables/useMediaQuery'
 import { useInvestigation } from '@/composables/useInvestigation'
 import { useChatStore } from '@/stores/chat'
+import { useUiStore } from '@/stores/ui'
 
 const props = defineProps<{ traceId: string; windowMinutes: number; analysisId?: string }>()
 const emit = defineEmits<{ close: [] }>()
 const chat = useChatStore()
+const ui = useUiStore()
+const isWide = useMediaQuery('(min-width: 1280px)')
 
 const trace = toRef(props, 'traceId')
 const windowMinutes = toRef(props, 'windowMinutes')
@@ -218,9 +222,18 @@ async function copyTrace() {
   }
 }
 
-async function handoff() {
-  const sent = await chat.send(handoffPrompt.value)
-  if (sent) emit('close')
+function handoff() {
+  ui.rememberHandoff({
+    traceId: props.traceId,
+    verdict: result.value?.verdict.category ?? '未定结论',
+    summary: result.value?.verdict.summary ?? '',
+    windowMinutes: props.windowMinutes,
+  })
+  ui.openAiPanel(isWide.value)
+  emit('close')
+  // A run can take a minute and can fail; the panel shows the outcome, the
+  // drawer must not stay open holding the user hostage to it.
+  void chat.send(handoffPrompt.value)
 }
 
 function when(ts: number | null | undefined) {

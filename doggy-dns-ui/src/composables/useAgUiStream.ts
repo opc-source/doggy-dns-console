@@ -1,17 +1,6 @@
 import { ref } from 'vue'
 
-export interface ToolCall {
-  id: string
-  name: string
-  args: string
-  result?: string
-  status: 'running' | 'done' | 'error'
-}
-
-export interface AgUiEvent {
-  type: string
-  [key: string]: unknown
-}
+import { applyAgUiEvent, type AgUiEvent, type Segment } from '@/lib/chatModel'
 
 export interface SendRequest {
   appName: string
@@ -21,34 +10,36 @@ export interface SendRequest {
 }
 
 export function useAgUiStream() {
-  const text = ref('')
-  const toolCalls = ref<ToolCall[]>([])
-  const events = ref<AgUiEvent[]>([])
   const running = ref(false)
   const error = ref<string | null>(null)
-  let controller: AbortController | null = null
-  let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null
-  let aborted = false
+  // Only the newest run owns `running`, the abort handle and `stop()`. Without a
+  // generation, a retired run's cleanup would strip them from the live one.
+  let generation = 0
+  let active: {
+    controller: AbortController
+    reader?: ReadableStreamDefaultReader<Uint8Array>
+  } | null = null
 
-  function reset() {
-    text.value = ''
-    toolCalls.value = []
-    events.value = []
-    error.value = null
+  function retireActive() {
+    const retiring = active
+    active = null
+    retiring?.controller.abort()
+    void retiring?.reader?.cancel().catch(() => undefined)
   }
 
   function stop() {
-    aborted = true
-    controller?.abort()
-    void activeReader?.cancel().catch(() => undefined)
+    generation += 1
+    retireActive()
     running.value = false
   }
 
-  async function send(request: SendRequest) {
-    reset()
+  async function send(request: SendRequest, segments: Segment[]) {
+    retireActive()
+    const mine = ++generation
+    const controller = new AbortController()
+    active = { controller }
+    error.value = null
     running.value = true
-    aborted = false
-    controller = new AbortController()
     try {
       const response = await fetch('/api/run_sse', {
         method: 'POST',
@@ -75,11 +66,15 @@ export function useAgUiStream() {
       if (!response.body) throw new Error('agent returned no stream')
 
       const reader = response.body.getReader()
-      activeReader = reader
+      if (mine === generation) active = { controller, reader }
       const decoder = new TextDecoder()
       let buffer = ''
       while (true) {
         const { done, value } = await reader.read()
+        if (mine !== generation) {
+          void reader.cancel().catch(() => undefined)
+          break
+        }
         if (done) break
         buffer += decoder.decode(value, { stream: true })
         buffer = buffer.replace(/\r\n/g, '\n')
@@ -87,26 +82,23 @@ export function useAgUiStream() {
         while (boundary >= 0) {
           const block = buffer.slice(0, boundary)
           buffer = buffer.slice(boundary + 2)
-          handleBlock(block)
+          handleBlock(block, segments)
           boundary = buffer.indexOf('\n\n')
-        }
-        if (aborted) {
-          await reader.cancel().catch(() => undefined)
-          break
         }
       }
     } catch (cause) {
-      if (!aborted) {
+      if (mine === generation) {
         error.value = cause instanceof Error ? cause.message : String(cause)
       }
     } finally {
-      running.value = false
-      controller = null
-      activeReader = null
+      if (mine === generation) {
+        running.value = false
+        active = null
+      }
     }
   }
 
-  function handleBlock(block: string) {
+  function handleBlock(block: string, segments: Segment[]) {
     const data = block
       .split('\n')
       .filter((line) => line.startsWith('data:'))
@@ -119,63 +111,14 @@ export function useAgUiStream() {
     } catch {
       return
     }
-    events.value.push(event)
-    apply(event)
-  }
-
-  function apply(event: AgUiEvent) {
-    switch (event.type) {
-      case 'TEXT_MESSAGE_CONTENT':
-      case 'TEXT_MESSAGE_CHUNK': {
-        const delta = typeof event.delta === 'string' ? event.delta : ''
-        text.value += delta
-        break
-      }
-      case 'TOOL_CALL_START': {
-        const id = String(event.toolCallId ?? event.tool_call_id ?? '')
-        const name = String(event.toolCallName ?? event.tool_call_name ?? 'tool')
-        toolCalls.value.push({ id, name, args: '', status: 'running' })
-        break
-      }
-      case 'TOOL_CALL_CHUNK': {
-        const id = String(event.toolCallId ?? event.tool_call_id ?? '')
-        const name = String(event.toolCallName ?? event.tool_call_name ?? 'tool')
-        const delta = String(event.delta ?? '')
-        let call = toolCalls.value.find((item) => item.id === id)
-        if (!call) {
-          call = { id, name, args: '', status: 'running' }
-          toolCalls.value.push(call)
-        }
-        call.args += delta
-        break
-      }
-      case 'TOOL_CALL_ARGS': {
-        const id = String(event.toolCallId ?? event.tool_call_id ?? '')
-        const delta = String(event.delta ?? '')
-        const call = toolCalls.value.find((item) => item.id === id)
-        if (call) call.args += delta
-        break
-      }
-      case 'TOOL_CALL_RESULT': {
-        const id = String(event.toolCallId ?? event.tool_call_id ?? '')
-        const call = toolCalls.value.find((item) => item.id === id)
-        if (call) {
-          call.result = String(event.content ?? event.result ?? '')
-          call.status = 'done'
-        }
-        break
-      }
-      case 'RUN_ERROR': {
-        error.value = String(event.message ?? event.error ?? 'agent run failed')
-        running.value = false
-        break
-      }
-      case 'RUN_FINISHED': {
-        running.value = false
-        break
-      }
+    applyAgUiEvent(segments, event)
+    if (event.type === 'RUN_ERROR') {
+      error.value = String(event.message ?? 'agent run failed')
+      running.value = false
+    } else if (event.type === 'RUN_FINISHED') {
+      running.value = false
     }
   }
 
-  return { text, toolCalls, events, running, error, send, stop, reset }
+  return { running, error, send, stop }
 }

@@ -1,13 +1,42 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterView } from 'vue-router'
-import { Bot, X } from '@lucide/vue'
+import { Bot } from '@lucide/vue'
 
 import AiPanel from './AiPanel.vue'
 import SideRail from './SideRail.vue'
 import { useConnections } from '@/composables/useConnections'
+import { useMediaQuery } from '@/composables/useMediaQuery'
+import { useUiStore } from '@/stores/ui'
+
 const { telemetryDown, rawQueryDown } = useConnections()
-const mobileAiOpen = ref(false)
+const ui = useUiStore()
+const isWide = useMediaQuery('(min-width: 1280px)')
+const panel = ref<HTMLElement | null>(null)
+const opener = ref<HTMLButtonElement | null>(null)
+
+const showDock = computed(() => ui.aiPanelMode === 'docked' && isWide.value)
+const showOverlay = computed(() => ui.aiPanelMode === 'fullscreen')
+const showFloatingButton = computed(() => !showDock.value && !showOverlay.value)
+
+// The overlay is a reading surface, so focus moves into it on open.
+watch(showOverlay, async (open) => {
+  if (open) await nextTick(() => panel.value?.focus())
+})
+
+// On a narrow layout closing the overlay unmounts the element that held focus, so the
+// reader would be dropped at the top of the document; hand focus back to the opener.
+watch(showFloatingButton, async (visible) => {
+  if (visible) await nextTick(() => opener.value?.focus())
+})
+
+function onKeydown(event: KeyboardEvent) {
+  // Escape leaves the reading mode wherever the reader moved focus.
+  if (event.key === 'Escape' && ui.aiPanelMode === 'fullscreen') ui.setAiPanelMode('docked')
+}
+
+onMounted(() => window.addEventListener('keydown', onKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 </script>
 
 <template>
@@ -16,35 +45,37 @@ const mobileAiOpen = ref(false)
     <main class="min-w-0 flex-1 overflow-y-auto">
       <RouterView />
     </main>
-    <aside class="hidden w-[420px] shrink-0 border-l border-border bg-surface/40 xl:block">
+
+    <!--
+      One element for both visible modes: toggling fullscreen must not remount the
+      panel, or the draft and the reading position would vanish with it.
+    -->
+    <aside
+      v-if="showDock || showOverlay"
+      ref="panel"
+      :class="
+        showOverlay
+          ? 'fixed inset-y-0 left-16 right-0 z-50 flex bg-surface'
+          : 'w-[420px] shrink-0 border-l border-border bg-surface/40'
+      "
+      :data-testid="showOverlay ? 'ai-panel-overlay' : 'ai-panel-docked'"
+      :role="showOverlay ? 'dialog' : undefined"
+      :aria-modal="showOverlay ? 'false' : undefined"
+      :tabindex="showOverlay ? -1 : undefined"
+      aria-label="AI Copilot"
+    >
       <AiPanel :telemetry-down="telemetryDown" :raw-query-down="rawQueryDown" />
     </aside>
 
     <button
-      class="focus-ring fixed bottom-5 right-5 z-30 grid h-12 w-12 place-items-center rounded-2xl bg-accent text-bg shadow-2xl xl:hidden"
-      data-testid="mobile-ai-open"
+      v-if="showFloatingButton"
+      ref="opener"
+      class="focus-ring fixed bottom-5 right-5 z-30 grid h-12 w-12 place-items-center rounded-2xl bg-accent text-bg shadow-2xl"
+      data-testid="ai-panel-open"
       aria-label="Open AI Copilot"
-      @click="mobileAiOpen = true"
+      @click="ui.openAiPanel(isWide)"
     >
       <Bot :size="20" />
     </button>
-
-    <div
-      v-if="mobileAiOpen"
-      class="fixed inset-0 z-50 bg-surface xl:hidden"
-      data-testid="mobile-ai-panel"
-      role="dialog"
-      aria-modal="true"
-      aria-label="AI Copilot"
-    >
-      <button
-        class="focus-ring absolute right-4 top-4 z-10 grid h-8 w-8 place-items-center rounded-xl border border-border bg-surface-2 text-muted"
-        aria-label="Close AI Copilot"
-        @click="mobileAiOpen = false"
-      >
-        <X :size="15" />
-      </button>
-      <AiPanel :telemetry-down="telemetryDown" :raw-query-down="rawQueryDown" />
-    </div>
   </div>
 </template>

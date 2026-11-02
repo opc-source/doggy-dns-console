@@ -104,11 +104,22 @@ export interface SessionSummary {
   state: Record<string, unknown>
 }
 
+export interface SessionEventPart {
+  text?: string
+  thinking?: string
+  /** A function-call part is untagged: it carries the call fields directly. */
+  name?: string
+  args?: unknown
+  id?: string
+  functionResponse?: { name: string; response: unknown }
+}
+
 export interface SessionEvent {
+  id?: string
   author?: string
   content?: {
     role?: string
-    parts?: Array<{ text?: string }>
+    parts?: SessionEventPart[]
   }
 }
 

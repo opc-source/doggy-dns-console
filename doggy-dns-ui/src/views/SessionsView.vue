@@ -8,7 +8,8 @@ import MessageBubble from '@/components/MessageBubble.vue'
 import SessionList from '@/components/SessionList.vue'
 import { apiGet } from '@/api/http'
 import type { SessionSummary } from '@/api/types'
-import { mapSessionEvents, useChatStore } from '@/stores/chat'
+import { messagesFromSessionEvents } from '@/lib/chatModel'
+import { useChatStore } from '@/stores/chat'
 
 const appName = 'doggy-dns-console'
 const userId = 'local'
@@ -19,7 +20,7 @@ const error = ref<string | null>(null)
 const chat = useChatStore()
 const router = useRouter()
 
-const messages = computed(() => (detail.value ? mapSessionEvents(detail.value.events) : []))
+const messages = computed(() => (detail.value ? messagesFromSessionEvents(detail.value.events) : []))
 
 async function loadList() {
   try {
@@ -80,7 +81,12 @@ watch(selected, (id) => {
           <div v-if="messages.length === 0" class="grid h-full place-items-center text-xs text-muted">
             选择左侧会话，或开始新对话。
           </div>
-          <MessageBubble v-for="(message, index) in messages" :key="index" :message="message" />
+          <!-- Keyed to the session so a switch never inherits the previous transcript's state. -->
+          <MessageBubble
+            v-for="(message, index) in messages"
+            :key="`${selected}:${index}`"
+            :message="message"
+          />
         </div>
       </div>
     </section>
