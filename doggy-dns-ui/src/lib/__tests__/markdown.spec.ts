@@ -19,6 +19,13 @@ describe('sanitizeMarkdown', () => {
     expect(sanitizeMarkdown('[c](mailto:ops@example.com)')).toContain('href="mailto:ops@example.com"')
   })
 
+  it('opens a mailto in the mail client, not a blank tab', () => {
+    const html = sanitizeMarkdown('[邮件](mailto:ops@example.com)')
+
+    expect(html).toContain('href="mailto:ops@example.com"')
+    expect(html).not.toContain('target')
+  })
+
   it('closes the attribute allowlist against data attributes', () => {
     expect(sanitizeMarkdown('<p data-evil="1">正文</p>')).not.toContain('data-evil')
   })

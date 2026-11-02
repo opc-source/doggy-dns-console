@@ -89,11 +89,15 @@ watch(
   },
 )
 
-watch([() => chat.messages.length, contentSize], async () => {
-  if (!pinned.value) return
-  await nextTick()
-  if (pinned.value && list.value) list.value.scrollTop = list.value.scrollHeight
-})
+watch(
+  [() => chat.messages.length, contentSize],
+  async () => {
+    if (!pinned.value) return
+    await nextTick()
+    if (pinned.value && list.value) list.value.scrollTop = list.value.scrollHeight
+  },
+  { immediate: true },
+)
 </script>
 
 <template>

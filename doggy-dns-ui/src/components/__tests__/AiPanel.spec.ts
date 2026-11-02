@@ -147,6 +147,31 @@ describe('AiPanel', () => {
     await pending
   })
 
+  it('opens with the newest answer in view', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const chat = useChatStore()
+    chat.messages.push({
+      role: 'assistant',
+      segments: [{ kind: 'text', messageId: 'm1', text: '上一轮写完的长回答。' }],
+    })
+
+    const wrapper = mount(AiPanel, {
+      props: { telemetryDown: false },
+      global: {
+        plugins: [pinia, createRouter({ history: createMemoryHistory(), routes })],
+      },
+    })
+    // Reopening the panel unmounts and remounts it, so this is a fresh instance
+    // over a transcript that already stopped growing.
+    const list = wrapper.get('[data-testid="chat-list"]').element
+    Object.defineProperty(list, 'scrollHeight', { configurable: true, get: () => 1200 })
+
+    await flushPromises()
+
+    expect(list.scrollTop).toBe(1200)
+  })
+
   it('hides itself and goes fullscreen from its own header', async () => {
     const { wrapper, ui } = mountPanel({ telemetryDown: false })
 

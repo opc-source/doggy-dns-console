@@ -4,10 +4,11 @@ import { marked } from 'marked'
 // Registered once, at module load. `addHook` appends to the DOMPurify singleton,
 // so calling it from a component setup would pile up one hook per mounted block.
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
-  if (node.nodeName === 'A' && node.hasAttribute('href')) {
-    node.setAttribute('target', '_blank')
-    node.setAttribute('rel', 'noopener noreferrer')
-  }
+  if (node.nodeName !== 'A' || !node.hasAttribute('href')) return
+  // A mailto belongs to the mail client; opening one in a tab shows a blank page.
+  if (/^mailto:/i.test(node.getAttribute('href') ?? '')) return
+  node.setAttribute('target', '_blank')
+  node.setAttribute('rel', 'noopener noreferrer')
 })
 
 const ALLOWED_TAGS = [

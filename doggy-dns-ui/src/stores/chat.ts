@@ -60,6 +60,9 @@ export const useChatStore = defineStore('chat', () => {
     } catch (cause) {
       error.value = cause instanceof Error ? cause.message : String(cause)
     }
+    // However this run ended — finished, failed, or superseded by the next
+    // question — a call it never answered will not be answered in this message.
+    settleRunningTools(segments, 'error')
     return true
   }
 

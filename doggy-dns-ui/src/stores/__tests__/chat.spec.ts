@@ -26,6 +26,31 @@ function streamingResponse(chunks: string[]) {
   return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })
 }
 
+/**
+ * A stream that stays open until the request is aborted, the way a live run does.
+ * A retired reader has to reject before the store can close out its message.
+ */
+function openStreamUntilAborted(chunks: string[], signal?: AbortSignal) {
+  let controller!: ReadableStreamDefaultController<Uint8Array>
+  const body = new ReadableStream<Uint8Array>({
+    start(created) {
+      controller = created
+      for (const chunk of chunks) created.enqueue(new TextEncoder().encode(chunk))
+    },
+  })
+  signal?.addEventListener('abort', () =>
+    controller.error(new DOMException('Aborted', 'AbortError')),
+  )
+  return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+}
+
+const TOOL_STARTED = sse({ type: 'TOOL_CALL_START', toolCallId: 'c1', toolCallName: 'get_overview' })
+
+function toolStatus(chat: ReturnType<typeof useChatStore>, messageIndex: number) {
+  const tool = chat.messages[messageIndex]?.segments[0]
+  return tool?.kind === 'tool' ? tool.status : undefined
+}
+
 function kinds(messages: ChatMessage[], index: number) {
   return (messages[index]?.segments ?? []).map((segment) => segment.kind)
 }
@@ -170,6 +195,66 @@ describe('chat store', () => {
 
     const tool = chat.messages[1]?.segments[0]
     expect(tool?.kind === 'tool' && tool.status).toBe('error')
+  })
+
+  it('settles the tool card a finished run never answered', async () => {
+    // A held or abandoned call gets no TOOL_CALL_RESULT in this run at all.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (path: string) => {
+        if (path.endsWith('/sessions')) return jsonFetch({ id: 's1' })
+        return streamingResponse([TOOL_STARTED, sse({ type: 'RUN_FINISHED' })])
+      }),
+    )
+    const chat = useChatStore()
+    await chat.send('查一下')
+
+    expect(toolStatus(chat, 1)).toBe('error')
+  })
+
+  it('settles the tool card when the stream closes before the run finishes', async () => {
+    // A restarting console drops the response body without RUN_FINISHED or RUN_ERROR.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (path: string) => {
+        if (path.endsWith('/sessions')) return jsonFetch({ id: 's1' })
+        return streamingResponse([TOOL_STARTED])
+      }),
+    )
+    const chat = useChatStore()
+    await chat.send('查一下')
+
+    expect(toolStatus(chat, 1)).toBe('error')
+  })
+
+  it('settles the tool card of the run a new question superseded', async () => {
+    let runs = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (path: string, init?: { signal?: AbortSignal }) => {
+        if (path.endsWith('/sessions')) return jsonFetch({ id: 's1' })
+        runs += 1
+        return runs === 1
+          ? openStreamUntilAborted([TOOL_STARTED], init?.signal)
+          : streamingResponse([
+              sse({ type: 'TEXT_MESSAGE_CONTENT', messageId: 'm2', delta: '新的回答。' }),
+              sse({ type: 'RUN_FINISHED' }),
+            ])
+      }),
+    )
+    const chat = useChatStore()
+    const firstRun = chat.send('查一下')
+    await vi.waitFor(() => expect(chat.messages[1]?.segments.length).toBe(1))
+
+    // 继续追问 while the first answer is still streaming.
+    await chat.send('再查一次')
+    await firstRun
+
+    expect(toolStatus(chat, 1)).toBe('error')
+    expect(chat.running).toBe(false)
+    expect(chat.messages[3]?.segments[0]?.kind === 'text' && chat.messages[3]?.segments[0].text).toBe(
+      '新的回答。',
+    )
   })
 
   it('replays a stored session into ordered segments instead of flattened text', async () => {
