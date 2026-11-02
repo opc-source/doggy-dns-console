@@ -156,7 +156,7 @@ bodies) and is used only to badge the failure list.
 - Drill-down is a server-enforced allowlist of eight read-only OpenObserve tools,
   of which the prompt only offers the ones this deployment actually declared; the
   model never sees a write tool. Budget: at most 6 calls that return evidence
-  by default, a 180 s deadline and 8 KB per tool result preview. Attempts that
+  by default, a 600 s deadline and 8 KB per tool result preview. Attempts that
   return nothing — a tool error, an unknown tool name or a repeated call with the
   same canonical arguments — do not spend that budget, but only 4 of them are
   tolerated, and their IDs are never citable, so an attempt cannot rest a verdict
@@ -167,14 +167,17 @@ bodies) and is used only to badge the failure list.
   its time, because a refusal still costs one model round-trip. That round-trip is
   the whole cost: drill-downs answer in milliseconds, while the 2026-11-01 round
   measured 15-27 s per turn, so an attempt needs roughly `(calls + 1) × 30 s` of
-  deadline. The defaults do not satisfy that rule at the top of the budget — a
-  full 6-call attempt needs ~210 s against a 180 s deadline, and on 2026-11-02 one
-  such attempt was cut at the wall and stored `unavailable`, while an attempt that
-  submitted after 4 evidence calls finished in 120 s. An attempt that uses
-  everything the budget allows is therefore expected to degrade at the defaults;
-  raise `CONSOLE_ANALYSIS_MAX_TOOL_CALLS` and `CONSOLE_ANALYSIS_TIMEOUT_SECONDS`
-  together if full-budget runs have to submit. Raising the budget alone just
-  converts the extra calls into `unavailable` results.
+  deadline. The default is set above that estimate for the full budget (~300 s) so
+  a run that uses every call it is allowed can still submit; on 2026-11-02, under a
+  180 s deadline, exactly such an attempt (6 evidence calls, 525 ms of tool time)
+  was cut at the wall and stored `unavailable`, while one that collected evidence
+  from 4 of its 5 audited calls submitted `ok`/`high` in 120 s. Raise
+  `CONSOLE_ANALYSIS_TIMEOUT_SECONDS` with `CONSOLE_ANALYSIS_MAX_TOOL_CALLS` — about
+  30 s per extra call — or a larger budget again ends in `unavailable`. The cost of
+  the headroom is what a wedged attempt costs its key: the run itself stops at the
+  deadline, but a `running` row left behind by a process that died is only failed and
+  replaced once a new analysis for the same key arrives after `2 × deadline + 60 s`
+  — 1260 s, or 21 minutes, at the default.
 - The final result must arrive through `submit_failure_analysis` and is validated
   server-side: every cited ID must exist in the bundle or a tool result, every
   `observed` finding must cite one, an `ok` result needs at least one observed
@@ -209,7 +212,7 @@ console process per database file; analysis state is process-local by design.
 | `CONSOLE_ANALYSIS_ENABLED` | `true` | — | Master switch; `false` makes the analysis endpoints answer `503` |
 | `CONSOLE_ANALYSIS_RETENTION_DAYS` | `30` | `1` | Days to keep investigation rows |
 | `CONSOLE_ANALYSIS_RATE_PER_MIN` | `10` | `1` | Process-wide analysis starts per minute |
-| `CONSOLE_ANALYSIS_TIMEOUT_SECONDS` | `180` | `1` | Deadline for one analysis attempt |
+| `CONSOLE_ANALYSIS_TIMEOUT_SECONDS` | `600` | `1` | Deadline for one analysis attempt |
 | `CONSOLE_ANALYSIS_MAX_TOOL_CALLS` | `6` | `1` | Server-enforced drill-down budget |
 
 Analysis also requires a model API key (`MODEL_API_KEY`, falling back to
