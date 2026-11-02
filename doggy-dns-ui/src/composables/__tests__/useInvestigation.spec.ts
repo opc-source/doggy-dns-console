@@ -7,7 +7,11 @@ import { ANALYSIS_POLL_INTERVAL_MS, useInvestigation } from '@/composables/useIn
 
 vi.mock('@/api/http', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/http')>()
-  return { ...actual, apiGet: vi.fn(), apiPostWithStatus: vi.fn() }
+  return {
+    ...actual,
+    apiGet: vi.fn<typeof apiGet>(),
+    apiPostWithStatus: vi.fn<typeof apiPostWithStatus>(),
+  }
 })
 
 const TRACE = 'trace 1'
