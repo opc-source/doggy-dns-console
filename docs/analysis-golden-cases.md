@@ -329,13 +329,18 @@ cannot support the case.
 
 - **ID / expected behaviour:** stale detection, never silent reuse.
 - **Evidence condition / reproduce:** analyze a failure, then change its
-  evidence (new logs for the same trace, a shifted window,
-  `windowMinutes` change or a newly reachable instance). Open the share link
-  `/failures/{traceId}?windowMinutes=<new>&analysis=<oldId>` and, separately,
+  evidence itself (new logs or spans for the same trace, or a newly reachable
+  instance) so a new fingerprint is computed. A shifted window or a
+  `windowMinutes` change alone is a cache HIT on identical evidence and must not
+  produce staleness. Open the share link
+  `/failures/{traceId}?from=…&to=…&analysis=<oldId>` and, separately,
   reload the drawer.
 - **Expected:** the reloaded bundle has a different `fingerprint`; the drawer
   keeps the old analysis but marks it stale ("证据已变化，需重新分析") instead of
-  presenting it as current. A new POST without `force` gets `202` (a new
+  presenting it as current. A pre-upgrade stored analysis carries the range in
+  its fingerprint, so an old `?analysis=<id>` link reports it stale once; a
+  plain open of the drawer (no `analysis` param) misses the cache and starts a
+  fresh attempt without the banner. A new POST without `force` gets `202` (a new
   fingerprint is a cache miss), not `200`; "重新分析" creates a new attempt
   (numbered per cache key) and the UI shows the new attempt. If the evidence is
   unchanged, the POST returns `200`

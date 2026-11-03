@@ -70,15 +70,43 @@ Opening a failure first loads a deterministic **evidence bundle** and then, when
 analysis is available, starts a read-only forensic analysis of that bundle.
 Evidence never depends on the model; analysis never blocks the evidence view.
 
+### Failure list API
+
+```
+GET /api/failures?from=&to=&windowMinutes=&domain=&responseCode=&instance=&limit=
+GET /api/failures/uncovered?from=&to=&windowMinutes=&domain=&responseCode=&instance=
+```
+
+`limit` defaults to 50 and is clamped to `1..=200`. That clamp is not a bracket
+rule: an oversized `limit` is silently capped rather than rejected, because it
+only sizes a page. The `/failures` page asks for 200 rows and says so when the
+answer is exactly 200.
+
+`/api/failures/uncovered` returns `{"unlabeled": n}` — the in-scope failures
+that carry no `host_name`, which the `instance` equality on the list query
+cannot reach. The count shares the list's scope (same bracket, `domain` and
+`responseCode`) and drops only the host equality.
+
 ### Evidence API
 
 ```
-GET /api/failures/{traceId}/evidence?windowMinutes=&domain=&responseCode=
+GET /api/failures/{traceId}/evidence?from=&to=&windowMinutes=&domain=&responseCode=&instance=
 ```
 
-Synchronous, read-only and model-free. It uses the same window/domain/responseCode
-filter as the failure list and detail, so the bundle cannot drift from the entry
-that was clicked. The response contains:
+Synchronous, read-only and model-free. It uses the same bracket/domain/responseCode/
+instance filter as the failure list and detail, so the bundle cannot drift from the
+entry that was clicked.
+
+`from`/`to` are epoch milliseconds and win over `windowMinutes` when both are
+given; `windowMinutes` otherwise expands to `[to - n, to]` with `to` defaulting to
+the server clock. The investigation chain (`/api/failures`, `/evidence`,
+`/analysis`) accepts a bracket from 5 minutes to 10080 minutes (7 days) and answers
+`400 invalid_request` — it never clamps — when the start is at or after the end, the
+span is outside that band, or `to` is more than 60 seconds in the future. The
+overview and instance views are the live class and still take a relative 5–1440
+minute window.
+
+The response contains:
 
 - `group`: the same failure aggregate the list and detail return.
 - `instance`: matched identity (`matchQuality` is `exact`, `host_ip`, `host` or
@@ -99,16 +127,18 @@ that was clicked. The response contains:
 - `missing`: `instance_unreachable`, `instance_not_found`, `spans_unavailable`,
   `metrics_unavailable`, `logs_truncated`.
 
-Errors: `400` for a malformed query (the window is clamped to 5–1440 minutes,
-so an out-of-range value is not an error), `404` when the trace is not a failure
-group in that window, `502` when OpenObserve itself fails. Because a production
+Errors: `400 invalid_request` for a malformed query, including a bracket whose
+start is at or after its end, a span outside 5–10080 minutes, or a `to` more
+than 60 seconds in the future — the investigation chain rejects an out-of-range
+bracket instead of clamping it; `404` when the trace is not a failure group in
+that window, `502` when OpenObserve itself fails. Because a production
 start still requires a model API key, evidence-only operation without one means
 `CONSOLE_DEMO=1`; the endpoint itself never calls the model.
 
 ### Analysis API
 
 ```
-POST /api/failures/{traceId}/analysis?windowMinutes=&domain=&responseCode=&force=
+POST /api/failures/{traceId}/analysis?from=&to=&windowMinutes=&domain=&responseCode=&instance=&force=
 GET  /api/failures/{traceId}/analysis?analysis=<id>
 GET  /api/analysis/markers?traceIds=<comma separated, max 200>
 ```
@@ -237,10 +267,23 @@ from the analyzed one, the old analysis is kept but marked stale
 ("证据已变化，需重新分析" — evidence changed, reanalyze) and is never silently
 reused.
 
-A deep link `/failures/{traceId}?windowMinutes=…&analysis=<id>` restores the
-window and the named attempt instead of starting a new one; an unknown id falls
-back to a fresh analysis. The failure list shows a marker for traces that
-already have an investigation and never triggers analysis itself.
+The failure list lives at `/failures?from=&to=&windowMinutes=&domain=&responseCode=&instance=`,
+and a row opens the drawer at `/failures/{traceId}?…&analysis=<id>`. The bracket is
+the only drawer state: there is no store-held trace id, so reloading or sharing the
+URL reproduces exactly what the operator saw. An unknown `analysis` id falls back to
+a fresh analysis. The list shows a marker for traces that already have an
+investigation and never triggers analysis itself.
+
+The fingerprint covers the trace's evidence, not the bracket that was requested: logs
+and spans match by `trace_id` and the metric window is centred on the trace itself.
+Widening 1 hour to 7 days therefore reuses the stored analysis on purpose instead of
+re-running the model on identical evidence. One consequence lands on every deployment
+upgrading to this version: analyses recorded before the change carry a range in their
+fingerprint, so they are reported stale the first time they are opened through an old
+`?analysis=<id>` link — the drawer keeps the old result, shows the stale banner and
+re-runs only when the operator asks. A plain open of the drawer (no `analysis` param)
+never shows that banner: it computes the new fingerprint, misses the cache and
+silently starts a fresh attempt. Either way nothing is rewritten in place.
 
 The eight-case manual evaluation runbook is
 [docs/analysis-golden-cases.md](docs/analysis-golden-cases.md).
