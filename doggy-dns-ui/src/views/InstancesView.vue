@@ -43,7 +43,7 @@ function setDraft(next: FilterDraft) {
 const { instances, error, refresh } = useInstances()
 const selected = ref<string | null>(null)
 const selectedId = toRef(selected)
-const { detail, error: detailError, loading } = useInstanceDetail(selectedId, draft)
+const { detail, error: detailError, invalid, loading } = useInstanceDetail(selectedId, draft)
 
 const online = computed(() => instances.value.filter((item) => item.online).length)
 
@@ -122,6 +122,13 @@ function describeSignal(signal: unknown): string | null {
 
         <div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
           <p v-if="loading" class="text-xs text-muted">Loading instance…</p>
+          <p
+            v-else-if="invalid"
+            class="rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error"
+            data-testid="detail-invalid"
+          >
+            {{ invalid }}
+          </p>
           <p v-else-if="detailError" class="rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">{{ detailError }}</p>
           <template v-else-if="detail">
             <section class="grid grid-cols-2 gap-2">
@@ -130,6 +137,7 @@ function describeSignal(signal: unknown): string | null {
                 <p class="mono mt-1 text-sm" data-testid="failure-count">{{ detail.failureCount ?? '—' }}</p>
                 <RouterLink
                   class="mono mt-1 inline-block text-[10px] text-accent"
+                  data-testid="failures-for-host"
                   :to="{
                     name: 'failures-list',
                     query: { ...toRouteQuery(draft), instance: detail.instance.host },

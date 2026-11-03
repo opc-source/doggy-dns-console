@@ -6,7 +6,16 @@ import { useOverview } from '@/composables/useOverview'
 import { emptyDraft, relativeDraft, type FilterDraft } from '@/lib/failureFilter'
 
 const HOUR = 3_600_000
+const DAY = 24 * HOUR
 const NOW = 1_761_436_800_000
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
 
 const overviewBody = {
   windowMinutes: 60,
@@ -190,6 +199,68 @@ describe('useOverview', () => {
     const frozen = fetches.length
     await vi.advanceTimersByTimeAsync(45_000)
     expect(fetches.length).toBe(frozen)
+    wrapper.unmount()
+  })
+
+  it('installs exactly one interval when a bracket round-trips absolute→relative', async () => {
+    // Item 7a. The teardown above only pins one direction (relative→absolute).
+    // `restartTimer()` clears before it installs, so switching BACK to a relative
+    // window must leave a single 15 s interval, not two stacked: a double-install
+    // would advance roughly twice the fetches over the same window.
+    const draft = ref(relativeDraft(60))
+    const { wrapper } = mountOverview(draft)
+    await flushPromises()
+    expect(fetches.length).toBe(1)
+
+    await vi.advanceTimersByTimeAsync(45_000)
+    expect(fetches.length).toBe(4) // the relative window polls: 15 s × 3
+
+    draft.value = { ...emptyDraft(), fromMs: NOW - HOUR, toMs: NOW }
+    await flushPromises()
+    expect(fetches.length).toBe(5) // the watch's own refresh, no timer installed
+
+    draft.value = relativeDraft(60)
+    await flushPromises()
+    expect(fetches.length).toBe(6) // the switch-back refresh
+
+    const beforeReinstall = fetches.length
+    await vi.advanceTimersByTimeAsync(45_000)
+    // Exactly ONE interval's worth of new fetches (3), not two intervals' worth (6).
+    expect(fetches.length).toBe(beforeReinstall + 3)
+    wrapper.unmount()
+  })
+
+  it('keeps loading true until the newest overlapping request settles', async () => {
+    // Item 7b. Two VALID, overlapping brackets in flight at once: the older one
+    // resolving must NOT release the spinner while the newest is still pending —
+    // otherwise a brief success would flash for a bracket the URL already replaced.
+    const older = deferred<Response>()
+    const newer = deferred<Response>()
+    let calls = 0
+    const respond = () => (calls++ === 0 ? older.promise : newer.promise)
+
+    const draft = ref({ ...emptyDraft(), fromMs: NOW - 2 * DAY, toMs: NOW })
+    const { overview, wrapper } = mountOverview(draft, respond)
+    await flushPromises()
+    expect(fetches.length).toBe(1)
+    expect(overview.loading.value).toBe(true)
+
+    draft.value = { ...emptyDraft(), fromMs: NOW - HOUR, toMs: NOW }
+    await flushPromises()
+    expect(fetches.length).toBe(2)
+    expect(overview.loading.value).toBe(true)
+
+    // The superseded two-day answer lands first; the newest hour is still running.
+    older.resolve(json(overviewBody))
+    await flushPromises()
+    expect(overview.loading.value).toBe(true)
+    expect(overview.data.value).toBeNull()
+
+    // Only the newest response owns the spinner.
+    newer.resolve(json({ ...overviewBody, queries: 999 }))
+    await flushPromises()
+    expect(overview.loading.value).toBe(false)
+    expect(overview.data.value?.queries).toBe(999)
     wrapper.unmount()
   })
 })

@@ -121,6 +121,46 @@ describe('InstancesView range', () => {
   })
 })
 
+describe('InstancesView drawer link and refusal', () => {
+  // Item 3 (spec D5): the drawer's "view this host's failures" link must carry
+  // `instance` PLUS the bracket the number was counted over. Deleting
+  // `toRouteQuery(draft)` from that link used to leave the whole suite green
+  // while sending the operator to a different window than the one they read.
+  it('carries the bracket and the host into the failures link (relative)', async () => {
+    const { wrapper } = await mountView('/instances?windowMinutes=10080')
+
+    const href = wrapper.get('[data-testid="failures-for-host"]').attributes('href')!
+    expect(href).toContain('/failures')
+    expect(href).toContain('windowMinutes=10080')
+    expect(href).toContain('instance=dns-node-1')
+    wrapper.unmount()
+  })
+
+  it('carries the absolute bracket and the host into the failures link', async () => {
+    const from = 1_761_425_200_000
+    const to = 1_761_436_800_000
+    const { wrapper } = await mountView(`/instances?from=${from}&to=${to}`)
+
+    const href = wrapper.get('[data-testid="failures-for-host"]').attributes('href')!
+    expect(href).toContain(`from=${from}`)
+    expect(href).toContain(`to=${to}`)
+    expect(href).toContain('instance=dns-node-1')
+    // A relative shortcut must not leak alongside an absolute pair.
+    expect(href).not.toContain('windowMinutes=')
+    wrapper.unmount()
+  })
+
+  // Item 4: a hand-typed lone `from` must refuse locally and surface it, exactly
+  // the way the dashboard refuses it, rather than silently reading the default hour.
+  it('refuses a lone from and asks the detail endpoint nothing', async () => {
+    const { wrapper } = await mountView('/instances?from=1761425200000')
+
+    expect(fetches.filter((url) => url.includes('/api/instances/'))).toHaveLength(0)
+    expect(wrapper.get('[data-testid="detail-invalid"]').text()).toContain('起止')
+    wrapper.unmount()
+  })
+})
+
 describe('InstancesView', () => {
   it('shows mcp unreachable without hiding the instance', async () => {
     const offline = [
