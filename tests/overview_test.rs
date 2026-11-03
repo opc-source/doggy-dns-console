@@ -9,7 +9,7 @@ use doggy_dns_console::datasource::openobserve::overview::{
 use doggy_dns_console::datasource::openobserve::seen_query;
 use doggy_dns_console::datasource::openobserve::telemetry::OpenObserveTelemetry;
 use doggy_dns_console::datasource::{FixedClock, TelemetrySource};
-use doggy_dns_console::domain::{MetricCounts, Window};
+use doggy_dns_console::domain::{MetricCounts, Range, Window};
 use doggy_dns_console::error::DataError;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -56,6 +56,24 @@ async fn mount(server: &MockServer, query: &str, body: ResponseTemplate) {
         .await;
 }
 
+/// `query_promql` is a GET with `query`/`start`/`end`/`step`; matching on
+/// `step` too is the only way to pin D15's other half — the same query text
+/// replayed every 60s over a week is still 10080 samples.
+async fn mount_at_step(
+    server: &MockServer,
+    query: &str,
+    step_seconds: u64,
+    body: ResponseTemplate,
+) {
+    Mock::given(method("GET"))
+        .and(path("/api/default/prometheus/api/v1/query_range"))
+        .and(query_param("query", query))
+        .and(query_param("step", step_seconds.to_string()))
+        .respond_with(body)
+        .mount(server)
+        .await;
+}
+
 fn ts(base: i64) -> i64 {
     base / 1000
 }
@@ -64,7 +82,7 @@ fn ts(base: i64) -> i64 {
 async fn overview_computes_success_rate_and_series_from_promql() {
     let server = MockServer::start().await;
     let now = 1_761_436_800_000_i64;
-    let window = Window::new(60);
+    let window = Range::new(now - 3_600_000, now);
     mount(
         &server,
         &total_query("dns_queries", window),
@@ -82,7 +100,7 @@ async fn overview_computes_success_rate_and_series_from_promql() {
     .await;
     mount(
         &server,
-        &p95_query("dns_query_duration_bucket", window),
+        &p95_query("dns_query_duration_bucket", 5),
         matrix(
             serde_json::json!([[ts(now), "12.4"]]),
             serde_json::json!({}),
@@ -91,7 +109,7 @@ async fn overview_computes_success_rate_and_series_from_promql() {
     .await;
     mount(
         &server,
-        &series_query("dns_queries", false),
+        &series_query("dns_queries", 5),
         matrix(
             serde_json::json!([[ts(now - 60_000), "10"], [ts(now), "20"]]),
             serde_json::json!({}),
@@ -100,7 +118,7 @@ async fn overview_computes_success_rate_and_series_from_promql() {
     .await;
     mount(
         &server,
-        &failure_series_query("dns_queries"),
+        &failure_series_query("dns_queries", 5),
         matrix(
             serde_json::json!([[ts(now - 60_000), "1"], [ts(now), "2"]]),
             serde_json::json!({}),
@@ -113,6 +131,7 @@ async fn overview_computes_success_rate_and_series_from_promql() {
         Arc::new(FixedClock(now)),
     );
     let overview = telemetry.overview(window).await.unwrap();
+    assert_eq!(overview.window_minutes, 60);
     assert_eq!(overview.queries, 1000);
     assert_eq!(overview.failures, 12);
     assert_eq!(overview.success_rate, Some(0.988));
@@ -124,7 +143,7 @@ async fn overview_computes_success_rate_and_series_from_promql() {
 async fn overview_returns_none_success_rate_when_counter_is_zero() {
     let server = MockServer::start().await;
     let now = 1_761_436_800_000_i64;
-    let window = Window::new(60);
+    let window = Range::new(now - 3_600_000, now);
     mount(
         &server,
         &total_query("dns_queries", window),
@@ -139,19 +158,19 @@ async fn overview_returns_none_success_rate_when_counter_is_zero() {
     .await;
     mount(
         &server,
-        &p95_query("dns_query_duration_bucket", window),
+        &p95_query("dns_query_duration_bucket", 5),
         matrix(serde_json::json!([]), serde_json::json!({})),
     )
     .await;
     mount(
         &server,
-        &series_query("dns_queries", false),
+        &series_query("dns_queries", 5),
         matrix(serde_json::json!([]), serde_json::json!({})),
     )
     .await;
     mount(
         &server,
-        &failure_series_query("dns_queries"),
+        &failure_series_query("dns_queries", 5),
         matrix(serde_json::json!([]), serde_json::json!({})),
     )
     .await;
@@ -163,6 +182,179 @@ async fn overview_returns_none_success_rate_when_counter_is_zero() {
     let overview = telemetry.overview(window).await.unwrap();
     assert_eq!(overview.success_rate, None);
     assert_eq!(overview.queries, 0);
+}
+
+#[tokio::test]
+async fn a_one_hour_bracket_keeps_the_existing_trend_text_and_step() {
+    let server = MockServer::start().await;
+    let now = 1_761_436_800_000_i64;
+    // The default view must not change shape: `rate[5m]` at a 60s step, and
+    // totals still one `increase(m[60m])` covering the bracket.
+    let rate = series_query("dns_queries", 5);
+    let failure_rate = failure_series_query("dns_queries", 5);
+    let p95 = p95_query("dns_query_duration_bucket", 5);
+    assert_eq!(rate, "sum(rate(dns_queries[5m])) * 60");
+    assert_eq!(
+        p95,
+        "histogram_quantile(0.95, sum by (le) (rate(dns_query_duration_bucket[5m])))"
+    );
+    let window = Range::new(now - 3_600_000, now);
+    mount_at_step(
+        &server,
+        &total_query("dns_queries", window),
+        3_600,
+        matrix(
+            serde_json::json!([[ts(now), "1000"]]),
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    mount_at_step(
+        &server,
+        &failure_query("dns_queries", window),
+        3_600,
+        matrix(serde_json::json!([[ts(now), "12"]]), serde_json::json!({})),
+    )
+    .await;
+    mount_at_step(
+        &server,
+        &p95,
+        60,
+        matrix(
+            serde_json::json!([[ts(now), "12.4"]]),
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    mount_at_step(
+        &server,
+        &rate,
+        60,
+        matrix(serde_json::json!([[ts(now), "20"]]), serde_json::json!({})),
+    )
+    .await;
+    mount_at_step(
+        &server,
+        &failure_rate,
+        60,
+        matrix(serde_json::json!([[ts(now), "2"]]), serde_json::json!({})),
+    )
+    .await;
+
+    let overview = telemetry(&server).overview(window).await.unwrap();
+    assert_eq!(overview.window_minutes, 60);
+    assert_eq!(overview.queries, 1000);
+    assert_eq!(overview.p95_latency_ms, Some(12.4));
+}
+
+#[tokio::test]
+async fn a_week_bracket_widens_the_rate_window_and_the_step() {
+    let server = MockServer::start().await;
+    let now = 1_761_436_800_000_i64;
+    // 10080 / 168 = 60-minute buckets: hourly points, and the totals still
+    // sampled once for the whole week instead of every minute.
+    let window = Range::new(now - 10_080 * 60_000, now);
+    mount_at_step(
+        &server,
+        &series_query("dns_queries", 60),
+        3_600,
+        matrix(serde_json::json!([[ts(now), "20"]]), serde_json::json!({})),
+    )
+    .await;
+    mount_at_step(
+        &server,
+        &failure_series_query("dns_queries", 60),
+        3_600,
+        matrix(serde_json::json!([[ts(now), "2"]]), serde_json::json!({})),
+    )
+    .await;
+    mount_at_step(
+        &server,
+        &p95_query("dns_query_duration_bucket", 60),
+        3_600,
+        matrix(serde_json::json!([[ts(now), "9"]]), serde_json::json!({})),
+    )
+    .await;
+    mount_at_step(
+        &server,
+        &total_query("dns_queries", window),
+        604_800,
+        matrix(
+            serde_json::json!([[ts(now), "1000"]]),
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    mount_at_step(
+        &server,
+        &failure_query("dns_queries", window),
+        604_800,
+        matrix(serde_json::json!([[ts(now), "12"]]), serde_json::json!({})),
+    )
+    .await;
+
+    let overview = telemetry(&server).overview(window).await.unwrap();
+    assert_eq!(overview.window_minutes, 10_080);
+    assert_eq!(
+        total_query("dns_queries", window),
+        "sum(increase(dns_queries[10080m]))"
+    );
+}
+
+#[tokio::test]
+async fn p95_reports_the_worst_finite_bucket_not_the_last_one() {
+    let server = MockServer::start().await;
+    let now = 1_761_436_800_000_i64;
+    let window = Range::new(now - 3_600_000, now);
+    // Peaks in the middle and ends on NaN: `histogram_quantile` over an empty
+    // bucket is NaN, so the old "last point" rule would have reported it.
+    let points = serde_json::json!([
+        [ts(now - 180_000), "12.5"],
+        [ts(now - 120_000), "42.5"],
+        [ts(now - 60_000), "7.5"],
+        [ts(now), "NaN"]
+    ]);
+    mount_at_step(
+        &server,
+        &series_query("dns_queries", 5),
+        60,
+        matrix(serde_json::json!([[ts(now), "20"]]), serde_json::json!({})),
+    )
+    .await;
+    mount_at_step(
+        &server,
+        &failure_series_query("dns_queries", 5),
+        60,
+        matrix(serde_json::json!([[ts(now), "2"]]), serde_json::json!({})),
+    )
+    .await;
+    mount_at_step(
+        &server,
+        &p95_query("dns_query_duration_bucket", 5),
+        60,
+        matrix(points, serde_json::json!({})),
+    )
+    .await;
+    mount_at_step(
+        &server,
+        &total_query("dns_queries", window),
+        3_600,
+        matrix(
+            serde_json::json!([[ts(now), "1000"]]),
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    mount_at_step(
+        &server,
+        &failure_query("dns_queries", window),
+        3_600,
+        matrix(serde_json::json!([[ts(now), "12"]]), serde_json::json!({})),
+    )
+    .await;
+
+    let overview = telemetry(&server).overview(window).await.unwrap();
+    assert_eq!(overview.p95_latency_ms, Some(42.5));
 }
 
 #[tokio::test]

@@ -6,7 +6,7 @@ use serde_json::json;
 use crate::datasource::{Clock, InstanceSource, TelemetrySource};
 use crate::domain::{
     FailureDetail, FailureFilter, FailureGroup, Instance, InstanceDetail, LogRecord, MetricCounts,
-    Overview, PluginInfo, SeenInstance, SeriesPoint, SpanRecord, Window, WindowMetrics,
+    Overview, PluginInfo, Range, SeenInstance, SeriesPoint, SpanRecord, Window, WindowMetrics,
 };
 use crate::error::DataError;
 
@@ -172,19 +172,26 @@ impl FixtureSource {
 
 #[async_trait]
 impl TelemetrySource for FixtureSource {
-    async fn overview(&self, window: Window) -> Result<Overview, DataError> {
-        let now = self.clock.now_ms();
-        let series = (0..24)
-            .map(|index| SeriesPoint {
-                ts: now - (23 - index) * 60 * 60 * 1000,
-                queries: 4_800 + (index as u64 * 137) % 1_600,
-                failures: 8 + (index as u64 * 7) % 31,
-            })
-            .collect();
-        let queries = 128_934;
-        let failures = 421;
+    /// Demo trend: the bracket tiled by its own bucket width, so a 1-hour view
+    /// still gets 60 points and a week gets ~168. The load formula is the one
+    /// this fixture has always used; only the sampling grid follows the range.
+    async fn overview(&self, range: Range) -> Result<Overview, DataError> {
+        let bucket_ms = i64::from(range.bucket_minutes()) * 60_000;
+        let mut series = Vec::new();
+        let mut ts = range.end_ms;
+        while ts > range.start_ms {
+            series.push(SeriesPoint {
+                ts,
+                queries: 4_800 + (series.len() as u64 * 137 % 1_600),
+                failures: 8 + (series.len() as u64 * 7 % 31),
+            });
+            ts = ts.saturating_sub(bucket_ms);
+        }
+        series.reverse();
+        let queries = series.iter().map(|point| point.queries).sum();
+        let failures = series.iter().map(|point| point.failures).sum();
         Ok(Overview {
-            window_minutes: window.minutes,
+            window_minutes: range.span_minutes(),
             instances_online: 0,
             instances_total: 0,
             queries,

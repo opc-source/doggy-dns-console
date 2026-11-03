@@ -7,7 +7,7 @@ use doggy_dns_console::datasource::mcp::{InstanceTransport, McpInstanceSource};
 use doggy_dns_console::datasource::{FixedClock, InstanceSource, TelemetrySource};
 use doggy_dns_console::domain::{
     FailureDetail, FailureFilter, FailureGroup, InstanceIdentity, MatchQuality, MetricCounts,
-    Overview, SeenInstance, Window,
+    Overview, Range, SeenInstance, Window,
 };
 use doggy_dns_console::error::DataError;
 use serde_json::{Value, json};
@@ -113,7 +113,7 @@ struct SeenOnly(Vec<SeenInstance>);
 
 #[async_trait]
 impl TelemetrySource for SeenOnly {
-    async fn overview(&self, _window: Window) -> Result<Overview, DataError> {
+    async fn overview(&self, _range: Range) -> Result<Overview, DataError> {
         Err(DataError::NotConfigured("unused".into()))
     }
     async fn failures(&self, _filter: FailureFilter) -> Result<Vec<FailureGroup>, DataError> {

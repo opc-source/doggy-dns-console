@@ -1301,7 +1301,7 @@ impl FakeTelemetry {
 
 #[async_trait]
 impl TelemetrySource for FakeTelemetry {
-    async fn overview(&self, _window: Window) -> Result<Overview, DataError> {
+    async fn overview(&self, _range: Range) -> Result<Overview, DataError> {
         Err(DataError::NotConfigured("overview".to_string()))
     }
 

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use doggy_dns_console::datasource::fixture::FixtureSource;
 use doggy_dns_console::datasource::{InstanceSource, TelemetrySource};
-use doggy_dns_console::domain::{FailureFilter, Range, Window};
+use doggy_dns_console::domain::{FailureFilter, Range};
 use doggy_dns_console::error::DataError;
 use doggy_dns_console::service::ConsoleService;
 
@@ -24,13 +24,48 @@ fn bracket(minutes: i64) -> FailureFilter {
     }
 }
 
+/// A bracket of `minutes` ending at the fixture clock, so the demo overview is
+/// tiled by the same bucket grid the OpenObserve path uses.
+fn span(minutes: i64) -> Range {
+    let end = 1_761_436_800_000;
+    Range::new(end - minutes * 60_000, end)
+}
+
 #[tokio::test]
 async fn fixture_overview_has_nodes_and_success_rate() {
-    let overview = service().overview(Window::new(60)).await.unwrap();
+    let overview = service().overview(span(60)).await.unwrap();
     assert_eq!(overview.instances_online, 3);
     assert_eq!(overview.instances_total, 4);
     assert!(overview.success_rate.unwrap() > 0.9);
     assert!(!overview.series.is_empty());
+    assert_eq!(overview.window_minutes, 60);
+    // The demo totals are the series summed, exactly like the telemetry path
+    // reads its own points, so the KPI and the curve cannot disagree.
+    assert_eq!(
+        overview.queries,
+        overview
+            .series
+            .iter()
+            .map(|point| point.queries)
+            .sum::<u64>()
+    );
+    assert_eq!(
+        overview.failures,
+        overview
+            .series
+            .iter()
+            .map(|point| point.failures)
+            .sum::<u64>()
+    );
+
+    let week = service().overview(span(7 * 1440)).await.unwrap();
+    assert_eq!(week.window_minutes, 10_080);
+    assert!(
+        week.series.len() > overview.series.len(),
+        "a week must show more buckets than an hour, got {} vs {}",
+        week.series.len(),
+        overview.series.len()
+    );
 }
 
 #[tokio::test]

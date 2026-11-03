@@ -62,9 +62,14 @@ pub async fn get_overview(
     service: &ConsoleService,
     args: OverviewArgs,
 ) -> Result<Value, DataError> {
-    let overview = service
-        .overview(Window::new(args.window_minutes.unwrap_or(60)))
-        .await?;
+    // Temporary bridge until Task 3: `get_overview` still only accepts
+    // `windowMinutes`, so the bracket is expanded from the service clock here
+    // and the 5-1440 clamp still lives in `Window::new`.
+    let range = Range::from_window(
+        Window::new(args.window_minutes.unwrap_or(60)),
+        service.now_ms(),
+    );
+    let overview = service.overview(range).await?;
     serde_json::to_value(overview).map_err(|error| DataError::Invalid(error.to_string()))
 }
 

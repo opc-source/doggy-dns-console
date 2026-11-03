@@ -7,7 +7,7 @@ use doggy_dns_console::api::state::{ApiState, Probe};
 use doggy_dns_console::datasource::fixture::FixtureSource;
 use doggy_dns_console::datasource::{FixedClock, InstanceSource, TelemetrySource};
 use doggy_dns_console::domain::{
-    FailureDetail, FailureFilter, FailureGroup, Overview, SeenInstance, Window,
+    FailureDetail, FailureFilter, FailureGroup, Overview, Range, SeenInstance, Window,
 };
 use doggy_dns_console::error::DataError;
 use doggy_dns_console::service::ConsoleService;
@@ -29,7 +29,7 @@ struct FailingTelemetry;
 
 #[async_trait]
 impl TelemetrySource for FailingTelemetry {
-    async fn overview(&self, _window: Window) -> Result<Overview, DataError> {
+    async fn overview(&self, _range: Range) -> Result<Overview, DataError> {
         Err(DataError::Upstream("connection refused".to_string()))
     }
 

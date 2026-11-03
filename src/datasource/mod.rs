@@ -5,7 +5,7 @@ pub mod openobserve;
 
 use crate::domain::{
     FailureDetail, FailureFilter, FailureGroup, Instance, InstanceDetail, InstanceIdentity,
-    MatchQuality, MatchedInstance, Overview, SeenInstance, Window, WindowMetrics,
+    MatchQuality, MatchedInstance, Overview, Range, SeenInstance, Window, WindowMetrics,
 };
 use crate::error::DataError;
 use async_trait::async_trait;
@@ -46,7 +46,7 @@ impl Clock for FixedClock {
 
 #[async_trait]
 pub trait TelemetrySource: Send + Sync {
-    async fn overview(&self, window: Window) -> Result<Overview, DataError>;
+    async fn overview(&self, range: Range) -> Result<Overview, DataError>;
     async fn failures(&self, filter: FailureFilter) -> Result<Vec<FailureGroup>, DataError>;
     async fn failure_detail(
         &self,

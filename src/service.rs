@@ -35,8 +35,8 @@ impl ConsoleService {
         self.clock.now_ms()
     }
 
-    pub async fn overview(&self, window: Window) -> Result<Overview, DataError> {
-        let mut overview = self.telemetry.overview(window).await?;
+    pub async fn overview(&self, range: Range) -> Result<Overview, DataError> {
+        let mut overview = self.telemetry.overview(range).await?;
         let instances = self.instances.list().await?;
         overview.instances_online =
             instances.iter().filter(|instance| instance.online).count() as u32;

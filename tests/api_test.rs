@@ -32,8 +32,8 @@ struct RecordingTelemetry {
 
 #[async_trait]
 impl TelemetrySource for RecordingTelemetry {
-    async fn overview(&self, window: Window) -> Result<Overview, DataError> {
-        self.inner.overview(window).await
+    async fn overview(&self, range: Range) -> Result<Overview, DataError> {
+        self.inner.overview(range).await
     }
     async fn failures(&self, filter: FailureFilter) -> Result<Vec<FailureGroup>, DataError> {
         *self.last_filter.lock().unwrap() = Some(filter.clone());
@@ -61,7 +61,7 @@ struct FailingTelemetry;
 
 #[async_trait]
 impl TelemetrySource for FailingTelemetry {
-    async fn overview(&self, _window: Window) -> Result<Overview, DataError> {
+    async fn overview(&self, _range: Range) -> Result<Overview, DataError> {
         Err(DataError::Upstream("connection refused".to_string()))
     }
 

@@ -17,8 +17,8 @@ use crate::datasource::openobserve::overview::{
 };
 use crate::datasource::{Clock, TelemetrySource};
 use crate::domain::{
-    FailureDetail, FailureFilter, FailureGroup, MetricCounts, Overview, SeenInstance, SeriesPoint,
-    Window, WindowMetrics,
+    FailureDetail, FailureFilter, FailureGroup, MetricCounts, Overview, Range, SeenInstance,
+    SeriesPoint, Window, WindowMetrics,
 };
 use crate::error::DataError;
 
@@ -32,6 +32,8 @@ impl OpenObserveTelemetry {
         Self { client, clock }
     }
 
+    /// Discovery still runs on a relative window: after the overview moved to
+    /// absolute brackets, `Window` has only this internal use left (spec D2).
     fn range(&self, window: Window) -> (i64, i64) {
         let end = self.clock.now_ms();
         (end - i64::from(window.minutes) * 60_000, end)
@@ -40,20 +42,26 @@ impl OpenObserveTelemetry {
 
 #[async_trait]
 impl TelemetrySource for OpenObserveTelemetry {
-    async fn overview(&self, window: Window) -> Result<Overview, DataError> {
-        let (start, end) = self.range(window);
+    async fn overview(&self, range: Range) -> Result<Overview, DataError> {
+        let (start, end) = (range.start_ms, range.end_ms);
         let cfg = self.client.config();
-        let total = total_query(&cfg.metric_queries, window);
-        let failure = failure_query(&cfg.metric_queries, window);
-        let p95 = p95_query(&cfg.metric_duration, window);
-        let volume = series_query(&cfg.metric_queries, false);
-        let failure_volume = failure_series_query(&cfg.metric_queries);
+        let rate_window = range.rate_window_minutes();
+        let step = range.step_seconds();
+        // Totals describe the whole bracket, so they ask for one sample at the
+        // end. A 60-second step over seven days would replay the same
+        // `increase` window 10080 times to read its last point (spec D15).
+        let whole = range.whole_step_seconds();
+        let total = total_query(&cfg.metric_queries, range);
+        let failure = failure_query(&cfg.metric_queries, range);
+        let p95 = p95_query(&cfg.metric_duration, rate_window);
+        let volume = series_query(&cfg.metric_queries, rate_window);
+        let failure_volume = failure_series_query(&cfg.metric_queries, rate_window);
 
-        let queries = self.client.query_promql(&total, start, end, 60);
-        let failures = self.client.query_promql(&failure, start, end, 60);
-        let p95 = self.client.query_promql(&p95, start, end, 60);
-        let volume_series = self.client.query_promql(&volume, start, end, 60);
-        let failure_series = self.client.query_promql(&failure_volume, start, end, 60);
+        let queries = self.client.query_promql(&total, start, end, whole);
+        let failures = self.client.query_promql(&failure, start, end, whole);
+        let p95 = self.client.query_promql(&p95, start, end, step);
+        let volume_series = self.client.query_promql(&volume, start, end, step);
+        let failure_series = self.client.query_promql(&failure_volume, start, end, step);
 
         let (queries, failures, p95, volume_series, failure_series) =
             tokio::join!(queries, failures, p95, volume_series, failure_series);
@@ -65,11 +73,11 @@ impl TelemetrySource for OpenObserveTelemetry {
 
         let query_total = last_u64(&queries).unwrap_or(0);
         let failure_total = last_u64(&failures).unwrap_or(0);
-        let p95_value = last_value(&p95).map(|value| (value * 100.0).round() / 100.0);
+        let p95_value = worst_value(&p95).map(|value| (value * 100.0).round() / 100.0);
         let series = zip_series(&volume_series, &failure_series);
 
         Ok(Overview {
-            window_minutes: window.minutes,
+            window_minutes: range.span_minutes(),
             instances_online: 0,
             instances_total: 0,
             queries: query_total,
@@ -328,6 +336,17 @@ fn last_value(series: &[PromSeries]) -> Option<f64> {
 
 fn last_u64(series: &[PromSeries]) -> Option<u64> {
     last_value(series).map(|value| value.max(0.0).round() as u64)
+}
+
+/// The worst finite sample in a p95 series (spec D16): a bucket with no
+/// traffic answers NaN, and reporting the last point would report that NaN.
+fn worst_value(series: &[PromSeries]) -> Option<f64> {
+    series
+        .first()?
+        .points
+        .iter()
+        .filter_map(|(_, value)| value.is_finite().then_some(*value))
+        .max_by(f64::total_cmp)
 }
 
 /// Sums the newest sample of every series.
