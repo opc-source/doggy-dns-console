@@ -7,6 +7,7 @@ import {
   resolveBracket,
   toRequestQuery,
   validateBracket,
+  validateDraft,
   type FilterDraft,
 } from '@/lib/failureFilter'
 
@@ -26,6 +27,7 @@ export function useFailureList(draft: Ref<FilterDraft>, limit = 5) {
   const uncovered = ref(0)
   const error = ref<string | null>(null)
   let timer: ReturnType<typeof setInterval> | null = null
+  let listSeq = 0
   let markerSeq = 0
   let uncoveredSeq = 0
 
@@ -91,32 +93,33 @@ export function useFailureList(draft: Ref<FilterDraft>, limit = 5) {
   }
 
   async function refresh() {
+    const seq = ++listSeq
     const now = Date.now()
     const bracket = resolveBracket(draft.value, now)
-    const invalid = validateBracket(bracket, now)
+    const invalid = validateDraft(draft.value) ?? validateBracket(bracket, now)
     if (invalid) {
       error.value = invalid
       groups.value = []
       markers.value = new Set()
-      // Retire the notice's in-flight count too: `refreshUncovered()` is never
-      // reached here, so without the bump a count for the bracket that was just
-      // refused could re-land above an empty table.
+      // Retire both in-flight answers: the bracket those requests describe was
+      // just refused, so neither may re-land above the empty table.
+      markerSeq += 1
       uncoveredSeq += 1
       uncovered.value = 0
       return
     }
 
     try {
-      groups.value = await apiGet<FailureGroup[]>(
+      const found = await apiGet<FailureGroup[]>(
         `/api/failures?${buildQuery({ ...toRequestQuery(draft.value), limit: String(limit) })}`,
       )
+      if (seq !== listSeq) return
+      groups.value = found
       error.value = null
     } catch (cause) {
+      if (seq !== listSeq) return
       error.value = String(cause)
-      // A failed switch must not leave the previous bracket's badges behind.
       markers.value = new Set()
-      // Same reason as the refused bracket: this path returns before
-      // `refreshUncovered()` can retire the count still in flight.
       uncoveredSeq += 1
       uncovered.value = 0
       return

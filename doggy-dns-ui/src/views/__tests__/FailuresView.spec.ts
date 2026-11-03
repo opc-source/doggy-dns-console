@@ -167,19 +167,35 @@ describe('FailuresView', () => {
     // bracket can never add a second one of these ids under /failures.
     expect(wrapper.findAll('[data-testid="invalid-range"]')).toHaveLength(1)
     expect(fetches.some((url) => url.includes('/api/failures?'))).toBe(false)
+    // No rows were fetched, so a cap notice would be a claim about nothing.
+    expect(wrapper.find('[data-testid="cap-notice"]').exists()).toBe(false)
+  })
+
+  it('refuses a hand-edited one-sided bracket without querying the list', async () => {
+    const { wrapper } = await mountView(`/failures?from=${Date.now() - 3 * HOUR}`)
+
+    const banner = wrapper.findAll('[data-testid="invalid-range"]')
+    expect(banner).toHaveLength(1)
+    expect(banner[0]!.text()).toMatch(/起止/)
+    expect(fetches.some((url) => url.includes('/api/failures?'))).toBe(false)
+    expect(fetches.some((url) => url.includes('/uncovered'))).toBe(false)
   })
 
   it('shows the uncovered notice with a way to clear the host filter', async () => {
-    const { wrapper } = await mountView('/failures?windowMinutes=10080&instance=dns-node-2')
+    const { router, wrapper } = await mountView('/failures?windowMinutes=10080&instance=dns-node-2')
 
     const notice = wrapper.find('[data-testid="uncovered-notice"]')
     expect(notice.exists()).toBe(true)
+    expect(notice.attributes('role')).toBe('status')
     expect(notice.text()).toContain('2')
     expect(notice.text()).toContain('没有主机标签')
 
     await notice.find('button').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-testid="uncovered-notice"]').exists()).toBe(false)
+    // The count was bracket-scoped, so the action drops the host and keeps the
+    // bracket: the rows it just counted are the rows this window shows.
+    expect(router.currentRoute.value.query).toEqual({ windowMinutes: '10080' })
   })
 
   it('warns when the 200-group cap is hit', async () => {
@@ -199,7 +215,18 @@ describe('FailuresView', () => {
     // PAGE_LIMIT is one constant with two visible consequences: the request asks
     // for 200 and the notice quotes the same 200.
     expect(fetches.some((url) => url.includes('limit=200'))).toBe(true)
-    expect(wrapper.find('[data-testid="cap-notice"]').text()).toContain('仅显示前 200 组')
+    const capNotice = wrapper.find('[data-testid="cap-notice"]')
+    expect(capNotice.text()).toContain('仅显示前 200 组')
+    expect(capNotice.attributes('role')).toBe('status')
+  })
+
+  it('leaves the refusal to the drawer on the detail route', async () => {
+    const { wrapper } = await mountView('/failures/t1?from=10&to=20')
+
+    // The child renders `drawer-invalid-range` on this route; the page's own
+    // banner would be the second refusal for one URL, so it stays away.
+    expect(wrapper.find('[data-testid="detail-stub"]').exists()).toBe(true)
+    expect(wrapper.findAll('[data-testid="invalid-range"]')).toHaveLength(0)
   })
 
   it('stops auto-refreshing for an absolute bracket', async () => {
@@ -303,19 +330,18 @@ describe('FailuresView', () => {
     const { wrapper } = await mountView('/failures?windowMinutes=10080')
     fetches.length = 0
 
-    const before = Date.now()
-    const toText = msToDatetime(before)
+    const toText = msToDatetime(Date.now() - 3 * 24 * HOUR)
     await dateInput(wrapper, 1).setValue(toText)
     await flushPromises()
 
     const params = latestListRequest()
-    expect(params.get('to')).toBe(String(Date.parse(toText)))
+    const toMs = Date.parse(toText)
+    expect(params.get('to')).toBe(String(toMs))
     expect(params.get('windowMinutes')).toBeNull()
-    // The missing start is the page's own default window (60 minutes back from now),
-    // never the 7 days that were on screen until this edit.
-    expect(params.get('from')).not.toBeNull()
-    const from = Number(params.get('from'))
-    expect(Math.abs(from - (before - HOUR))).toBeLessThan(65_000)
+    // The missing start is the page's own default window measured back from the
+    // typed end — anchoring it on now would put the start after the end for any
+    // past date, and the page would refuse its own input.
+    expect(Number(params.get('from'))).toBe(toMs - HOUR)
   })
 
   it('drops the whole bracket when a date input is cleared', async () => {
@@ -328,13 +354,13 @@ describe('FailuresView', () => {
     await flushPromises()
 
     // Chosen behaviour for the cleared case: an empty input is not a half bracket
-    // to complete, so both sides go and no relative window is invented either —
-    // that is what leaves the quick-window chips free to take over.
+    // to complete, so both sides go and the default relative window takes over —
+    // the URL never falls back to the server's own default.
     const params = latestListRequest()
     expect(params.get('from')).toBeNull()
     expect(params.get('to')).toBeNull()
-    expect(params.get('windowMinutes')).toBeNull()
-    expect(router.currentRoute.value.query).toEqual({})
+    expect(params.get('windowMinutes')).toBe('60')
+    expect(router.currentRoute.value.query).toEqual({ windowMinutes: '60' })
   })
 
   it('follows the URL when it changes after mount', async () => {

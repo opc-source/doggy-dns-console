@@ -109,6 +109,23 @@ describe('FailureView', () => {
     expect(wrapper.findComponent(DrawerStub).exists()).toBe(false)
   })
 
+  it('refuses a hand-edited one-sided bracket instead of drawing a relative window', async () => {
+    const { wrapper } = await mountView(`/failures/t1?from=${NOW - 2 * HOUR}`)
+
+    // The list refuses exactly this draft; the drawer must not open a bracket the
+    // list would not show.
+    expect(wrapper.find('[data-testid="drawer-invalid-range"]').text()).toMatch(/起止/)
+    expect(wrapper.findComponent(DrawerStub).exists()).toBe(false)
+  })
+
+  it('renders no drawer on an impossible bracket', async () => {
+    const { wrapper } = await mountView('/failures/t1?from=10&to=20')
+
+    // `v-if=invalid / v-else-if=traceId`: a refusal always replaces the drawer.
+    expect(wrapper.find('[data-testid="drawer-invalid-range"]').exists()).toBe(true)
+    expect(wrapper.findComponent(DrawerStub).exists()).toBe(false)
+  })
+
   it('still restores a deep-linked analysis id', async () => {
     const { wrapper } = await mountView(
       `/failures/t1?from=${NOW - 2 * HOUR}&to=${NOW}&analysis=inv-9`,
@@ -128,6 +145,8 @@ describe('FailureView', () => {
     const { wrapper, router } = await mountView(
       `/failures/t1?from=${from}&to=${NOW}&instance=dns-node-2&analysis=a1`,
     )
+    const replace = vi.spyOn(router, 'replace')
+    const push = vi.spyOn(router, 'push')
 
     wrapper.findComponent(DrawerStub).vm.$emit('close')
 
@@ -135,6 +154,11 @@ describe('FailureView', () => {
     await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('failures-list'), {
       timeout: 5000,
     })
+
+    // Closing is a replace, so Back does not reopen the drawer and re-run the
+    // investigation it just closed.
+    expect(replace).toHaveBeenCalled()
+    expect(push).not.toHaveBeenCalled()
 
     // Only the analysis deep-link param is dropped: the bracket and the host
     // filter come back exactly as the operator left them.

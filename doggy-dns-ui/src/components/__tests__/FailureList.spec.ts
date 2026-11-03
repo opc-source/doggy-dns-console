@@ -83,10 +83,15 @@ afterEach(() => {
 
 describe('FailureList', () => {
   it('keeps the dense card row down to code, query, count and badge', () => {
-    const { wrapper } = mountList({ markers: new Set([GROUP.traceId as string]) })
+    const { wrapper } = mountList({
+      groups: [{ ...GROUP, qtype: 'MX' }],
+      markers: new Set([GROUP.traceId as string]),
+    })
 
     const row = wrapper.find('[data-testid="failure-row"]')
     expect(row.text()).toContain('SERVFAIL')
+    // Seven fields means qtype too: the compact card row shows it as well.
+    expect(row.text()).toContain('MX')
     expect(row.text()).toContain(LONG_QUERY.slice(0, 39))
     expect(row.text()).toContain('…')
     expect(row.text()).not.toContain(LONG_QUERY)
@@ -99,9 +104,10 @@ describe('FailureList', () => {
   })
 
   it('adds the host, authority and timestamps in full mode', () => {
-    const { wrapper } = mountList({ dense: false })
+    const { wrapper } = mountList({ dense: false, groups: [{ ...GROUP, qtype: 'MX' }] })
 
     const row = wrapper.find('[data-testid="failure-row"]')
+    expect(row.text()).toContain('MX')
     expect(row.find('[data-testid="row-instance"]').text()).toBe('dns-node-2')
     expect(row.text()).toContain('forward[8.8.8.8:53]')
     expect(row.text()).toContain(msToDatetime(GROUP.firstSeen))
@@ -145,6 +151,18 @@ describe('FailureList', () => {
     const row = wrapper.find('[data-testid="failure-row"]')
     expect(row.text()).not.toContain('null')
     expect(row.find('[data-testid="row-instance"]').text()).toBe('—')
+  })
+
+  it('renders an omitted wire field as a dash, never as undefined', () => {
+    // The wire may omit a grouped field outright, which the `FailureGroup`
+    // interface does not model: the helper still has to render a label, not the
+    // string "undefined".
+    const omitted = { ...UNLABELED, authority: undefined } as unknown as FailureGroup
+    const { wrapper } = mountList({ dense: false, groups: [omitted] })
+
+    const row = wrapper.find('[data-testid="failure-row"]')
+    expect(row.text()).not.toContain('undefined')
+    expect(row.text()).not.toContain('null')
   })
 
   it('emits the clicked group so the parent can build the detail link', async () => {

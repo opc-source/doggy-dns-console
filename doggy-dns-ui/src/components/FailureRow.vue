@@ -26,9 +26,9 @@ function shortName(query: string) {
   return `${query.slice(0, DENSE_QUERY_PREFIX_LENGTH)}…`
 }
 
-/** Every grouped field is optional on the wire, and `null` is not a label. */
-function dash(value: string | number | null): string {
-  return value === null || value === '' ? '—' : String(value)
+/** Every grouped field is optional on the wire, and neither null nor an omission is a label. */
+function dash(value: string | number | null | undefined): string {
+  return value === null || value === undefined || value === '' ? '—' : String(value)
 }
 </script>
 
@@ -45,6 +45,7 @@ function dash(value: string | number | null): string {
     >
       {{ group.responseCode }}
     </span>
+    <span class="mono rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">{{ group.qtype }}</span>
     <span
       class="mono min-w-0 flex-1 text-xs text-text"
       :class="dense ? 'truncate' : 'break-all'"

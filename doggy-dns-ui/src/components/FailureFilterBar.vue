@@ -13,7 +13,6 @@ import {
 
 const props = defineProps<{
   modelValue: FilterDraft
-  invalid: string | null
   instances: string[]
 }>()
 
@@ -43,10 +42,10 @@ const toText = computed(() =>
 // pair here is what keeps the `failureFilter.ts` contract untouched.
 function setFrom(value: string) {
   const fromMs = datetimeToMs(value)
-  // A cleared input is not half a bracket: both sides go, and no relative window is
-  // invented, which is what leaves the quick-window chips free to take over.
+  // A cleared input is not half a bracket: both sides go, and the relative
+  // window falls back to the server's default so the URL is never empty.
   if (fromMs === null) {
-    patch({ fromMs: null, toMs: null, windowMinutes: null })
+    patch({ fromMs: null, toMs: null, windowMinutes: DEFAULT_WINDOW_MINUTES })
     return
   }
   patch({ fromMs, toMs: props.modelValue.toMs ?? Date.now(), windowMinutes: null })
@@ -55,12 +54,12 @@ function setFrom(value: string) {
 function setTo(value: string) {
   const toMs = datetimeToMs(value)
   if (toMs === null) {
-    patch({ fromMs: null, toMs: null, windowMinutes: null })
+    patch({ fromMs: null, toMs: null, windowMinutes: DEFAULT_WINDOW_MINUTES })
     return
   }
   patch({
     toMs,
-    fromMs: props.modelValue.fromMs ?? Date.now() - DEFAULT_WINDOW_MINUTES * 60_000,
+    fromMs: props.modelValue.fromMs ?? toMs - DEFAULT_WINDOW_MINUTES * 60_000,
     windowMinutes: null,
   })
 }
@@ -97,6 +96,7 @@ const activeQuick = computed(() =>
         v-for="preset in QUICK_WINDOWS"
         :key="preset.minutes"
         :data-testid="preset.testId"
+        :aria-pressed="activeQuick === preset.minutes"
         class="focus-ring rounded-lg px-2.5 py-1 text-xs"
         :class="
           activeQuick === preset.minutes
@@ -170,12 +170,7 @@ const activeQuick = computed(() =>
       />
     </label>
 
-    <!--
-      The banner belongs to the page, so the bar's own line repeats it inline for
-      the control that caused it without claiming the page's test id.
-    -->
-    <p v-if="invalid" class="w-full text-xs text-error">{{ invalid }}</p>
-    <p v-else data-testid="range-hint" class="w-full text-[11px] text-muted">
+    <p data-testid="range-hint" class="w-full text-[11px] text-muted">
       <!--
         Both ceilings are interpolated, never typed: the investigation chain
         rejects outside 5–10080 (`Range::checked` in `src/domain.rs`), while the

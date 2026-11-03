@@ -8,6 +8,7 @@ import {
   resolveBracket,
   toInvestigationFilter,
   validateBracket,
+  validateDraft,
 } from '@/lib/failureFilter'
 
 // This view is `failures-list`'s child route, so the list stays mounted behind the
@@ -26,7 +27,9 @@ const draft = computed(() => parseFilterQuery(route.query as FilterQuery))
 // Date.now() per evaluation: a relative deep link resolves at the instant the
 // operator opened it, and the bracket never round-trips into the URL.
 const bracket = computed(() => resolveBracket(draft.value, Date.now()))
-const invalid = computed(() => validateBracket(bracket.value, Date.now()))
+const invalid = computed(
+  () => validateDraft(draft.value) ?? validateBracket(bracket.value, Date.now()),
+)
 const filter = computed(() => toInvestigationFilter(draft.value, Date.now()))
 const traceId = computed(() => String(route.params.traceId ?? ''))
 const analysisId = computed(() => {
@@ -38,9 +41,12 @@ const analysisId = computed(() => {
 function close() {
   // Back to the list, bracket intact: only the analysis deep-link param is
   // dropped, so the rows the operator was looking at come back unchanged.
+  // A replace, not a push: the entry being left is the drawer's own, and a push
+  // would leave Back pointing at it, reopening the drawer and re-running the
+  // investigation that was just closed.
   const rest = { ...route.query }
   delete rest.analysis
-  void router.push({ name: 'failures-list', query: rest })
+  void router.replace({ name: 'failures-list', query: rest })
 }
 </script>
 

@@ -44,6 +44,19 @@ export function isAbsolute(draft: FilterDraft): boolean {
   return draft.fromMs !== null && draft.toMs !== null
 }
 
+/**
+ * A draft with exactly one absolute bound cannot be executed as a bracket: the
+ * wire has no lone-`from` param and a lone `to` anchors a relative window to a
+ * frozen instant. The bar always completes the pair, so this only refuses
+ * hand-edited URLs — loudly, instead of silently querying the server default.
+ */
+export function validateDraft(draft: FilterDraft): string | null {
+  if ((draft.fromMs === null) !== (draft.toMs === null)) {
+    return '区间需要同时给出起止时间'
+  }
+  return null
+}
+
 type RawQuery = Record<string, string | string[] | null | undefined>
 
 function firstSingle(value: string | string[] | null | undefined): string | null {
@@ -111,7 +124,9 @@ export function resolveBracket(draft: FilterDraft, nowMs: number): Bracket {
  */
 export function validateBracket(bracket: Bracket, nowMs: number): string | null {
   if (bracket.startMs >= bracket.endMs) return '区间起始必须早于结束'
-  if (bracket.endMs > nowMs + FUTURE_TOLERANCE_MS) return '区间结束不能超过当前时间 1 分钟'
+  if (bracket.endMs > nowMs + FUTURE_TOLERANCE_MS) {
+    return `区间结束不能超过当前时间 ${FUTURE_TOLERANCE_MS / MINUTE} 分钟`
+  }
   const spanMs = bracket.endMs - bracket.startMs
   if (spanMs < MIN_RANGE_MINUTES * MINUTE) return `区间不足 ${MIN_RANGE_MINUTES} 分钟`
   if (spanMs > MAX_RANGE_MINUTES * MINUTE) {
@@ -121,22 +136,17 @@ export function validateBracket(bracket: Bracket, nowMs: number): string | null 
 }
 
 /** Only the params the endpoint reads; an absolute pair suppresses the shortcut. */
-export function toRequestQuery(
-  draft: FilterDraft,
-  extra: Record<string, string | number> = {},
-): Record<string, string> {
+export function toRequestQuery(draft: FilterDraft): Record<string, string> {
   const query: Record<string, string> = {}
   if (isAbsolute(draft)) {
     query.from = String(draft.fromMs)
     query.to = String(draft.toMs)
-  } else {
-    if (draft.windowMinutes !== null) query.windowMinutes = String(draft.windowMinutes)
-    if (draft.toMs !== null) query.to = String(draft.toMs)
+  } else if (draft.windowMinutes !== null) {
+    query.windowMinutes = String(draft.windowMinutes)
   }
   if (draft.domain) query.domain = draft.domain
   if (draft.responseCode) query.responseCode = draft.responseCode
   if (draft.instance) query.instance = draft.instance
-  for (const [key, value] of Object.entries(extra)) query[key] = String(value)
   return query
 }
 
@@ -165,7 +175,15 @@ export function msToDatetime(ms: number): string {
 export function datetimeToMs(value: string): number | null {
   if (!value) return null
   const parsed = Date.parse(value)
-  return Number.isNaN(parsed) ? null : parsed
+  if (Number.isNaN(parsed)) return null
+  // `Date.parse` silently normalises a non-existent local time (a DST gap) and
+  // an impossible date like 2026-02-30. A bound the input cannot re-render must
+  // be refused, not shifted by an hour or a day.
+  return msToDatetime(parsed) === value ? parsed : null
+}
+
+function formatQuantity(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1)
 }
 
 // `_nowMs` keeps the clock argument uniform across the contract's functions;
@@ -178,6 +196,6 @@ export function rangeLabel(draft: FilterDraft, _nowMs: number): string {
   if (minutes < 60) return `近 ${minutes} 分钟`
   // 1440 is the live picker's widest option; the hour unit holds through it,
   // so the label only flips to days above the relative class's ceiling.
-  if (minutes <= 1440) return `近 ${minutes / 60} 小时`
-  return `近 ${minutes / 1440} 天`
+  if (minutes <= 1440) return `近 ${formatQuantity(minutes / 60)} 小时`
+  return `近 ${formatQuantity(minutes / 1440)} 天`
 }

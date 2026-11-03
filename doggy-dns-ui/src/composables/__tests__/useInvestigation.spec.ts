@@ -1,4 +1,4 @@
-import { effectScope, ref } from 'vue'
+import { effectScope, nextTick, ref } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError, apiGet, apiPostWithStatus } from '@/api/http'
@@ -455,6 +455,25 @@ describe('useInvestigation', () => {
 
     expect(item.state.value).toBe('analysisDone')
     expect(item.analysis.value?.analysisId).toBe('a1')
+  })
+
+  it('drops_evidence_for_a_bracket_the_drawer_already_replaced', async () => {
+    const { item, investigationFilter } = setup()
+    let resolveFirst!: (value: EvidenceBundle) => void
+    const first = new Promise<EvidenceBundle>((resolve) => {
+      resolveFirst = resolve
+    })
+    getMock().mockReturnValueOnce(first)
+    getMock().mockResolvedValueOnce(bundle('sha256:b'))
+
+    const stale = item.loadEvidence()
+    investigationFilter.value = { ...EVIDENCE_FILTER, from: EVIDENCE_FILTER.from - 3_600_000 }
+    await nextTick()
+    await expect(item.loadEvidence()).resolves.toBe(true)
+
+    resolveFirst(bundle('sha256:a'))
+    await expect(stale).resolves.toBe(false)
+    expect(item.evidence.value?.fingerprint).toBe('sha256:b')
   })
 
   it('stops_polling_after_scope_dispose', async () => {

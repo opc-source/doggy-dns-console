@@ -47,12 +47,6 @@ export interface SpanRecord {
   attributes: Record<string, unknown>
 }
 
-export interface FailureDetail {
-  group: FailureGroup
-  logs: LogRecord[]
-  spans: SpanRecord[]
-}
-
 export interface Instance {
   id: string
   host: string
@@ -131,7 +125,11 @@ export type MissingEvidence =
   | 'metrics_unavailable'
   | 'logs_truncated'
 
-/** The bracket and echoes a request carries. Mirrors `FailureQuery` in `src/api/failures.rs`. */
+/**
+ * The subset of `FailureQuery` the drawer sends: the absolute bracket plus the
+ * echoes. It deliberately omits `windowMinutes`/`limit` — the bracket owns the
+ * range, so the server never resolves a window for an investigation.
+ */
 export interface InvestigationFilter {
   from: number
   to: number

@@ -15,6 +15,7 @@ import {
   toRequestQuery,
   toRouteQuery,
   validateBracket,
+  validateDraft,
 } from '../failureFilter'
 
 const NOW = 1_761_436_800_000
@@ -42,6 +43,19 @@ describe('resolveBracket', () => {
   })
 })
 
+describe('validateDraft', () => {
+  it('refuses exactly one absolute bound', () => {
+    expect(validateDraft({ ...emptyDraft(), fromMs: NOW - HOUR })).toMatch(/起止/)
+    expect(validateDraft({ ...emptyDraft(), toMs: NOW })).toMatch(/起止/)
+  })
+
+  it('accepts both relative and complete absolute drafts', () => {
+    expect(validateDraft(emptyDraft())).toBeNull()
+    expect(validateDraft(relativeDraft(60))).toBeNull()
+    expect(validateDraft({ ...emptyDraft(), fromMs: NOW - HOUR, toMs: NOW })).toBeNull()
+  })
+})
+
 describe('validateBracket', () => {
   it('accepts the legal edges', () => {
     expect(
@@ -50,7 +64,7 @@ describe('validateBracket', () => {
     expect(
       validateBracket({ startMs: NOW - MAX_RANGE_MINUTES * 60_000, endMs: NOW }, NOW),
     ).toBeNull()
-    expect(validateBracket({ startMs: NOW - HOUR, endMs: NOW + FUTURE_TOLERANCE_MS }, NOW)).toBeNull()
+    expect(validateBracket({ startMs: NOW - HOUR, endMs: NOW + 60_000 }, NOW)).toBeNull()
   })
 
   it('rejects the four documented rules', () => {
@@ -63,6 +77,7 @@ describe('validateBracket', () => {
     expect(
       validateBracket({ startMs: NOW - HOUR, endMs: NOW + FUTURE_TOLERANCE_MS + 1 }, NOW),
     ).toMatch(/不能超过当前时间/)
+    expect(validateBracket({ startMs: NOW - HOUR, endMs: NOW + 60_001 }, NOW)).toMatch(/1 分钟/)
   })
 
   it('never clamps a 7-day bracket back to a day', () => {
@@ -174,13 +189,32 @@ describe('query round-trip', () => {
       windowMinutes: 60,
       instance: 'dns-node-2',
     }
-    const search = toRequestQuery(draft, { limit: 200 })
+    // The list caller spreads `limit` itself, exactly like `useFailureList`.
+    const search = { ...toRequestQuery(draft), limit: '200' }
     expect(search).toEqual({
       from: String(NOW - 2 * HOUR),
       to: String(NOW),
       instance: 'dns-node-2',
       limit: '200',
     })
+  })
+
+  it('carries the domain and response-code echoes to the wire', () => {
+    const draft = {
+      ...emptyDraft(),
+      windowMinutes: 60,
+      domain: 'nacos.local',
+      responseCode: 'SERVFAIL',
+    }
+    expect(toRequestQuery(draft)).toEqual({
+      windowMinutes: '60',
+      domain: 'nacos.local',
+      responseCode: 'SERVFAIL',
+    })
+  })
+
+  it('drops a lone absolute end instead of freezing a relative window on it', () => {
+    expect(toRequestQuery({ ...emptyDraft(), toMs: NOW })).toEqual({})
   })
 })
 
@@ -198,6 +232,11 @@ describe('rangeLabel', () => {
     expect(rangeLabel(relativeDraft(MAX_RANGE_MINUTES), NOW)).toBe('近 7 天')
   })
 
+  it('never prints a raw repeating decimal', () => {
+    expect(rangeLabel({ ...emptyDraft(), windowMinutes: 5000 }, NOW)).toBe('近 3.5 天')
+    expect(rangeLabel({ ...emptyDraft(), windowMinutes: 100 }, NOW)).toBe('近 1.7 小时')
+  })
+
   it('names an absolute bracket in local time', () => {
     const draft = { ...emptyDraft(), fromMs: NOW - 3 * HOUR, toMs: NOW, windowMinutes: null }
     expect(rangeLabel(draft, NOW)).toBe(`${msToDatetime(NOW - 3 * HOUR)} ~ ${msToDatetime(NOW)}`)
@@ -206,13 +245,13 @@ describe('rangeLabel', () => {
 
 describe('datetimeToMs', () => {
   it('round-trips through the datetime-local control', () => {
-    const text = msToDatetime(NOW)
-    expect(datetimeToMs(text)).toBe(NOW - (NOW % 60_000))
+    expect(datetimeToMs(msToDatetime(NOW))).toBe(NOW)
   })
 
-  it('rejects blank and malformed input', () => {
+  it('rejects blank, malformed and impossible input', () => {
     expect(datetimeToMs('')).toBeNull()
-    expect(datetimeToMs('not-a-time')).toBeNull()
+    expect(datetimeToMs('not a date')).toBeNull()
+    expect(datetimeToMs('2026-02-30T10:00')).toBeNull()
   })
 })
 

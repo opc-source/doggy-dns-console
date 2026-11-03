@@ -31,8 +31,9 @@ test('filters the failure list by host over a week', async ({ page }) => {
   }
 
   // One fixture group carries no host label at all, so the page has to say that
-  // this filter does not reach it.
-  await expect(page.getByTestId('uncovered-notice')).toContainText('有 1 条遥测没有主机标签')
+  // this filter does not reach it. The count is rows, not groups: the single
+  // unlabeled group carries five telemetry rows.
+  await expect(page.getByTestId('uncovered-notice')).toContainText('有 5 条遥测没有主机标签')
 })
 
 test('a one-hour bracket hides the three-day-old group', async ({ page }) => {
@@ -46,7 +47,7 @@ test('a one-hour bracket hides the three-day-old group', async ({ page }) => {
   await expect(rows.filter({ hasText: 'api.internal.' })).toHaveCount(0)
 })
 
-test('the drawer opens only through the URL and keeps the bracket', async ({ page }) => {
+test('the drawer opens from a row and keeps the bracket', async ({ page }) => {
   await page.goto('/failures?windowMinutes=10080')
 
   const rows = page.getByTestId('failure-row')
@@ -58,7 +59,11 @@ test('the drawer opens only through the URL and keeps the bracket', async ({ pag
   // assertion would settle on the pre-navigation page instead of the drawer.
   await expect(page).toHaveURL(/\/failures\/[0-9a-f]{16}\?windowMinutes=10080$/)
   await expect(page.getByTestId('range-chip')).toBeVisible()
+  // The drawer is an overlay on the list's own route, so the rows stay mounted
+  // behind it instead of being torn down and re-fetched.
+  await expect(page.getByTestId('failure-row')).toHaveCount(6)
   await page.keyboard.press('Escape')
   await expect(page.getByTestId('range-chip')).toHaveCount(0)
   await expect(page).toHaveURL(/\/failures\?windowMinutes=10080$/)
+  await expect(page.getByTestId('failure-row')).toHaveCount(6)
 })

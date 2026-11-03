@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, type RouteLocationRaw } from 'vue-router'
 
 import type { FailureGroup } from '@/api/types'
 
@@ -14,6 +14,8 @@ const props = withDefaults(
     limit?: number
     /** Render the "查看全部" link to the failure list page. */
     seeAll?: boolean
+    /** Where that link goes; the card passes its own window so the list matches. */
+    seeAllTo?: RouteLocationRaw
     title?: string
     subtitle?: string
     /** One-line rows for the overview card; the page renders every field. */
@@ -47,7 +49,7 @@ const visibleGroups = computed(() =>
         <RouterLink
           v-if="seeAll"
           data-testid="see-all"
-          :to="{ name: 'failures-list' }"
+          :to="seeAllTo ?? { name: 'failures-list' }"
           class="focus-ring rounded-md px-2 py-1 text-xs text-accent hover:underline"
           >查看全部</RouterLink
         >

@@ -192,6 +192,20 @@ describe('OverviewView', () => {
     expect(wrapper.find('[data-testid="see-all"]').exists()).toBe(true)
   })
 
+  it('carries the card window into the 查看全部 link', async () => {
+    stubApi(() => json(overview))
+    const { wrapper } = await mountOverview()
+
+    await chipByText(wrapper, '6h').trigger('click')
+    await flushPromises()
+
+    // The rows are 6 h old; a bare /failures would silently show 60 minutes.
+    const href = wrapper.find('[data-testid="see-all"]').attributes('href')
+    expect(href).toMatch(/\/failures\?windowMinutes=360$/)
+    expect(chipByText(wrapper, '6h').attributes('aria-pressed')).toBe('true')
+    expect(chipByText(wrapper, '1h').attributes('aria-pressed')).toBe('false')
+  })
+
   it('never mounts a drawer from the store', async () => {
     stubApi(() => json(overview))
     const { wrapper } = await mountOverview()

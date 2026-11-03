@@ -52,6 +52,7 @@ const errorMessage = computed(() => {
           <button
             v-for="option in windows"
             :key="option.value"
+            :aria-pressed="windowMinutes === option.value"
             class="focus-ring rounded-lg px-3 py-1.5 text-xs transition-colors"
             :class="windowMinutes === option.value ? 'bg-surface-2 text-accent' : 'text-muted hover:text-text'"
             @click="setWindow(option.value)"
@@ -102,6 +103,7 @@ const errorMessage = computed(() => {
         :markers="markers"
         :limit="5"
         see-all
+        :see-all-to="{ name: 'failures-list', query: toRouteQuery(draft) }"
         @select="(group) => group.traceId && onSelect(group.traceId)"
       />
     </section>

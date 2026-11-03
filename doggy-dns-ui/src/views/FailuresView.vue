@@ -7,12 +7,12 @@ import FailureList from '@/components/FailureList.vue'
 import { useFailureList } from '@/composables/useFailureList'
 import { useInstances } from '@/composables/useInstances'
 import {
-  DEFAULT_WINDOW_MINUTES,
   parseFilterQuery,
   rangeLabel,
   resolveBracket,
   toRouteQuery,
   validateBracket,
+  validateDraft,
   type FilterDraft,
 } from '@/lib/failureFilter'
 
@@ -41,7 +41,9 @@ const routeQuery = computed(() =>
 )
 
 const bracket = computed(() => resolveBracket(draft.value, Date.now()))
-const invalid = computed(() => validateBracket(bracket.value, Date.now()))
+const invalid = computed(
+  () => validateDraft(draft.value) ?? validateBracket(bracket.value, Date.now()),
+)
 const { groups, markers, error, uncovered } = useFailureList(draft, PAGE_LIMIT)
 
 // The host options come from the instance view, not from the rows currently on
@@ -51,7 +53,7 @@ const hosts = computed(() =>
   instances.value.map((instance) => instance.host).filter((host) => host !== ''),
 )
 
-const capped = computed(() => groups.value.length >= PAGE_LIMIT)
+const capped = computed(() => !invalid.value && groups.value.length >= PAGE_LIMIT)
 
 function onSelect(traceId: string) {
   void router.push({
@@ -61,17 +63,11 @@ function onSelect(traceId: string) {
   })
 }
 
-// The unlabeled rows are only hidden by the host filter, so the notice's action
-// drops the host and the absolute bracket and goes back to the default window,
-// exactly like the filter bar's escape hatch.
+// The count is bracket-scoped and `/uncovered` drops only the host equality, so
+// the action clears the host and nothing else: the rows it just counted are
+// exactly the rows this bracket shows.
 function showUnlabeled() {
-  draft.value = {
-    ...draft.value,
-    fromMs: null,
-    toMs: null,
-    windowMinutes: DEFAULT_WINDOW_MINUTES,
-    instance: '',
-  }
+  draft.value = { ...draft.value, instance: '' }
 }
 
 watch(draftQuery, (serialized) => {
@@ -90,10 +86,10 @@ watch(routeQuery, (serialized) => {
 
 <template>
   <div class="flex flex-col gap-4 px-6 py-6">
-    <FailureFilterBar v-model="draft" :invalid="invalid" :instances="hosts" />
+    <FailureFilterBar v-model="draft" :instances="hosts" />
 
     <p
-      v-if="invalid"
+      v-if="invalid && route.name !== 'failure-detail'"
       data-testid="invalid-range"
       class="rounded-lg border border-error/40 bg-error/10 px-3 py-2 text-sm text-error"
     >
@@ -106,6 +102,7 @@ watch(routeQuery, (serialized) => {
     <p
       v-if="draft.instance && uncovered > 0 && !invalid"
       data-testid="uncovered-notice"
+      role="status"
       class="flex flex-wrap items-center gap-2 rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-sm"
     >
       有 {{ uncovered }} 条遥测没有主机标签，未被此过滤覆盖。
@@ -117,7 +114,7 @@ watch(routeQuery, (serialized) => {
       </button>
     </p>
 
-    <p v-if="capped" data-testid="cap-notice" class="text-xs text-muted">
+    <p v-if="capped" data-testid="cap-notice" role="status" class="text-xs text-muted">
       仅显示前 {{ PAGE_LIMIT }} 组，请收窄时间或筛选。
     </p>
 

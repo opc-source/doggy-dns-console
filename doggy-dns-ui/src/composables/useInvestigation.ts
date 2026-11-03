@@ -258,7 +258,7 @@ export function useInvestigation(
     }
   }
 
-  watch(traceId, () => {
+  watch([traceId, () => JSON.stringify(filter.value)], () => {
     generation += 1
     cancelPolling()
     evidence.value = null

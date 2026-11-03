@@ -53,6 +53,14 @@ function json(body: unknown, status = 200) {
   })
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
 interface Call {
   url: string
   method: string
@@ -62,6 +70,7 @@ function stubFetch(
   markers: () => Response | Promise<Response>,
   failGroups: () => boolean = () => false,
   uncovered: () => Response | Promise<Response> = () => json({ unlabeled: 1 }),
+  groups: () => Response | Promise<Response> = () => json(failures),
 ): Call[] {
   const calls: Call[] = []
   vi.stubGlobal(
@@ -76,7 +85,7 @@ function stubFetch(
       if (failGroups()) {
         return json({ error: { code: 'boom', message: 'failures down' } }, 500)
       }
-      return json(failures)
+      return groups()
     }),
   )
   return calls
@@ -103,12 +112,14 @@ function mountList(
     markers?: () => Response | Promise<Response>
     failGroups?: () => boolean
     uncovered?: () => Response | Promise<Response>
+    groups?: () => Response | Promise<Response>
   } = {},
 ): MountedList {
   const fetches = stubFetch(
     responses.markers ?? (() => json([markerFor('t1', 'm1'), markerFor('t2', 'm2')])),
     responses.failGroups ?? (() => false),
     responses.uncovered ?? (() => json({ unlabeled: 1 })),
+    responses.groups ?? (() => json(failures)),
   )
   const interval = vi.spyOn(globalThis, 'setInterval')
   let list!: List
@@ -372,5 +383,39 @@ describe('useFailureList filter drafts', () => {
     await flushPromises()
     expect(uncovered.value).toBe(0)
     wrapper.unmount()
+  })
+
+  it('drops a list answer for a draft the operator already replaced', async () => {
+    const first = deferred<Response>()
+    const second = deferred<Response>()
+    let listCalls = 0
+    const { groups, draft } = mountList(ref(relativeDraft(60)), {
+      groups: () => {
+        listCalls += 1
+        return listCalls === 1 ? first.promise : second.promise
+      },
+    })
+
+    draft.value = relativeDraft(1440)
+    await flushPromises() // the watch callback starts the second list request
+
+    second.resolve(json([failure('trace:new', 'new')]))
+    await flushPromises()
+    first.resolve(json([failure('trace:old', 'old')]))
+    await flushPromises()
+
+    expect(groups.value.map((group) => group.key)).toEqual(['trace:new'])
+  })
+
+  it('refuses exactly one absolute bound without querying the list', async () => {
+    const { error, groups, fetches } = mountList(
+      ref({ ...emptyDraft(), fromMs: Date.now() - HOUR, instance: 'dns-1' }),
+    )
+    await flushPromises()
+
+    expect(error.value).toMatch(/起止/)
+    expect(groups.value).toEqual([])
+    expect(fetches.some((call) => call.url.startsWith('/api/failures?'))).toBe(false)
+    expect(fetches.some((call) => call.url.includes('/uncovered'))).toBe(false)
   })
 })
