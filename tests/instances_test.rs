@@ -6,10 +6,11 @@ use doggy_dns_console::datasource::instances::{MergedInstanceSource, match_seen}
 use doggy_dns_console::datasource::mcp::{InstanceTransport, McpInstanceSource};
 use doggy_dns_console::datasource::{FixedClock, InstanceSource, TelemetrySource};
 use doggy_dns_console::domain::{
-    FailureDetail, FailureFilter, FailureGroup, InstanceIdentity, MatchQuality, MetricCounts,
-    Overview, Range, SeenInstance, Window,
+    FailureDetail, FailureFilter, FailureGroup, Instance, InstanceDetail, InstanceIdentity,
+    MatchQuality, MetricCounts, Overview, Range, SeenInstance, Window,
 };
 use doggy_dns_console::error::DataError;
+use doggy_dns_console::service::ConsoleService;
 use serde_json::{Value, json};
 
 #[derive(Default)]
@@ -776,6 +777,128 @@ async fn failure_metrics_defaults_to_not_configured() {
     let telemetry = SeenOnly(Vec::new());
     let result = telemetry.failure_metrics(None, 0, 1).await;
     assert!(matches!(result, Err(DataError::NotConfigured(_))));
+}
+
+/// Telemetry double that records the `instance` label of every count query the
+/// service hands it, and answers a fixed number when it answers at all.
+struct CountingTelemetry {
+    asked_for: std::sync::Mutex<Vec<Option<String>>>,
+    answer: u64,
+}
+
+impl CountingTelemetry {
+    fn new(answer: u64) -> Self {
+        Self {
+            asked_for: std::sync::Mutex::new(Vec::new()),
+            answer,
+        }
+    }
+}
+
+#[async_trait]
+impl TelemetrySource for CountingTelemetry {
+    async fn overview(&self, _range: Range) -> Result<Overview, DataError> {
+        Err(DataError::NotConfigured("unused".into()))
+    }
+    async fn failures(&self, _filter: FailureFilter) -> Result<Vec<FailureGroup>, DataError> {
+        Err(DataError::NotConfigured("unused".into()))
+    }
+    async fn failure_detail(
+        &self,
+        _trace_id: &str,
+        _filter: FailureFilter,
+    ) -> Result<FailureDetail, DataError> {
+        Err(DataError::NotConfigured("unused".into()))
+    }
+    async fn seen_instances(&self, _window: Window) -> Result<Vec<SeenInstance>, DataError> {
+        Ok(Vec::new())
+    }
+    async fn instance_failure_count(&self, filter: FailureFilter) -> Result<u64, DataError> {
+        self.asked_for.lock().unwrap().push(filter.instance.clone());
+        Ok(self.answer)
+    }
+}
+
+/// The fixture's rows, but for a node whose telemetry never published a host
+/// label — the only shape that can turn a per-instance count into a fleet one.
+struct HostlessFixture(Arc<FixtureSource>);
+
+#[async_trait]
+impl InstanceSource for HostlessFixture {
+    async fn list(&self) -> Result<Vec<Instance>, DataError> {
+        self.0.list().await
+    }
+    async fn detail(&self, id: &str) -> Result<InstanceDetail, DataError> {
+        let mut detail = self.0.detail(id).await?;
+        detail.instance.host = "   ".to_string();
+        Ok(detail)
+    }
+}
+
+fn service_with(
+    telemetry: Arc<dyn TelemetrySource>,
+    instances: Arc<dyn InstanceSource>,
+) -> ConsoleService {
+    ConsoleService::new(
+        telemetry,
+        instances,
+        Arc::new(FixedClock(1_761_436_800_000)),
+    )
+}
+
+#[tokio::test]
+async fn instance_detail_reports_no_number_when_the_source_cannot_count() {
+    let now = 1_761_436_800_000;
+    // `SeenOnly` does not implement `instance_failure_count`, so the trait
+    // default answers `Err` — exactly what a source without count support does.
+    let instances =
+        Arc::new(FixtureSource::new(Arc::new(FixedClock(now)))) as Arc<dyn InstanceSource>;
+    let service = service_with(Arc::new(SeenOnly(Vec::new())), instances);
+
+    let detail = service
+        .instance_detail("dns-node-1", Range::new(now - 60 * 60_000, now))
+        .await
+        .unwrap();
+    assert_eq!(detail.instance.id, "dns-node-1");
+    // The point of D17: an unavailable number stays absent instead of being
+    // invented as 0, which the drawer would read as "this node was healthy".
+    assert_eq!(detail.failure_count, None);
+}
+
+#[tokio::test]
+async fn instance_detail_never_counts_a_host_less_node_across_the_fleet() {
+    let now = 1_761_436_800_000;
+    let fixture = Arc::new(FixtureSource::new(Arc::new(FixedClock(now))));
+    let counting = Arc::new(CountingTelemetry::new(99));
+    let service = service_with(counting.clone(), Arc::new(HostlessFixture(fixture.clone())));
+
+    let detail = service
+        .instance_detail("dns-node-1", Range::new(now - 60 * 60_000, now))
+        .await
+        .unwrap();
+
+    assert_eq!(detail.failure_count, None);
+    // And the query must not be issued at all: with no host label the filter
+    // would carry no host clause, and 99 fleet-wide rows would be attributed
+    // to this one node.
+    assert!(
+        counting.asked_for.lock().unwrap().is_empty(),
+        "a host-less instance still asked the telemetry for a count: {:?}",
+        *counting.asked_for.lock().unwrap()
+    );
+
+    // Control: the same stub does answer for a node that has a host label, and
+    // scopes the count to it.
+    let service = service_with(counting.clone(), fixture);
+    let detail = service
+        .instance_detail("dns-node-2", Range::new(now - 60 * 60_000, now))
+        .await
+        .unwrap();
+    assert_eq!(detail.failure_count, Some(99));
+    assert_eq!(
+        counting.asked_for.lock().unwrap().as_slice(),
+        [Some("dns-node-2".to_string())]
+    );
 }
 
 #[tokio::test]

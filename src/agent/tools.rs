@@ -60,6 +60,15 @@ pub struct EmptyArgs {}
 #[serde(rename_all = "camelCase")]
 pub struct InstanceArgs {
     pub instance_id: String,
+    /// Relative shortcut; expanded to `[to - n, to]`. Used to derive the start
+    /// when from is absent; ignored when from is given.
+    pub window_minutes: Option<u32>,
+    /// Absolute bracket start in epoch milliseconds. Wins over `windowMinutes`
+    /// when `to` is present too.
+    pub from: Option<i64>,
+    /// Absolute bracket end in epoch milliseconds; also anchors `windowMinutes`
+    /// when `from` is absent. Defaults to the server clock.
+    pub to: Option<i64>,
 }
 
 pub struct ConsoleTools {
@@ -119,7 +128,9 @@ pub async fn get_instance_detail(
     service: &ConsoleService,
     args: InstanceArgs,
 ) -> Result<Value, DataError> {
-    let detail = service.instance_detail(&args.instance_id).await?;
+    let range = Range::resolve(args.from, args.to, args.window_minutes, service.now_ms())
+        .map_err(DataError::Invalid)?;
+    let detail = service.instance_detail(&args.instance_id, range).await?;
     serde_json::to_value(detail).map_err(|error| DataError::Invalid(error.to_string()))
 }
 
@@ -173,7 +184,7 @@ pub fn build_tools(service: Arc<ConsoleService>) -> Vec<Arc<dyn Tool>> {
         Arc::new(
             StatefulTool::new(
                 "get_instance_detail",
-                "Return one instance's pid, status, uptime, protocols, plugins, redacted TOML config and live runtime signals (Nacos cache/push freshness, XDP fast path state).",
+                "Return one instance's pid, status, uptime, protocols, plugins, redacted TOML config and live runtime signals (Nacos cache/push freshness, XDP fast path state). Pass the same from/to or windowMinutes the operator is looking at.",
                 state.clone(),
                 tool_instance_detail,
             )

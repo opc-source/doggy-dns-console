@@ -331,7 +331,10 @@ pub struct InstanceDetail {
     /// Raw `get_runtime_status` payload (`{"signals": {...}}`); absent when
     /// the instance's MCP build predates the tool or the call failed.
     pub runtime: Option<Value>,
-    pub recent_failures: u64,
+    /// Failure rows attributed to this host inside the bracket the caller
+    /// asked for. `None` when the telemetry source cannot count them — the
+    /// drawer shows an em dash rather than a fabricated zero.
+    pub failure_count: Option<u64>,
 }
 
 /// The `instance` filter as the telemetry layer means it: a trimmed host label,

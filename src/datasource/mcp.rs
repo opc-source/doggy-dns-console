@@ -304,7 +304,7 @@ impl McpInstanceSource {
                 config_toml,
                 redacted_keys,
                 runtime,
-                recent_failures: 0,
+                failure_count: None,
             });
         }
         Err(DataError::NotFound(format!("instance {id}")))

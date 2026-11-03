@@ -140,3 +140,25 @@ pub fn unlabeled_failures_query(
         end_ms.saturating_mul(1000),
     )
 }
+
+/// How many failure rows one host produced inside the bracket. The instance
+/// detail reports this instead of summing list groups: a seven-day bracket
+/// easily exceeds the 200-group cap, and a silently capped total would read as
+/// "this node was healthy that week".
+///
+/// `filter.instance` is what scopes it — without one this is the whole bracket
+/// across every host, which is the list's number, not a node's.
+pub fn instance_failure_count_query(
+    stream: &str,
+    filter: &FailureFilter,
+    start_ms: i64,
+    end_ms: i64,
+) -> String {
+    format!(
+        "SELECT COUNT(*) AS count FROM \"{stream}\" WHERE {FAILURE_PREDICATE}{} \
+         AND _timestamp >= {} AND _timestamp <= {}",
+        extra_filters(filter),
+        start_ms.saturating_mul(1000),
+        end_ms.saturating_mul(1000),
+    )
+}

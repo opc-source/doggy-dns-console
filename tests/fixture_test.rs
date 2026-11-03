@@ -94,11 +94,37 @@ async fn fixture_failure_detail_contains_trace_evidence() {
 }
 
 #[tokio::test]
-async fn fixture_instance_detail_counts_recent_failures() {
-    let detail = service().instance_detail("dns-node-1").await.unwrap();
-    assert_eq!(detail.instance.id, "dns-node-1");
-    assert!(!detail.plugins.is_empty());
-    assert!(detail.recent_failures > 0);
+async fn fixture_instance_detail_counts_failures_in_the_bracket() {
+    let service = service();
+    // dns-node-2 owns `8ff9` (10 minutes old) in an hour and adds `5cf9` (3h)
+    // plus `9af9` (6d) once the bracket is a week, so the number has to move
+    // with the range instead of being a constant the detail copies.
+    let hour = service
+        .instance_detail("dns-node-2", span(60))
+        .await
+        .unwrap();
+    assert_eq!(hour.instance.id, "dns-node-2");
+    assert!(!hour.plugins.is_empty());
+    assert_eq!(hour.failure_count, Some(2));
+
+    let week = service
+        .instance_detail("dns-node-2", span(7 * 1440))
+        .await
+        .unwrap();
+    assert_eq!(week.failure_count, Some(13));
+    assert!(
+        week.failure_count > hour.failure_count,
+        "a week must count more rows than an hour, got {:?} vs {:?}",
+        week.failure_count,
+        hour.failure_count
+    );
+
+    // NXDOMAIN rows never join the count, exactly like the list.
+    let node_one = service
+        .instance_detail("dns-node-1", span(60))
+        .await
+        .unwrap();
+    assert_eq!(node_one.failure_count, Some(12));
 }
 
 #[tokio::test]

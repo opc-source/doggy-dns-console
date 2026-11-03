@@ -5,8 +5,8 @@ use async_trait::async_trait;
 
 use crate::datasource::openobserve::client::{OpenObserveClient, PromSeries};
 use crate::datasource::openobserve::failures::{
-    failure_group_query, failure_groups_query, failure_logs_query, trace_spans_query,
-    unlabeled_failures_query,
+    failure_group_query, failure_groups_query, failure_logs_query, instance_failure_count_query,
+    trace_spans_query, unlabeled_failures_query,
 };
 use crate::datasource::openobserve::normalize::{
     normalize_failure_group_row, normalize_log_row, normalize_span_row,
@@ -172,6 +172,34 @@ impl TelemetrySource for OpenObserveTelemetry {
             return Ok(0);
         };
         Ok(unlabeled.max(0) as u64)
+    }
+
+    /// The instance detail's own number: an uncapped `COUNT(*)` for one host.
+    ///
+    /// Unlike [`TelemetrySource::unlabeled_failures`], a response without a
+    /// parsable integer is an error, not zero. "No unlabeled rows" is an answer;
+    /// `Some(0)` here would read as "this node was healthy all week", which the
+    /// detail must never invent (spec D17).
+    async fn instance_failure_count(&self, filter: FailureFilter) -> Result<u64, DataError> {
+        let (start, end) = (filter.range.start_ms, filter.range.end_ms);
+        let sql =
+            instance_failure_count_query(&self.client.config().log_stream, &filter, start, end);
+        let rows = self.client.search_logs(&sql, start, end, 1).await?;
+        let Some(count) = rows
+            .iter()
+            .find_map(|row| row.get("count").and_then(serde_json::Value::as_i64))
+        else {
+            tracing::warn!(
+                start_ms = filter.range.start_ms,
+                end_ms = filter.range.end_ms,
+                rows = rows.len(),
+                "instance failure count query returned no integer `count`; reporting no number"
+            );
+            return Err(DataError::Internal(
+                "instance failure count query returned no integer count".to_string(),
+            ));
+        };
+        Ok(count.max(0) as u64)
     }
 
     async fn failure_metrics(

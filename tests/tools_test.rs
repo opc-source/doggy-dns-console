@@ -44,6 +44,9 @@ async fn get_instance_detail_tool_returns_live_runtime_and_redactions() {
         &service,
         InstanceArgs {
             instance_id: "dns-node-1".to_string(),
+            window_minutes: None,
+            from: None,
+            to: None,
         },
     )
     .await
@@ -55,6 +58,72 @@ async fn get_instance_detail_tool_returns_live_runtime_and_redactions() {
         value["redactedKeys"]
             .as_array()
             .is_some_and(|keys| !keys.is_empty())
+    );
+}
+
+#[tokio::test]
+async fn get_instance_detail_tool_counts_the_bracket_it_was_given() {
+    let service = fixture_service();
+    let one_hour = tools::get_instance_detail(
+        &service,
+        InstanceArgs {
+            instance_id: "dns-node-2".to_owned(),
+            window_minutes: Some(60),
+            from: None,
+            to: None,
+        },
+    )
+    .await
+    .unwrap();
+    let week = tools::get_instance_detail(
+        &service,
+        InstanceArgs {
+            instance_id: "dns-node-2".to_owned(),
+            window_minutes: None,
+            from: Some(1_761_436_800_000 - 7 * 1440 * 60_000),
+            to: Some(1_761_436_800_000),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(one_hour["failureCount"], 2);
+    assert_eq!(week["failureCount"], 13);
+
+    // The same ceiling as every other ranged endpoint, refused rather than
+    // clamped, so the model cannot ask for a fortnight and get a week.
+    let error = tools::get_instance_detail(
+        &service,
+        InstanceArgs {
+            instance_id: "dns-node-2".to_owned(),
+            window_minutes: Some(20_000),
+            from: None,
+            to: None,
+        },
+    )
+    .await
+    .expect_err("a bracket over the ceiling must not be clamped");
+    assert!(
+        matches!(error, DataError::Invalid(_)),
+        "expected a rejection, got {error:?}"
+    );
+    assert!(
+        error.to_string().contains("10080-minute ceiling"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn the_instance_detail_tool_tells_the_model_which_bracket_to_pass() {
+    let service = fixture_service();
+    let tools = tools::build_tools(Arc::new(service.clone()));
+    let detail = tools
+        .iter()
+        .find(|tool| tool.name() == "get_instance_detail")
+        .expect("get_instance_detail is registered");
+    let text = detail.description();
+    assert!(
+        text.contains("Pass the same from/to or windowMinutes the operator is looking at."),
+        "the detail tool no longer tells the model to match the operator's range: {text}"
     );
 }
 

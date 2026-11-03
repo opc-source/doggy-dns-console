@@ -63,6 +63,15 @@ pub trait TelemetrySource: Send + Sync {
         Ok(0)
     }
 
+    /// Failure rows for `filter.instance` (plus its domain/responseCode scope)
+    /// inside the bracket, without the list's group cap. Sources that cannot
+    /// count return an error rather than zero, which would read as "healthy".
+    async fn instance_failure_count(&self, _filter: FailureFilter) -> Result<u64, DataError> {
+        Err(DataError::NotConfigured(
+            "instance_failure_count not implemented".to_string(),
+        ))
+    }
+
     async fn seen_instances(&self, window: Window) -> Result<Vec<SeenInstance>, DataError>;
 
     /// Aggregate query/failure counts for a window. Sources without metric

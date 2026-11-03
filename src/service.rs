@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use crate::datasource::{Clock, InstanceSource, TelemetrySource};
 use crate::domain::{
-    FailureDetail, FailureFilter, FailureGroup, Instance, InstanceDetail, Overview, Range, Window,
+    FailureDetail, FailureFilter, FailureGroup, Instance, InstanceDetail, Overview, Range,
+    host_filter,
 };
 use crate::error::DataError;
 use crate::evidence::assemble::assemble;
@@ -84,18 +85,34 @@ impl ConsoleService {
         self.instances.list().await
     }
 
-    pub async fn instance_detail(&self, id: &str) -> Result<InstanceDetail, DataError> {
+    pub async fn instance_detail(
+        &self,
+        id: &str,
+        range: Range,
+    ) -> Result<InstanceDetail, DataError> {
         let mut detail = self.instances.detail(id).await?;
-        let filter = FailureFilter::new(Range::from_window(Window::new(60), self.now_ms()));
-        if let Ok(groups) = self.telemetry.failures(filter).await {
-            detail.recent_failures = groups
-                .iter()
-                .filter(|group| {
-                    group.instance.as_deref() == Some(detail.instance.id.as_str())
-                        || group.instance.as_deref() == Some(detail.instance.host.as_str())
-                })
-                .map(|group| group.count)
-                .sum();
+        // 这个数是一条 host 等值查询,所以只有"这台实例真有 host 标签"才有意义。
+        // host 为空时 filter 会退化成"不加实例条件",把整支队的失败算到一台头上。
+        let Some(host) = host_filter(Some(detail.instance.host.clone())) else {
+            tracing::warn!(
+                instance = %detail.instance.id,
+                "instance has no host label; a host-equality count would be fleet-wide, reporting no number"
+            );
+            return Ok(detail);
+        };
+        let filter = FailureFilter {
+            instance: Some(host),
+            ..FailureFilter::new(range)
+        };
+        // A count the telemetry cannot produce stays `None`: the drawer renders
+        // an em dash, because `0` would read as "this node was healthy".
+        match self.telemetry.instance_failure_count(filter).await {
+            Ok(count) => detail.failure_count = Some(count),
+            Err(error) => tracing::warn!(
+                instance = %detail.instance.id,
+                error = %error,
+                "instance failure count unavailable; reporting no number instead of 0"
+            ),
         }
         Ok(detail)
     }

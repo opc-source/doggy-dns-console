@@ -148,6 +148,51 @@ async fn instance_detail_exposes_runtime_signals_and_redactions() {
 }
 
 #[tokio::test]
+async fn the_instances_list_takes_no_bracket() {
+    // `/api/instances` is the fleet inventory, not a time series: a stray
+    // `from`/`to` must be ignored, not answered with 400 (spec D17). This pin
+    // stops a later task from "helpfully" giving the list a `Query<RangeQuery>`.
+    let app = app_with(fixture() as Arc<dyn TelemetrySource>);
+    let response = app
+        .oneshot(
+            Request::get("/api/instances?from=1&to=2")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert!(
+        body.as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["id"] == "dns-node-1")
+    );
+}
+
+#[tokio::test]
+async fn instance_detail_answers_the_bracket_with_a_failure_count() {
+    let app = app_with(fixture() as Arc<dyn TelemetrySource>);
+    let response = app
+        .oneshot(
+            Request::get(format!(
+                "/api/instances/dns-node-1?from={}&to={}",
+                FIXED_NOW_MS - 60 * 60_000,
+                FIXED_NOW_MS
+            ))
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    // The count is the uncapped `COUNT(*)` for this host over the bracket the
+    // caller asked for: the demo fixture has 12 failure rows here.
+    assert_eq!(json_body(response).await["failureCount"], 12);
+}
+
+#[tokio::test]
 async fn overview_returns_camel_case_json() {
     let app = app_with(fixture() as Arc<dyn TelemetrySource>);
     let response = app
@@ -578,34 +623,34 @@ async fn a_negative_window_minutes_is_refused_at_the_parameter_layer() {
 }
 
 #[tokio::test]
-async fn the_overview_and_the_failure_list_refuse_identically() {
-    let overview_app = app_with(fixture() as Arc<dyn TelemetrySource>);
-    let overview = json_body(
-        overview_app
-            .oneshot(
-                Request::get("/api/overview?windowMinutes=20000")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+async fn the_three_ranged_endpoints_refuse_identically() {
+    // One bracket grammar, one refusal: overview, the failure list and the
+    // instance detail must not drift into three different ceilings, three
+    // statuses or three messages.
+    let mut bodies = Vec::new();
+    for uri in [
+        "/api/overview?windowMinutes=20000",
+        "/api/failures?windowMinutes=20000",
+        "/api/instances/dns-node-1?windowMinutes=20000",
+    ] {
+        let app = app_with(fixture() as Arc<dyn TelemetrySource>);
+        let response = app
+            .oneshot(Request::get(uri).body(Body::empty()).unwrap())
             .await
-            .unwrap(),
-    )
-    .await;
-    let failures_app = app_with(fixture() as Arc<dyn TelemetrySource>);
-    let failures = json_body(
-        failures_app
-            .oneshot(
-                Request::get("/api/failures?windowMinutes=20000")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+        let body = json_body(response).await;
+        assert_eq!(body["error"]["code"], "invalid_request", "{uri}: {body}");
+        bodies.push(body);
+    }
+
     assert_eq!(
-        overview["error"]["message"],
+        bodies[0]["error"]["message"],
         "invalid request: range is longer than the 10080-minute ceiling"
     );
-    assert_eq!(overview, failures);
+    assert_eq!(bodies[0], bodies[1], "the failure list refuses differently");
+    assert_eq!(
+        bodies[0], bodies[2],
+        "the instance detail refuses differently"
+    );
 }

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use doggy_dns_console::config::{OpenObserveAuth, OpenObserveConfig};
 use doggy_dns_console::datasource::openobserve::client::OpenObserveClient;
 use doggy_dns_console::datasource::openobserve::failures::{
-    failure_group_query, failure_groups_query, failure_logs_query, trace_spans_query,
-    unlabeled_failures_query,
+    failure_group_query, failure_groups_query, failure_logs_query, instance_failure_count_query,
+    trace_spans_query, unlabeled_failures_query,
 };
 use doggy_dns_console::datasource::openobserve::normalize::{
     normalize_failure_group_row, normalize_log_row,
@@ -402,5 +402,77 @@ fn instance_and_host_clause_escapes_quotes() {
     assert!(
         sql.contains("lower('node''\" OR 1=1')"),
         "unexpected SQL: {sql}"
+    );
+}
+
+#[test]
+fn the_instance_count_is_an_uncapped_count_over_the_same_predicate() {
+    let filter = FailureFilter {
+        instance: Some("dns-node-1".to_owned()),
+        ..FailureFilter::new(Range::new(1_000, 61_000))
+    };
+    let sql = instance_failure_count_query("doggy-dns-logs", &filter, 1_000, 61_000);
+    assert!(sql.starts_with("SELECT COUNT(*) AS count"), "{sql}");
+    // Same failure predicate as the list, the host equality folded in, and no
+    // GROUP BY / LIMIT — a week must not truncate at 200 groups.
+    assert!(sql.contains("severity IN ('WARN','ERROR')"), "{sql}");
+    assert!(
+        sql.contains("lower(host_name) = lower('dns-node-1')"),
+        "{sql}"
+    );
+    assert!(!sql.contains("GROUP BY"), "{sql}");
+    assert!(!sql.contains("LIMIT"), "{sql}");
+    assert!(sql.contains("_timestamp >= 1000000"), "{sql}");
+}
+
+fn instance_filter() -> FailureFilter {
+    FailureFilter {
+        range: Range::new(NOW_MS - 60 * 60_000, NOW_MS),
+        instance: Some("dns-node-1".to_owned()),
+        ..FailureFilter::default()
+    }
+}
+
+async fn count_mock(server: &MockServer, hits: &str) {
+    Mock::given(method("POST"))
+        .and(path("/api/default/_search"))
+        .and(query_param("type", "logs"))
+        .and(body_string_contains("SELECT COUNT(*) AS count"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(hits, "application/json"))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn the_instance_count_reads_the_number_the_count_row_carries() {
+    let server = MockServer::start().await;
+    count_mock(&server, r#"{"hits":[{"count":137}]}"#).await;
+
+    let count = telemetry(&server)
+        .instance_failure_count(instance_filter())
+        .await
+        .unwrap();
+    assert_eq!(count, 137);
+}
+
+#[tokio::test]
+async fn the_instance_count_refuses_to_answer_zero_without_an_integer_row() {
+    // A `COUNT(*)` that comes back without a parsable integer says nothing about
+    // this host. `unlabeled_failures` may answer 0 there, but the detail's
+    // number must not: 0 reads as "healthy all week" (spec D17).
+    let server = MockServer::start().await;
+    count_mock(&server, r#"{"hits":[{"count":"not a number"}]}"#).await;
+
+    let error = telemetry(&server)
+        .instance_failure_count(instance_filter())
+        .await
+        .expect_err("a count row without an integer must not be reported as 0");
+    assert!(
+        matches!(error, DataError::Internal(_)),
+        "expected an internal failure, got {error:?}"
+    );
+    assert!(
+        error.to_string().contains("returned no integer count"),
+        "{error}"
     );
 }

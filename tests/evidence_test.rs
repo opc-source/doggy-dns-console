@@ -491,7 +491,7 @@ fn instance_detail() -> InstanceDetail {
         config_toml: Some("[server]\nlisten_addr = \"127.0.0.1\"\n".to_string()),
         redacted_keys: vec!["observability.basic_auth.password".to_string()],
         runtime: Some(json!({ "signals": { "xdp": { "attached": true } } })),
-        recent_failures: 0,
+        failure_count: None,
     }
 }
 

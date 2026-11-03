@@ -285,6 +285,18 @@ impl TelemetrySource for FixtureSource {
         Ok(unlabeled)
     }
 
+    /// The demo side of the detail's number: the same rows the list would show
+    /// for this host, summed without the group cap the list applies.
+    async fn instance_failure_count(&self, filter: FailureFilter) -> Result<u64, DataError> {
+        let count = self
+            .groups()
+            .into_iter()
+            .filter(|group| self.matches(group, &filter))
+            .map(|group| group.count)
+            .sum::<u64>();
+        Ok(count)
+    }
+
     async fn seen_instances(&self, _window: Window) -> Result<Vec<SeenInstance>, DataError> {
         let now = self.clock.now_ms();
         Ok(vec![
@@ -395,7 +407,7 @@ impl InstanceSource for FixtureSource {
                     "xdp": {"attached": true}
                 }
             })),
-            recent_failures: 0,
+            failure_count: None,
         })
     }
 }
