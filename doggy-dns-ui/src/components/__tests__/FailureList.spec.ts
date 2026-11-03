@@ -82,7 +82,7 @@ afterEach(() => {
 })
 
 describe('FailureList', () => {
-  it('keeps the dense card row down to code, query, count and badge', () => {
+  it('keeps the dense card row down to code, qtype, query, count and badge', () => {
     const { wrapper } = mountList({
       groups: [{ ...GROUP, qtype: 'MX' }],
       markers: new Set([GROUP.traceId as string]),

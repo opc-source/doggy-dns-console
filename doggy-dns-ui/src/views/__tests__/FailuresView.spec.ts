@@ -223,10 +223,12 @@ describe('FailuresView', () => {
   it('leaves the refusal to the drawer on the detail route', async () => {
     const { wrapper } = await mountView('/failures/t1?from=10&to=20')
 
-    // The child renders `drawer-invalid-range` on this route; the page's own
-    // banner would be the second refusal for one URL, so it stays away.
+    // The drawer owns the refusal on this route (its `drawer-invalid-range` is
+    // pinned in FailureView.spec.ts); the page's own two banners would be the
+    // second refusal for one URL, so both stay away.
     expect(wrapper.find('[data-testid="detail-stub"]').exists()).toBe(true)
     expect(wrapper.findAll('[data-testid="invalid-range"]')).toHaveLength(0)
+    expect(wrapper.text()).not.toContain('区间不足 5 分钟')
   })
 
   it('stops auto-refreshing for an absolute bracket', async () => {

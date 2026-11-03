@@ -45,10 +45,11 @@ export function isAbsolute(draft: FilterDraft): boolean {
 }
 
 /**
- * A draft with exactly one absolute bound cannot be executed as a bracket: the
- * wire has no lone-`from` param and a lone `to` anchors a relative window to a
- * frozen instant. The bar always completes the pair, so this only refuses
- * hand-edited URLs — loudly, instead of silently querying the server default.
+ * A draft with exactly one absolute bound is not a bracket the operator picked:
+ * a lone `to` anchors a relative window to a frozen instant, and a lone `from`
+ * only means "everything up to the server clock". The bar always completes the
+ * pair, so this only refuses hand-edited URLs — loudly, instead of silently
+ * querying something other than what the URL appears to say.
  */
 export function validateDraft(draft: FilterDraft): string | null {
   if ((draft.fromMs === null) !== (draft.toMs === null)) {

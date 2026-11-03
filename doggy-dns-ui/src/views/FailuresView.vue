@@ -95,7 +95,12 @@ watch(routeQuery, (serialized) => {
     >
       {{ invalid }}
     </p>
-    <p v-else-if="error" class="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-sm">
+    <!-- On the detail route the drawer owns the refusal, so the list's own
+         copy of the same message stays away. -->
+    <p
+      v-else-if="error && route.name !== 'failure-detail'"
+      class="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-sm"
+    >
       {{ error }}
     </p>
 
