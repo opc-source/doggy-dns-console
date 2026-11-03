@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import type { Page } from '@playwright/test'
 
 test('overview renders live KPIs', async ({ page }) => {
   await page.goto('/')
@@ -69,7 +70,12 @@ test('the drawer opens from a row and keeps the bracket', async ({ page }) => {
 })
 
 test('the instance drawer counts failures over the chosen bracket', async ({ page }) => {
-  const card = page.getByRole('button', { name: /^dns-node-1\b/ })
+  // dns-node-2, not dns-node-1: node-1's only in-bracket failure group is 15
+  // minutes old (its 45-minute group is NXDOMAIN — never a failure — and its
+  // 9-row group is 8 days old, past the 7-day ceiling), so a week and an hour
+  // both answer 12 and the number cannot move. node-2's three groups age 10
+  // minutes, 3 hours and 6 days: an hour counts 2 rows, a week counts 13.
+  const card = page.getByRole('button', { name: /^dns-node-2\b/ })
 
   await page.goto('/instances?windowMinutes=10080')
   await card.click()
@@ -89,4 +95,44 @@ test('the instance drawer counts failures over the chosen bracket', async ({ pag
   // request-only assertion.
   expect(Number.isNaN(week)).toBe(false)
   expect(week).toBeGreaterThan(hour)
+})
+
+// D8 splits the two directions of the same rule, so each case gets its own
+// 20s window (and its own timeout budget): a relative bracket must keep
+// re-anchoring every 15s, an absolute one must stop asking entirely.
+function countOverview(page: Page): string[] {
+  const urls: string[] = []
+  page.on('response', (response) => {
+    if (new URL(response.url()).pathname === '/api/overview') urls.push(response.url())
+  })
+  return urls
+}
+
+test('a relative week refreshes the overview', async ({ page }) => {
+  test.setTimeout(60_000)
+  const urls = countOverview(page)
+
+  await page.goto('/?windowMinutes=10080')
+  await expect.poll(() => urls.length).toBeGreaterThan(0)
+  expect(urls[0]).toContain('windowMinutes=10080')
+
+  await page.waitForTimeout(20_000)
+  // 15s polling means two samples inside 20s. Asserting ">1" rather than "==2"
+  // keeps the case about the timer existing, not about wall-clock luck.
+  expect(urls.length).toBeGreaterThan(1)
+})
+
+test('an absolute bracket is asked for once and never polled', async ({ page }) => {
+  test.setTimeout(60_000)
+  const to = Date.now()
+  const from = to - 60 * 60 * 1000
+  const urls = countOverview(page)
+
+  await page.goto(`/?from=${from}&to=${to}`)
+  await expect.poll(() => urls.length).toBeGreaterThan(0)
+  expect(urls[0]).toContain(`from=${from}`)
+  expect(urls[0]).toContain(`to=${to}`)
+
+  await page.waitForTimeout(20_000)
+  expect(urls).toHaveLength(1)
 })

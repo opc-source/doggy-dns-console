@@ -70,6 +70,36 @@ Opening a failure first loads a deterministic **evidence bundle** and then, when
 analysis is available, starts a read-only forensic analysis of that bundle.
 Evidence never depends on the model; analysis never blocks the evidence view.
 
+### Overview and instance APIs
+
+```
+GET /api/overview?from=&to=&windowMinutes=
+GET /api/instances/{id}?from=&to=&windowMinutes=
+```
+
+Both bind the same `RangeQuery` struct (`windowMinutes`, `from`, `to`, epoch
+milliseconds) and resolve it through the same `Range::resolve` rule as the failure
+family (`src/api/mod.rs`, `src/domain.rs`). Those three parameters are the whole
+contract: `/api/overview` takes no `domain`, `responseCode` or `instance` filter.
+`GET /api/instances` (the list) accepts no query at all — it stays the only
+bracket-free endpoint, because its rows are identity and reachability, not a time
+series.
+
+`p95` is the worst bucket inside the bracket, not the last point (the telemetry
+layer takes `max` over the sampled series). The trend and p95 queries share one
+bucket width, `ceil(span_minutes / 168)` held to `1..=60` minutes, and the rate
+window is `max(bucket, 5)` minutes — so the default one hour keeps the 60-second
+step and five-minute rate window it always had, and a week is one point per hour.
+State the cost plainly: a wider bracket can only read a higher p95, which is why
+the card hint says `worst bucket in range`.
+
+The instance detail's `failureCount` is an uncapped `SELECT COUNT(*)` scoped to the
+requested bracket and to that host. It deliberately does not reuse the
+`/api/failures` number: the list aggregates per trace group and caps a page at 200
+groups, so a busy week's total would be silently truncated into looking healthy.
+`null` is not 0 — it means the telemetry source could not count at all, and the UI
+renders `—` rather than a fabricated zero.
+
 ### Failure list API
 
 ```
@@ -99,14 +129,13 @@ instance filter as the failure list and detail, so the bundle cannot drift from 
 entry that was clicked.
 
 `from`/`to` are epoch milliseconds. `to` defaults to the server clock, and when
-`from` is absent `windowMinutes` (default 60) supplies the start as `end - n`. The
-investigation chain (`/api/failures`, `/uncovered`, `/evidence`, `/analysis`) accepts
-a bracket from 5 minutes to 10080 minutes (7 days) and answers `400 invalid_request`
-— it never clamps — when the start is at or after the end, the span is outside that
-band, or `to` is more than 60 seconds in the future. The overview view is the live
-class and still takes a relative window clamped to 5–1440 minutes; `/api/instances`
-takes no window, and the instance detail's recent-failure number is a fixed 60
-minutes.
+`from` is absent `windowMinutes` (default 60) supplies the start as `end - n`. Every
+endpoint that takes a bracket — `/api/overview`, `/api/instances/{id}` and the
+investigation chain (`/api/failures`, `/uncovered`, `/evidence`, `/analysis`) —
+accepts a span from 5 minutes to 10080 minutes (7 days) and answers
+`400 invalid_request` — it never clamps — when the start is at or after the end, the
+span is outside that band, or `to` is more than 60 seconds in the future. The
+`/api/instances` list stays the only endpoint that takes no bracket at all.
 
 The response contains:
 
@@ -132,8 +161,9 @@ The response contains:
 Errors: `400` for a malformed query — a non-numeric integer is rejected by the
 parameter extractor as plain text, while a bracket whose start is at or after its
 end, a span outside 5–10080 minutes, or a `to` more than 60 seconds in the future
-is a `400 invalid_request` JSON error: the investigation chain rejects an
-out-of-range bracket instead of clamping it. `404` when the trace is not a failure
+is a `400 invalid_request` JSON error: every endpoint that takes a bracket — the
+chain, `/api/overview` and `/api/instances/{id}` — rejects an out-of-range bracket
+instead of clamping it. `404` when the trace is not a failure
 group in that window, `502` when OpenObserve itself fails. Because a production
 start still requires a model API key, evidence-only operation without one means
 `CONSOLE_DEMO=1`; the endpoint itself never calls the model.
@@ -279,6 +309,13 @@ window re-anchors when it is reopened — the list on the server clock, the draw
 the browser. The list shows a
 marker for traces that already have an investigation and never triggers analysis
 itself.
+
+The overview (`/`) and the instance drawer's failure count (`/instances`) obey the same
+rule: the URL is their only state too, and all three views drive one shared
+time-range control (presets 1h/6h/24h/7d plus manual `from`/`to`). The re-anchor stays
+true for the overview — a relative window is recomputed on every refresh, which is why
+the page keeps polling it every 15 seconds — while an absolute bracket is a fixed
+question that is never re-anchored, so the overview stops polling it.
 
 The fingerprint covers the trace's evidence, not the bracket that was requested: the
 group aggregate, logs and spans are read for the trace inside the bracket, and the
