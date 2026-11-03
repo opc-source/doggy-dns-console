@@ -332,7 +332,8 @@ cannot support the case.
   evidence itself (new logs or spans for the same trace, or a newly reachable
   instance) so a new fingerprint is computed. A shifted window or a
   `windowMinutes` change alone is a cache HIT on identical evidence and must not
-  produce staleness. Open the share link
+  produce staleness — provided the new bracket still contains the whole trace; a
+  bracket that clips it changes the bundle and is re-analyzed. Open the share link
   `/failures/{traceId}?from=…&to=…&analysis=<oldId>` and, separately,
   reload the drawer.
 - **Expected:** the reloaded bundle has a different `fingerprint`; the drawer

@@ -85,7 +85,9 @@ answer is exactly 200.
 `/api/failures/uncovered` returns `{"unlabeled": n}` — the in-scope failures
 that carry no `host_name`, which the `instance` equality on the list query
 cannot reach. The count shares the list's scope (same bracket, `domain` and
-`responseCode`) and drops only the host equality.
+`responseCode`) and drops only the host equality. Its `instance` parameter is
+accepted for symmetry and ignored: the count is exactly the rows that equality
+cannot match.
 
 ### Evidence API
 
@@ -97,14 +99,14 @@ Synchronous, read-only and model-free. It uses the same bracket/domain/responseC
 instance filter as the failure list and detail, so the bundle cannot drift from the
 entry that was clicked.
 
-`from`/`to` are epoch milliseconds and win over `windowMinutes` when both are
-given; `windowMinutes` otherwise expands to `[to - n, to]` with `to` defaulting to
-the server clock. The investigation chain (`/api/failures`, `/evidence`,
-`/analysis`) accepts a bracket from 5 minutes to 10080 minutes (7 days) and answers
-`400 invalid_request` — it never clamps — when the start is at or after the end, the
-span is outside that band, or `to` is more than 60 seconds in the future. The
-overview and instance views are the live class and still take a relative 5–1440
-minute window.
+`from`/`to` are epoch milliseconds. `to` defaults to the server clock, and when
+`from` is absent `windowMinutes` (default 60) supplies the start as `end - n`. The
+investigation chain (`/api/failures`, `/uncovered`, `/evidence`, `/analysis`) accepts
+a bracket from 5 minutes to 10080 minutes (7 days) and answers `400 invalid_request`
+— it never clamps — when the start is at or after the end, the span is outside that
+band, or `to` is more than 60 seconds in the future. The overview view is the live
+class and still takes a relative 5–1440 minute window; `/api/instances` takes no
+window, and the instance detail's recent-failure number is a fixed 60 minutes.
 
 The response contains:
 
@@ -268,16 +270,20 @@ from the analyzed one, the old analysis is kept but marked stale
 reused.
 
 The failure list lives at `/failures?from=&to=&windowMinutes=&domain=&responseCode=&instance=`,
-and a row opens the drawer at `/failures/{traceId}?…&analysis=<id>`. The bracket is
-the only drawer state: there is no store-held trace id, so reloading or sharing the
-URL reproduces exactly what the operator saw. An unknown `analysis` id falls back to
-a fresh analysis. The list shows a marker for traces that already have an
-investigation and never triggers analysis itself.
+and a row opens the drawer at `/failures/{traceId}?` carrying the list's filter query.
+Adding `analysis=<id>` restores that attempt instead of starting a new one; an unknown
+id falls back to a fresh analysis. The drawer keeps no store state of its own — the URL
+is the only input — so reloading or sharing it reproduces the same request; a relative
+window re-anchors on the server clock, exactly as the list does. The list shows a
+marker for traces that already have an investigation and never triggers analysis
+itself.
 
-The fingerprint covers the trace's evidence, not the bracket that was requested: logs
-and spans match by `trace_id` and the metric window is centred on the trace itself.
-Widening 1 hour to 7 days therefore reuses the stored analysis on purpose instead of
-re-running the model on identical evidence. One consequence lands on every deployment
+The fingerprint covers the trace's evidence, not the bracket that was requested: the
+group aggregate, logs and spans are read for the trace inside the bracket, and the
+metric window is centred on the trace itself. A wider bracket that still contains the
+whole trace yields the same evidence, so the stored analysis is reused on purpose
+instead of re-running the model; a bracket that clips the trace changes the bundle and
+is analyzed afresh. One consequence lands on every deployment
 upgrading to this version: analyses recorded before the change carry a range in their
 fingerprint, so they are reported stale the first time they are opened through an old
 `?analysis=<id>` link — the drawer keeps the old result, shows the stale banner and
