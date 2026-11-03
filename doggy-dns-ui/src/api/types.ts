@@ -131,10 +131,26 @@ export type MissingEvidence =
   | 'metrics_unavailable'
   | 'logs_truncated'
 
-export interface EvidenceFilter {
-  windowMinutes: number
+/** The bracket and echoes a request carries. Mirrors `FailureQuery` in `src/api/failures.rs`. */
+export interface InvestigationFilter {
+  from: number
+  to: number
   domain: string | null
   responseCode: string | null
+  instance: string | null
+}
+
+/**
+ * Filter echo inside an evidence bundle.
+ *
+ * Deliberately range-free: the fingerprint is computed over the trace's own
+ * evidence, so widening the bracket reuses the stored analysis by design.
+ * Mirrors `EvidenceFilter` in `src/evidence/model.rs`.
+ */
+export interface EvidenceFilter {
+  domain: string | null
+  responseCode: string | null
+  instance: string | null
 }
 
 export interface EvidenceBundle {

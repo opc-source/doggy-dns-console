@@ -62,7 +62,7 @@ const AT = Date.UTC(2026, 0, 1, 12, 0, 0)
 function bundle(overrides: Partial<EvidenceBundle> = {}): EvidenceBundle {
   return {
     traceId: 't1',
-    filter: { windowMinutes: 60, domain: null, responseCode: null },
+    filter: { domain: null, responseCode: null, instance: null },
     generatedAt: AT,
     fingerprint: 'sha256:abc123',
     group: {
@@ -182,7 +182,7 @@ function snapshot(overrides: Partial<AnalysisSnapshot> = {}): AnalysisSnapshot {
     toolCallCount: 3,
     startedAt: AT,
     finishedAt: AT + 5000,
-    filter: { windowMinutes: 60, domain: null, responseCode: null },
+    filter: { domain: null, responseCode: null, instance: null },
     evidenceFingerprint: 'sha256:abc123',
     model: 'gpt-5',
     promptVersion: 'v3',

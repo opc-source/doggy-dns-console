@@ -20,7 +20,7 @@ const TRACE_SEGMENT = 'trace%201'
 function bundle(fingerprint = 'sha256:a'): EvidenceBundle {
   return {
     traceId: TRACE,
-    filter: { windowMinutes: 60, domain: null, responseCode: null },
+    filter: { domain: null, responseCode: null, instance: null },
     generatedAt: 1,
     fingerprint,
     group: {
@@ -64,7 +64,7 @@ function snapshot(overrides: Partial<AnalysisSnapshot> = {}): AnalysisSnapshot {
     toolCallCount: 0,
     startedAt: 1,
     finishedAt: 2,
-    filter: { windowMinutes: 60, domain: null, responseCode: null },
+    filter: { domain: null, responseCode: null, instance: null },
     evidenceFingerprint: 'sha256:a',
     model: 'model',
     promptVersion: 'v1',
