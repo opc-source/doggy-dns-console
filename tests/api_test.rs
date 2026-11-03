@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 use axum::body::Body;
@@ -8,7 +8,7 @@ use doggy_dns_console::api::state::{ApiState, Probe};
 use doggy_dns_console::datasource::fixture::FixtureSource;
 use doggy_dns_console::datasource::{FixedClock, InstanceSource, TelemetrySource};
 use doggy_dns_console::domain::{
-    FailureDetail, FailureFilter, FailureGroup, Overview, SeenInstance, Window,
+    FailureDetail, FailureFilter, FailureGroup, Overview, Range, SeenInstance, Window,
 };
 use doggy_dns_console::error::DataError;
 use doggy_dns_console::service::ConsoleService;
@@ -26,7 +26,7 @@ impl Probe for AlwaysHealthy {
 
 struct RecordingTelemetry {
     inner: FixtureSource,
-    limit: Arc<AtomicUsize>,
+    last_filter: Arc<Mutex<Option<FailureFilter>>>,
 }
 
 #[async_trait]
@@ -35,7 +35,7 @@ impl TelemetrySource for RecordingTelemetry {
         self.inner.overview(window).await
     }
     async fn failures(&self, filter: FailureFilter) -> Result<Vec<FailureGroup>, DataError> {
-        self.limit.store(filter.limit, Ordering::SeqCst);
+        *self.last_filter.lock().unwrap() = Some(filter.clone());
         self.inner.failures(filter).await
     }
     async fn failure_detail(
@@ -95,6 +95,18 @@ fn app_with(telemetry: Arc<dyn TelemetrySource>) -> axum::Router {
         model_configured: true,
         analysis: None,
     })
+}
+
+/// Same fixed `1_761_436_800_000` clock as [`app_with`], so `now_ms` is
+/// deterministic and the resolver's future tolerance is testable, plus the
+/// recorder handle to read the resolved filter back from.
+async fn app_with_recorder() -> (axum::Router, Arc<RecordingTelemetry>) {
+    let recorder = Arc::new(RecordingTelemetry {
+        inner: FixtureSource::new(Arc::new(FixedClock(1_761_436_800_000))),
+        last_filter: Arc::new(Mutex::new(None)),
+    });
+    let app = app_with(recorder.clone());
+    (app, recorder)
 }
 
 async fn json_body(response: axum::response::Response) -> serde_json::Value {
@@ -160,7 +172,7 @@ async fn overview_maps_upstream_failure_to_502() {
 
 #[tokio::test]
 async fn failures_limit_is_clamped_and_returns_list() {
-    let app = app_with(fixture() as Arc<dyn TelemetrySource>);
+    let (app, recorder) = app_with_recorder().await;
     let response = app
         .oneshot(
             Request::get("/api/failures?limit=9999")
@@ -172,16 +184,13 @@ async fn failures_limit_is_clamped_and_returns_list() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_body(response).await;
     assert!(body.as_array().unwrap().len() <= 200);
+    let filter = recorder.last_filter.lock().unwrap().clone().unwrap();
+    assert_eq!(filter.limit, 200);
 }
 
 #[tokio::test]
 async fn failures_limit_is_forwarded_as_200() {
-    let limit = Arc::new(AtomicUsize::new(0));
-    let telemetry = Arc::new(RecordingTelemetry {
-        inner: FixtureSource::new(Arc::new(FixedClock(1_761_436_800_000))),
-        limit: limit.clone(),
-    });
-    let app = app_with(telemetry);
+    let (app, recorder) = app_with_recorder().await;
     let response = app
         .oneshot(
             Request::get("/api/failures?limit=9999")
@@ -191,7 +200,8 @@ async fn failures_limit_is_forwarded_as_200() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(limit.load(Ordering::SeqCst), 200);
+    let filter = recorder.last_filter.lock().unwrap().clone().unwrap();
+    assert_eq!(filter.limit, 200);
 }
 
 #[tokio::test]
@@ -210,4 +220,135 @@ async fn connections_reports_sources() {
     assert_eq!(body["openobserve"]["ok"], true);
     assert_eq!(body["openobserveMcp"]["ok"], false);
     assert_eq!(body["model"]["configured"], true);
+}
+
+#[tokio::test]
+async fn failures_from_and_to_win_over_window_minutes() {
+    let (app, recorder) = app_with_recorder().await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/failures?from=1761433200000&to=1761436800000&windowMinutes=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let filter = recorder.last_filter.lock().unwrap().clone().unwrap();
+    assert_eq!(
+        filter.range,
+        Range::new(1_761_433_200_000, 1_761_436_800_000)
+    );
+}
+
+#[tokio::test]
+async fn failures_window_minutes_expands_backwards_from_to() {
+    let (app, recorder) = app_with_recorder().await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/failures?to=1761436800000&windowMinutes=120")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let filter = recorder.last_filter.lock().unwrap().clone().unwrap();
+    assert_eq!(
+        filter.range,
+        Range::new(1_761_429_600_000, 1_761_436_800_000)
+    );
+}
+
+#[tokio::test]
+async fn failures_reject_the_four_bracket_rules_with_400() {
+    let now_ms: i64 = 1_761_436_800_000;
+    let cases = [
+        // start >= end
+        format!("/api/failures?from={now_ms}&to={now_ms}").leak() as &str,
+        // below the 5-minute floor
+        format!("/api/failures?from={}&to={}", now_ms - 4 * 60_000, now_ms).leak() as &str,
+        // above the 7-day ceiling
+        format!(
+            "/api/failures?from={}&to={}",
+            now_ms - 7 * 1440 * 60_000 - 1,
+            now_ms
+        )
+        .leak() as &str,
+        // `to` beyond the 60-second future tolerance
+        format!("/api/failures?from={}&to={}", now_ms, now_ms + 60_001).leak() as &str,
+        // a non-numeric bracket bound
+        "/api/failures?from=abc&to=1",
+    ];
+
+    for uri in cases {
+        let (app, _recorder) = app_with_recorder().await;
+        let response = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "expected 400 for {uri}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn failures_accept_the_seven_day_edge_and_the_future_tolerance() {
+    let now_ms: i64 = 1_761_436_800_000;
+    for uri in [
+        format!(
+            "/api/failures?from={}&to={}",
+            now_ms - 7 * 1440 * 60_000,
+            now_ms
+        )
+        .leak() as &str,
+        format!(
+            "/api/failures?from={}&to={}",
+            now_ms - 60 * 60_000,
+            now_ms + 60_000
+        )
+        .leak() as &str,
+        // exactly the 5-minute floor
+        format!("/api/failures?from={}&to={}", now_ms - 5 * 60_000, now_ms).leak() as &str,
+    ] {
+        let (app, _recorder) = app_with_recorder().await;
+        let response = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "expected 200 for {uri}");
+    }
+}
+
+#[tokio::test]
+async fn failures_pass_the_instance_and_default_a_relative_hour() {
+    let (app, recorder) = app_with_recorder().await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/failures?instance=dns-node-2")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let filter = recorder.last_filter.lock().unwrap().clone().unwrap();
+    assert_eq!(filter.instance.as_deref(), Some("dns-node-2"));
+    assert_eq!(
+        filter.range.end_ms - filter.range.start_ms,
+        60 * 60_000,
+        "the default bracket is one hour"
+    );
 }

@@ -54,7 +54,7 @@ async fn rate_limited_error_maps_to_429() {
 // --------------------------------------------------------------- harness
 
 fn filter() -> FailureFilter {
-    // The same defaults `filter_from(..., 1)` produces for the analysis routes.
+    // The same defaults `investigation_filter(..., 1)` produces for the analysis routes.
     FailureFilter {
         range: Range::new(NOW_MS - 60 * 60_000, NOW_MS),
         instance: None,

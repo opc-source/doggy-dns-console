@@ -180,3 +180,20 @@ async fn evidence_endpoint_maps_upstream_failure_to_502() {
     let body = json_body(response).await;
     assert_eq!(body["error"]["code"], "openobserve_unavailable");
 }
+
+#[tokio::test]
+async fn evidence_rejects_a_bracket_over_the_seven_day_ceiling() {
+    let now_ms: i64 = 1_761_436_800_000;
+    let app = app_with(fixture() as Arc<dyn TelemetrySource>);
+    let response = get(
+        app,
+        &format!(
+            "/api/failures/trace-1/evidence?from={}&to={}",
+            now_ms - 7 * 1440 * 60_000 - 1,
+            now_ms
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
