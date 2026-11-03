@@ -268,7 +268,10 @@ async fn post_starts_a_job_and_get_reports_the_snapshot() {
     );
     assert_eq!(finished_at % 1000, 0, "seconds leaked onto the wire");
     assert!(finished_at >= started_at);
-    assert_eq!(snapshot["filter"]["windowMinutes"], 60);
+    assert_eq!(snapshot["filter"]["domain"], serde_json::Value::Null);
+    assert_eq!(snapshot["filter"]["responseCode"], serde_json::Value::Null);
+    assert_eq!(snapshot["filter"]["instance"], serde_json::Value::Null);
+    assert!(snapshot["filter"].get("windowMinutes").is_none());
     assert_eq!(snapshot["error"], serde_json::Value::Null);
     assert_eq!(snapshot["result"]["status"], "ok");
     assert!(

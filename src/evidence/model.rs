@@ -39,22 +39,30 @@ pub struct EvidenceBundle {
     pub missing: Vec<MissingEvidence>,
 }
 
-/// Filter echo so an analysis can state the exact evidence window.
+/// Filter echo so an analysis can state which slice of telemetry it describes.
+///
+/// Deliberately free of the requested bracket: logs and spans are matched by
+/// `trace_id` and the metric window is centred on the trace itself
+/// (`METRICS_RADIUS_MS`), so the evidence set does not depend on how wide a
+/// window the user framed. Recording the range here would turn "widen the
+/// window to a week" into a cache miss and a re-burn of the tool budget on
+/// byte-identical evidence. The range's real effect still shows up where it
+/// belongs: `logs.total`/`omitted`/`truncated`, `missing`, and the timestamps
+/// of the log rows themselves.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EvidenceFilter {
-    pub window_minutes: u32,
     pub domain: Option<String>,
     pub response_code: Option<String>,
+    pub instance: Option<String>,
 }
 
 impl From<&FailureFilter> for EvidenceFilter {
     fn from(filter: &FailureFilter) -> Self {
-        let span_minutes = ((filter.range.end_ms - filter.range.start_ms) / 60_000).max(1);
         Self {
-            window_minutes: span_minutes as u32,
             domain: filter.domain.clone(),
             response_code: filter.response_code.clone(),
+            instance: filter.instance.clone(),
         }
     }
 }

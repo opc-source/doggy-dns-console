@@ -81,8 +81,11 @@ pub struct AnalysisSnapshot {
     pub tool_call_count: usize,
     pub started_at: i64,
     pub finished_at: Option<i64>,
-    /// Serialized as the evidence filter (`{windowMinutes, domain,
-    /// responseCode}`): the list-only `limit` is not part of an analysis.
+    /// Serialized as the evidence filter (`{domain, responseCode,
+    /// instance}`): the list-only `limit` is not part of an analysis, and the
+    /// requested bracket is not part of the evidence fingerprint, so reusing
+    /// a stored analysis after widening the window is intended behaviour, not
+    /// staleness.
     #[serde(serialize_with = "serialize_filter")]
     pub filter: FailureFilter,
     pub evidence_fingerprint: String,

@@ -205,14 +205,14 @@ pub fn system_prompt(facts: &PromptFacts) -> String {
 
 The bundle is JSON with these top-level fields:
 - traceId: the failed trace.
-- filter: the evidence window as {{windowMinutes, domain, responseCode}}.
+- filter: the telemetry slice as {{domain, responseCode, instance}}. It does not carry the requested time bracket; the bracket is reflected in the log timestamps, logs.total/omitted/truncated, and missing.
 - generatedAt: wall-clock generation time in epoch milliseconds.
 - fingerprint: sha256 over the canonical evidence; cite it in your reasoning only, never invent it.
 - group: the failure group (query, qtype, responseCode, error, count, instance, authority, duration).
 - instance: matched process evidence, or null when no instance was matched.
 - logs: {{items, total, truncated, omitted}}.
 - spans: {{items, total, truncated}}.
-- metrics: metric evidence, or null when the window has no metrics.
+- metrics: metric evidence, or null when the trace has no metrics.
 - missing: top-level degradations.
 
 Log items have: id, ts, severity, message, spanId, query, qtype, responseCode, error.

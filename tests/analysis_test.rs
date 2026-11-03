@@ -338,6 +338,24 @@ fn prompt_is_versioned_and_states_the_contract() {
 }
 
 #[test]
+fn system_prompt_describes_the_range_free_filter_echo() {
+    let prompt = system_prompt(&prompt_facts());
+
+    assert!(
+        prompt.contains("{domain, responseCode, instance}"),
+        "the analyst is told the wrong filter shape: {prompt}"
+    );
+    assert!(
+        prompt.contains("does not carry the requested time bracket"),
+        "the analyst is not told the echo is range-free"
+    );
+    assert!(
+        !prompt.contains("windowMinutes"),
+        "the stale window legend is still promised to the analyst"
+    );
+}
+
+#[test]
 fn prompt_states_the_limits_the_loop_enforces() {
     let prompt = system_prompt(&prompt_facts());
 

@@ -100,7 +100,10 @@ async fn evidence_endpoint_returns_bundle() {
             .as_str()
             .is_some_and(|fingerprint| fingerprint.starts_with("sha256:"))
     );
-    assert_eq!(body["filter"]["windowMinutes"], 60);
+    assert_eq!(body["filter"]["domain"], serde_json::Value::Null);
+    assert_eq!(body["filter"]["responseCode"], serde_json::Value::Null);
+    assert_eq!(body["filter"]["instance"], serde_json::Value::Null);
+    assert!(body["filter"].get("windowMinutes").is_none());
     assert!(
         body["logs"]["items"]
             .as_array()
@@ -152,13 +155,15 @@ async fn evidence_endpoint_applies_the_list_filter() {
     let app = app_with(fixture() as Arc<dyn TelemetrySource>);
     let response = get(
         app,
-        "/api/failures/4bf92f3577b34da6/evidence?responseCode=SERVFAIL&domain=nacos",
+        "/api/failures/4bf92f3577b34da6/evidence?responseCode=SERVFAIL&domain=nacos&instance=dns-node-1",
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_body(response).await;
     assert_eq!(body["filter"]["responseCode"], "SERVFAIL");
     assert_eq!(body["filter"]["domain"], "nacos");
+    assert_eq!(body["filter"]["instance"], "dns-node-1");
+    assert!(body["filter"].get("windowMinutes").is_none());
 }
 
 #[tokio::test]
