@@ -61,6 +61,7 @@ interface Call {
 function stubFetch(
   markers: () => Response | Promise<Response>,
   failGroups: () => boolean = () => false,
+  uncovered: () => Response | Promise<Response> = () => json({ unlabeled: 1 }),
 ): Call[] {
   const calls: Call[] = []
   vi.stubGlobal(
@@ -71,7 +72,7 @@ function stubFetch(
       if (url.includes('/api/analysis/markers')) return markers()
       // `/api/failures/uncovered` is a prefix of `/api/failures`, so it must be
       // matched first.
-      if (url.includes('/api/failures/uncovered')) return json({ unlabeled: 1 })
+      if (url.includes('/api/failures/uncovered')) return uncovered()
       if (failGroups()) {
         return json({ error: { code: 'boom', message: 'failures down' } }, 500)
       }
@@ -101,11 +102,13 @@ function mountList(
   responses: {
     markers?: () => Response | Promise<Response>
     failGroups?: () => boolean
+    uncovered?: () => Response | Promise<Response>
   } = {},
 ): MountedList {
   const fetches = stubFetch(
     responses.markers ?? (() => json([markerFor('t1', 'm1'), markerFor('t2', 'm2')])),
     responses.failGroups ?? (() => false),
+    responses.uncovered ?? (() => json({ unlabeled: 1 })),
   )
   const interval = vi.spyOn(globalThis, 'setInterval')
   let list!: List
@@ -233,15 +236,29 @@ describe('useFailureList filter drafts', () => {
 
   it('refetches when the draft changes and clears the old badges', async () => {
     const draft = ref(relativeDraft(60))
-    const { fetches, groups, wrapper } = mountList(draft)
+    // The first bracket answers with two badges; the re-requested second
+    // bracket answers empty, so surviving badges would be the old ones.
+    let markerCalls = 0
+    const { fetches, groups, list, wrapper } = mountList(draft, {
+      markers: () =>
+        markerCalls++ === 0
+          ? json([markerFor('t1', 'm1'), markerFor('t2', 'm2')])
+          : json([]),
+    })
     await flushPromises()
     expect(groups.value.length).toBeGreaterThan(0)
+    expect(new Set(list.markers.value)).toEqual(new Set(['t1', 't2']))
 
     draft.value = relativeDraft(1440)
     await flushPromises()
 
     const listCalls = fetches.filter((entry) => entry.url.startsWith('/api/failures?'))
     expect(listCalls[listCalls.length - 1]!.url).toContain('windowMinutes=1440')
+    const markerRequests = fetches.filter((entry) =>
+      entry.url.startsWith('/api/analysis/markers'),
+    )
+    expect(markerRequests).toHaveLength(2)
+    expect(list.markers.value.size).toBe(0)
     wrapper.unmount()
   })
 
@@ -258,6 +275,38 @@ describe('useFailureList filter drafts', () => {
     await flushPromises()
     expect(fetches.some((entry) => entry.url.startsWith('/api/failures/uncovered?'))).toBe(false)
     expect(uncovered.value).toBe(0)
+    wrapper.unmount()
+  })
+
+  it('drops an uncovered answer from a draft the operator already replaced', async () => {
+    let releaseStale!: (response: Response) => void
+    const stale = new Promise<Response>((resolve) => {
+      releaseStale = resolve
+    })
+    let uncoveredCalls = 0
+    const draft = ref({ ...relativeDraft(60), instance: 'dns-node-1' })
+    const { fetches, uncovered, wrapper } = mountList(draft, {
+      uncovered: () => {
+        uncoveredCalls += 1
+        return uncoveredCalls === 1 ? stale : json({ unlabeled: 1 })
+      },
+    })
+
+    await flushPromises()
+    expect(
+      fetches.filter((entry) => entry.url.startsWith('/api/failures/uncovered?')),
+    ).toHaveLength(1)
+    expect(uncovered.value).toBe(0)
+
+    draft.value = { ...relativeDraft(1440), instance: 'dns-node-2' }
+    await flushPromises()
+    expect(uncovered.value).toBe(1)
+
+    // The old draft's count lands after the new one owns the notice; a late
+    // answer must not overwrite it, for an absolute bracket never re-polls.
+    releaseStale(json({ unlabeled: 7 }))
+    await flushPromises()
+    expect(uncovered.value).toBe(1)
     wrapper.unmount()
   })
 })

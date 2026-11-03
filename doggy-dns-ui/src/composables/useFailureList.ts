@@ -27,6 +27,7 @@ export function useFailureList(draft: Ref<FilterDraft>, limit = 5) {
   const error = ref<string | null>(null)
   let timer: ReturnType<typeof setInterval> | null = null
   let markerSeq = 0
+  let uncoveredSeq = 0
 
   async function refreshMarkers() {
     const seq = ++markerSeq
@@ -60,17 +61,21 @@ export function useFailureList(draft: Ref<FilterDraft>, limit = 5) {
   }
 
   async function refreshUncovered() {
+    const seq = ++uncoveredSeq
     if (!draft.value.instance) {
-      uncovered.value = 0
+      if (seq === uncoveredSeq) uncovered.value = 0
       return
     }
     try {
       const found = await apiGet<{ unlabeled: number }>(
         `/api/failures/uncovered?${buildQuery(toRequestQuery(draft.value))}`,
       )
+      // A newer draft's refresh owns the notice; drop this older answer.
+      if (seq !== uncoveredSeq) return
       uncovered.value = found.unlabeled
     } catch {
       // The notice is advisory; a failed count must not hide the list.
+      if (seq !== uncoveredSeq) return
       uncovered.value = 0
     }
   }
