@@ -1,4 +1,6 @@
-use doggy_dns_console::domain::{FailureFilter, Overview, Range, Window, host_filter};
+use doggy_dns_console::domain::{
+    FailureFilter, MAX_BUCKET_MINUTES, Overview, Range, Window, host_filter,
+};
 
 #[test]
 fn success_rate_is_none_without_queries() {
@@ -178,4 +180,16 @@ fn totals_are_sampled_once_over_the_whole_bracket() {
     assert_eq!(Range::new(0, 10_080 * 60_000).whole_step_seconds(), 604_800);
     assert_eq!(Range::new(0, 5 * 60_000).span_minutes(), 5);
     assert_eq!(Range::new(0, 90_000).span_minutes(), 2);
+}
+
+#[test]
+fn bucket_math_survives_a_bracket_that_never_went_through_checked() {
+    // The bucket methods are `pub` on a value object a caller can build with
+    // `Range::new` straight out of deserialised storage, so they must saturate
+    // rather than panic the way a plain `+` does in a debug build.
+    let hostile = Range::new(i64::MIN, i64::MAX);
+    assert_eq!(hostile.span_minutes(), u32::MAX);
+    assert_eq!(hostile.bucket_minutes(), MAX_BUCKET_MINUTES);
+    assert_eq!(hostile.rate_window_minutes(), MAX_BUCKET_MINUTES);
+    assert_eq!(hostile.step_seconds(), u64::from(MAX_BUCKET_MINUTES) * 60);
 }

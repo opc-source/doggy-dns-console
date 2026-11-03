@@ -100,10 +100,14 @@ impl Range {
     }
 
     /// Whole minutes covered by the bracket, rounded up so a sub-minute sliver
-    /// still gets its own bucket instead of a zero-width one.
+    /// still gets its own bucket instead of a zero-width one. Saturating
+    /// throughout: a `Range` that never went through `checked` can carry
+    /// `i64::MIN..i64::MAX`, and a hostile bracket must clamp to `u32::MAX`
+    /// instead of panicking (dev) or truncating (release) to a nonsense span.
     pub fn span_minutes(&self) -> u32 {
         let span_ms = self.end_ms.saturating_sub(self.start_ms).max(0);
-        ((span_ms + 59_999) / 60_000).max(1) as u32
+        let minutes = span_ms.saturating_add(59_999) / 60_000;
+        u32::try_from(minutes).unwrap_or(u32::MAX).max(1)
     }
 
     /// Bucket width the trend and p95 queries share (spec D15). A one-hour
