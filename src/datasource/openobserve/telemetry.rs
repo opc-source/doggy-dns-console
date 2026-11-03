@@ -368,6 +368,9 @@ fn last_u64(series: &[PromSeries]) -> Option<u64> {
 
 /// The worst finite sample in a p95 series (spec D16): a bucket with no
 /// traffic answers NaN, and reporting the last point would report that NaN.
+///
+/// Only the first series is read — the p95 query returns a single unlabeled
+/// series, so a second one would mean the selector widened by accident.
 fn worst_value(series: &[PromSeries]) -> Option<f64> {
     series
         .first()?
