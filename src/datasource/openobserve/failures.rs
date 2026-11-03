@@ -119,6 +119,12 @@ fn extra_filters(filter: &FailureFilter) -> String {
 /// How many failures in the same scope carry no `host_name` at all, and are
 /// therefore unreachable by the instance equality above. Reported next to the
 /// filtered list so an empty result is never mistaken for a healthy node.
+///
+/// The count shares the list's scope exactly: it folds in `FAILURE_PREDICATE`
+/// so successes and NXDOMAIN rows never inflate it, keeps the responseCode and
+/// domain narrowing via [`scope_filters`], and drops only the host equality —
+/// had `lower(host_name) = lower(?)` appeared here the count would be zero by
+/// construction.
 pub fn unlabeled_failures_query(
     stream: &str,
     filter: &FailureFilter,
@@ -126,11 +132,11 @@ pub fn unlabeled_failures_query(
     end_ms: i64,
 ) -> String {
     format!(
-        "SELECT COUNT(*) AS count FROM \"{stream}\" \
-         WHERE _timestamp >= {} AND _timestamp <= {}{} \
+        "SELECT COUNT(*) AS count FROM \"{stream}\" WHERE {FAILURE_PREDICATE}{} \
+         AND _timestamp >= {} AND _timestamp <= {} \
          AND (host_name IS NULL OR host_name = '')",
+        scope_filters(filter),
         start_ms.saturating_mul(1000),
         end_ms.saturating_mul(1000),
-        scope_filters(filter),
     )
 }

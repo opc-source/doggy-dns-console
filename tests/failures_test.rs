@@ -373,6 +373,13 @@ fn unlabeled_count_query_keeps_the_scope_but_drops_the_host_clause() {
         sql.contains("lower(response_code) = lower('REFUSED')"),
         "unexpected SQL: {sql}"
     );
+    // …and the count is scoped to failures exactly like the list it shadows:
+    // folding FAILURE_PREDICATE in keeps successes and NXDOMAIN rows out of the
+    // "uncovered" number, so a healthy node never reads permanently non-zero.
+    assert!(
+        sql.contains("severity IN ('WARN','ERROR')"),
+        "unexpected SQL: {sql}"
+    );
     // …and the host equality must not appear, or the count would be zero by
     // construction.
     assert!(!sql.contains("lower(host_name)"), "unexpected SQL: {sql}");

@@ -36,6 +36,7 @@ Record these once; tasks reference them instead of repeating the argument.
 4. **`Range` gets `#[derive(Default)]`, and `FailureFilter.range` gets `#[serde(default)]`.** A hand-written `impl Default for Range` would trip `clippy::derivable_impls`. `Default` therefore means `0..0`, which is inert because the post-D11 `EvidenceFilter` echo carries no range at all. This combination is what makes the D14 one-time stale of stored `filter_json` safe instead of a 500 at `src/analysis/store.rs:509`.
 5. **Spec §4 has the failure-list URL carry `from`/`to` only for absolute drafts.** Relative drafts round-trip as `windowMinutes`, because the browser clock and the server clock can differ by seconds; sending a server-derived bracket would make the URL drift on every refresh.
 6. **The new page's rows reuse `FailureRow.vue` with a `dense` prop** rather than duplicating markup, and the overview card keeps its own 5-row slice. Spec §5 describes the list page as owning the full-field rows; the overview card is deliberately left short.
+7. **Task 4's prescribed `unlabeled_failures_query` left `FAILURE_PREDICATE` out.** Its `COUNT(*)` therefore tallied every in-scope row without a host label — including successes and NXDOMAIN rows — while its own doc comment and the `unlabeled_failures` trait doc both promised *failures*. A healthy node could read a permanently non-zero "uncovered" notice. The fix round folds `{FAILURE_PREDICATE}` into the count so it answers "unlabeled failures this filter cannot reach" and shares the list's scope; everything else (the microsecond bracket, `scope_filters`, the `(host_name IS NULL OR host_name = '')` clause, and the deliberate absence of the host equality) is unchanged.
 
 ## File Structure
 
@@ -939,6 +940,7 @@ pub fn unlabeled_failures_query(
     start_ms: i64,
     end_ms: i64,
 ) -> String {
+    // FAILURE_PREDICATE is part of the count's scope (see deviation 7): the notice counts failures, never successes or NXDOMAIN.
     format!(
         "SELECT COUNT(*) AS count FROM \"{stream}\" \
          WHERE _timestamp >= {} AND _timestamp <= {}{} \
