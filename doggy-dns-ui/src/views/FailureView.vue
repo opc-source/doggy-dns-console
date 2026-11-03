@@ -46,9 +46,13 @@ function close() {
 
 <template>
   <section class="mx-auto max-w-[1440px] p-5 lg:p-7" aria-label="Failure investigation">
+    <!--
+      The drawer's refusal has its own id: `invalid-range` stays the page's banner
+      alone, so it is the single one on both /failures and /failures/:traceId.
+    -->
     <p
       v-if="invalid"
-      data-testid="invalid-range"
+      data-testid="drawer-invalid-range"
       class="rounded-lg border border-error/40 bg-error/10 px-3 py-2 text-sm text-error"
     >
       {{ invalid }}

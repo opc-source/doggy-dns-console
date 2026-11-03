@@ -65,6 +65,7 @@ function mountList(
     dense: boolean
     title: string
     subtitle: string
+    emptyText: string
   }> = {},
 ) {
   const router = makeRouter()
@@ -107,6 +108,35 @@ describe('FailureList', () => {
     expect(row.text()).toContain(msToDatetime(GROUP.lastSeen))
     expect(row.text()).toContain('upstream timed out')
     expect(row.text()).toContain('5012')
+    // The page row has room to wrap, so the query never arrives cut.
+    expect(row.text()).toContain(LONG_QUERY)
+  })
+
+  it('truncates a dense query only past 42 characters', () => {
+    // Distinct characters around the cut: a longer prefix must not hide inside the
+    // expected one, and a shorter one must not match it either.
+    const whole = `a${'b'.repeat(41)}`
+    const over = `${whole}c`
+
+    const atTheLimit = mountList({ groups: [{ ...GROUP, key: 'trace:42', query: whole }] })
+      .wrapper.find('[data-testid="failure-row"]')
+      .text()
+    expect(atTheLimit).toContain(whole)
+    expect(atTheLimit).not.toContain('…')
+
+    const justOver = mountList({ groups: [{ ...GROUP, key: 'trace:43', query: over }] })
+      .wrapper.find('[data-testid="failure-row"]')
+      .text()
+    expect(justOver).toContain(`${over.slice(0, 39)}…`)
+    expect(justOver).not.toContain(over)
+  })
+
+  it('keeps the card empty state in English and lets the page replace it', () => {
+    expect(mountList({ groups: [] }).wrapper.text()).toContain('No failures in this window.')
+
+    const page = mountList({ groups: [], emptyText: '当前区间没有失败记录。' }).wrapper.text()
+    expect(page).toContain('当前区间没有失败记录。')
+    expect(page).not.toContain('No failures in this window.')
   })
 
   it('renders a missing field as a dash, never as null', () => {

@@ -18,6 +18,8 @@ const props = withDefaults(
     subtitle?: string
     /** One-line rows for the overview card; the page renders every field. */
     dense?: boolean
+    /** The empty-state line; the Chinese list page passes its own copy. */
+    emptyText?: string
   }>(),
   {
     limit: 5,
@@ -25,6 +27,7 @@ const props = withDefaults(
     title: 'Top failures',
     subtitle: 'last window',
     dense: true,
+    emptyText: 'No failures in this window.',
   },
 )
 
@@ -51,7 +54,7 @@ const visibleGroups = computed(() =>
       </div>
     </header>
     <div v-if="groups.length === 0" class="px-4 py-10 text-center text-sm text-muted">
-      No failures in this window.
+      {{ emptyText }}
     </div>
     <FailureRow
       v-for="group in visibleGroups"

@@ -37,12 +37,32 @@ const toText = computed(() =>
   props.modelValue.toMs === null ? '' : msToDatetime(props.modelValue.toMs),
 )
 
+// A bracket must never leave the bar half-entered: `toRouteQuery` and `toRequestQuery`
+// emit `from`/`to` only as a pair, so a one-sided draft drops the typed date from the
+// URL and queries the server default window behind the operator's back. Completing the
+// pair here is what keeps the `failureFilter.ts` contract untouched.
 function setFrom(value: string) {
-  patch({ fromMs: datetimeToMs(value), toMs: props.modelValue.toMs, windowMinutes: null })
+  const fromMs = datetimeToMs(value)
+  // A cleared input is not half a bracket: both sides go, and no relative window is
+  // invented, which is what leaves the quick-window chips free to take over.
+  if (fromMs === null) {
+    patch({ fromMs: null, toMs: null, windowMinutes: null })
+    return
+  }
+  patch({ fromMs, toMs: props.modelValue.toMs ?? Date.now(), windowMinutes: null })
 }
 
 function setTo(value: string) {
-  patch({ toMs: datetimeToMs(value), windowMinutes: null })
+  const toMs = datetimeToMs(value)
+  if (toMs === null) {
+    patch({ fromMs: null, toMs: null, windowMinutes: null })
+    return
+  }
+  patch({
+    toMs,
+    fromMs: props.modelValue.fromMs ?? Date.now() - DEFAULT_WINDOW_MINUTES * 60_000,
+    windowMinutes: null,
+  })
 }
 
 // A quick window is a fresh relative draft: it must not keep the absolute pair,

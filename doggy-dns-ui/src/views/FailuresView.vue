@@ -127,6 +127,7 @@ watch(routeQuery, (serialized) => {
       :limit="PAGE_LIMIT"
       :dense="false"
       :see-all="false"
+      empty-text="当前区间没有失败记录。"
       title="失败列表"
       :subtitle="rangeLabel(draft, Date.now())"
       @select="(group) => group.traceId && onSelect(group.traceId)"

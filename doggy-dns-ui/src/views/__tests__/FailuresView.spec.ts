@@ -5,6 +5,7 @@ import { createMemoryHistory, createRouter, RouterView, type Router } from 'vue-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import FailuresView from '../FailuresView.vue'
+import { msToDatetime } from '@/lib/failureFilter'
 
 const HOUR = 3_600_000
 
@@ -70,6 +71,21 @@ function stubFetch({
       return json({ error: { code: 'unexpected_request', message: `unexpected ${url}` } }, 404)
     }),
   )
+}
+
+/** The newest recorded failure-list request, parsed, so a test names the wire params. */
+function latestListRequest(): URLSearchParams {
+  let found: string | undefined
+  for (const url of fetches) if (url.startsWith('/api/failures?')) found = url
+  if (found === undefined) throw new Error('the page made no failure-list request')
+  return new URLSearchParams(found.slice(found.indexOf('?') + 1))
+}
+
+/** The bar's two date inputs, in template order: 起 then 止. */
+function dateInput(wrapper: VueWrapper, index: number) {
+  const input = wrapper.findAll('input[type="datetime-local"]')[index]
+  if (input === undefined) throw new Error('the filter bar has no date input')
+  return input
 }
 
 const DetailStub = defineComponent({
@@ -146,7 +162,10 @@ describe('FailuresView', () => {
   it('names an invalid bracket and does not fetch the list', async () => {
     const { wrapper } = await mountView('/failures?from=10&to=20')
 
-    expect(wrapper.find('[data-testid="invalid-range"]').exists()).toBe(true)
+    // `invalid-range` is the page's banner and the page's alone: the drawer's own
+    // refusal carries `drawer-invalid-range`, so opening the detail route on a bad
+    // bracket can never add a second one of these ids under /failures.
+    expect(wrapper.findAll('[data-testid="invalid-range"]')).toHaveLength(1)
     expect(fetches.some((url) => url.includes('/api/failures?'))).toBe(false)
   })
 
@@ -177,7 +196,10 @@ describe('FailuresView', () => {
 
     const { wrapper } = await mountView('/failures?windowMinutes=10080')
 
-    expect(wrapper.find('[data-testid="cap-notice"]').text()).toContain('仅显示前')
+    // PAGE_LIMIT is one constant with two visible consequences: the request asks
+    // for 200 and the notice quotes the same 200.
+    expect(fetches.some((url) => url.includes('limit=200'))).toBe(true)
+    expect(wrapper.find('[data-testid="cap-notice"]').text()).toContain('仅显示前 200 组')
   })
 
   it('stops auto-refreshing for an absolute bracket', async () => {
@@ -186,6 +208,9 @@ describe('FailuresView', () => {
     const { wrapper } = await mountView(`/failures?from=${now - 3 * HOUR}&to=${now}`)
     expect(wrapper.find('[data-testid="invalid-range"]').exists()).toBe(false)
 
+    // Positive control: the mount itself did ask, so the zero below proves the poll
+    // stayed asleep rather than that nothing was ever recorded.
+    expect(fetches.some((url) => url.includes('/api/failures?'))).toBe(true)
     fetches.length = 0
     vi.advanceTimersByTime(60_000)
     await flushPromises()
@@ -212,6 +237,9 @@ describe('FailuresView', () => {
 
     expect(wrapper.text()).toContain('失败列表')
     expect(wrapper.text()).toContain('近 7 天')
+    // The page owns the full-field row, not the overview card's dense one: the
+    // host column only exists in full mode.
+    expect(wrapper.find('[data-testid="row-instance"]').text()).toBe('dns-node-2')
   })
 
   it('quotes both ceilings in the hint line', async () => {
@@ -244,5 +272,96 @@ describe('FailuresView', () => {
 
     expect(router.currentRoute.value.query.windowMinutes).toBe('60')
     expect(router.currentRoute.value.query.from).toBeUndefined()
+  })
+
+  it('completes the bracket when only 起 is typed', async () => {
+    const { router, wrapper } = await mountView('/failures?windowMinutes=10080')
+    fetches.length = 0
+
+    const before = Date.now()
+    const fromText = msToDatetime(before - 2 * HOUR)
+    await dateInput(wrapper, 0).setValue(fromText)
+    await flushPromises()
+
+    // One side is never enough: `toRequestQuery` and `toRouteQuery` emit `from`/`to`
+    // only as a pair, so the bar completes the bracket at the point of creation.
+    const params = latestListRequest()
+    const fromMs = Date.parse(fromText)
+    expect(params.get('from')).toBe(String(fromMs))
+    // The relative window goes with the pair: the request never asks for both.
+    expect(params.get('windowMinutes')).toBeNull()
+    expect(params.get('to')).not.toBeNull()
+    // The missing end is the bar's own now.
+    const to = Number(params.get('to'))
+    expect(to).toBeGreaterThanOrEqual(before)
+    expect(to).toBeLessThanOrEqual(Date.now())
+    // And the URL carries exactly the pair the request did.
+    expect(router.currentRoute.value.query).toEqual({ from: String(fromMs), to: String(to) })
+  })
+
+  it('completes the bracket when only 止 is typed', async () => {
+    const { wrapper } = await mountView('/failures?windowMinutes=10080')
+    fetches.length = 0
+
+    const before = Date.now()
+    const toText = msToDatetime(before)
+    await dateInput(wrapper, 1).setValue(toText)
+    await flushPromises()
+
+    const params = latestListRequest()
+    expect(params.get('to')).toBe(String(Date.parse(toText)))
+    expect(params.get('windowMinutes')).toBeNull()
+    // The missing start is the page's own default window (60 minutes back from now),
+    // never the 7 days that were on screen until this edit.
+    expect(params.get('from')).not.toBeNull()
+    const from = Number(params.get('from'))
+    expect(Math.abs(from - (before - HOUR))).toBeLessThan(65_000)
+  })
+
+  it('drops the whole bracket when a date input is cleared', async () => {
+    const now = Date.now()
+    const { router, wrapper } = await mountView(`/failures?from=${now - 3 * HOUR}&to=${now}`)
+    expect(latestListRequest().get('from')).toBe(String(now - 3 * HOUR))
+    fetches.length = 0
+
+    await dateInput(wrapper, 0).setValue('')
+    await flushPromises()
+
+    // Chosen behaviour for the cleared case: an empty input is not a half bracket
+    // to complete, so both sides go and no relative window is invented either —
+    // that is what leaves the quick-window chips free to take over.
+    const params = latestListRequest()
+    expect(params.get('from')).toBeNull()
+    expect(params.get('to')).toBeNull()
+    expect(params.get('windowMinutes')).toBeNull()
+    expect(router.currentRoute.value.query).toEqual({})
+  })
+
+  it('follows the URL when it changes after mount', async () => {
+    const { router } = await mountView('/failures?windowMinutes=60')
+    fetches.length = 0
+
+    await router.push('/failures?windowMinutes=10080')
+    await flushPromises()
+    expect(latestListRequest().get('windowMinutes')).toBe('10080')
+
+    // The absolute pair travels the same way: this is the path a shared deep link
+    // or the browser's back button takes, and the draft has to follow the URL.
+    const from = Date.now() - 3 * HOUR
+    const to = Date.now()
+    await router.push(`/failures?from=${from}&to=${to}`)
+    await flushPromises()
+
+    const params = latestListRequest()
+    expect(params.get('from')).toBe(String(from))
+    expect(params.get('to')).toBe(String(to))
+  })
+
+  it('renders the list empty state in Chinese', async () => {
+    stubFetch({ rows: [], unlabeled: 0 })
+    const { wrapper } = await mountView('/failures?windowMinutes=10080')
+
+    expect(wrapper.text()).toContain('当前区间没有失败记录。')
+    expect(wrapper.text()).not.toContain('No failures in this window.')
   })
 })

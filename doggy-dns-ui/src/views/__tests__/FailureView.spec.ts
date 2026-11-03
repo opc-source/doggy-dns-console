@@ -76,7 +76,8 @@ describe('FailureView', () => {
   it('names an over-ceiling relative link instead of clamping it', async () => {
     const { wrapper } = await mountView('/failures/t1?windowMinutes=99999999999999999999')
 
-    expect(wrapper.find('[data-testid="invalid-range"]').exists()).toBe(true)
+    // The child's refusal has its own id, so the page's `invalid-range` stays unique.
+    expect(wrapper.find('[data-testid="drawer-invalid-range"]').exists()).toBe(true)
     expect(wrapper.findComponent(DrawerStub).exists()).toBe(false)
   })
 
@@ -85,7 +86,7 @@ describe('FailureView', () => {
     const { wrapper } = await mountView(`/failures/t1?from=${from}&to=${NOW}`)
 
     expect(wrapper.findComponent(DrawerStub).props('filter').from).toBe(from)
-    expect(wrapper.find('[data-testid="invalid-range"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="drawer-invalid-range"]').exists()).toBe(false)
   })
 
   it('carries domain, responseCode and instance into the request filter', async () => {
@@ -104,7 +105,7 @@ describe('FailureView', () => {
   it('names an impossible bracket instead of querying something else', async () => {
     const { wrapper } = await mountView(`/failures/t1?from=${NOW}&to=${NOW}`)
 
-    expect(wrapper.find('[data-testid="invalid-range"]').text()).toMatch(/早于|结束|分钟/)
+    expect(wrapper.find('[data-testid="drawer-invalid-range"]').text()).toMatch(/早于|结束|分钟/)
     expect(wrapper.findComponent(DrawerStub).exists()).toBe(false)
   })
 

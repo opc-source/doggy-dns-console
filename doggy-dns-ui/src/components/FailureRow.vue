@@ -4,23 +4,26 @@ import { ChevronRight } from '@lucide/vue'
 import type { FailureGroup } from '@/api/types'
 import { msToDatetime } from '@/lib/failureFilter'
 
-const props = withDefaults(
-  defineProps<{
-    group: FailureGroup
-    analyzed: boolean
-    /** The overview card's one-line row; false is the page's full field set. */
-    dense?: boolean
-  }>(),
-  { dense: true },
-)
+const props = defineProps<{
+  group: FailureGroup
+  analyzed: boolean
+  /**
+   * The overview card's one-line row; false is the page's full field set. Required,
+   * and `FailureList` always forwards its own default: one knob, one source of truth.
+   */
+  dense: boolean
+}>()
 
 const emit = defineEmits<{ select: [group: FailureGroup] }>()
 
-// The dense card row has one line of room, so the name is cut; the page row
-// shows it whole and wraps instead.
+// The dense card row has one line of room, so the name is cut at 42 characters to a
+// 39-character prefix; the page row shows it whole and wraps instead.
+const DENSE_QUERY_MAX_LENGTH = 42
+const DENSE_QUERY_PREFIX_LENGTH = 39
+
 function shortName(query: string) {
-  if (!props.dense || query.length <= 42) return query
-  return `${query.slice(0, 39)}…`
+  if (!props.dense || query.length <= DENSE_QUERY_MAX_LENGTH) return query
+  return `${query.slice(0, DENSE_QUERY_PREFIX_LENGTH)}…`
 }
 
 /** Every grouped field is optional on the wire, and `null` is not a label. */
