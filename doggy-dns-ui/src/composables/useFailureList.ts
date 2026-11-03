@@ -2,13 +2,28 @@ import { onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
 
 import { apiGet } from '@/api/http'
 import type { AnalysisMarker, FailureGroup } from '@/api/types'
+import {
+  isAbsolute,
+  resolveBracket,
+  toRequestQuery,
+  validateBracket,
+  type FilterDraft,
+} from '@/lib/failureFilter'
 
 /** The markers endpoint accepts at most 200 unique trace ids per request. */
 const MAX_MARKER_TRACE_IDS = 200
+const POLL_INTERVAL_MS = 15_000
 
-export function useFailureList(windowMinutes: Ref<number>, limit = 5) {
+function buildQuery(params: Record<string, string>): string {
+  const search = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) search.set(key, value)
+  return search.toString()
+}
+
+export function useFailureList(draft: Ref<FilterDraft>, limit = 5) {
   const groups = ref<FailureGroup[]>([])
   const markers = ref<Set<string>>(new Set())
+  const uncovered = ref(0)
   const error = ref<string | null>(null)
   let timer: ReturnType<typeof setInterval> | null = null
   let markerSeq = 0
@@ -31,7 +46,7 @@ export function useFailureList(windowMinutes: Ref<number>, limit = 5) {
     const query = ids.map((traceId) => encodeURIComponent(traceId)).join(',')
     try {
       const found = await apiGet<AnalysisMarker[]>(`/api/analysis/markers?traceIds=${query}`)
-      // A newer window's refresh owns the markers; drop this older answer.
+      // A newer draft's refresh owns the markers; drop this older answer.
       if (seq !== markerSeq) return
       const requested = new Set(ids)
       markers.value = new Set(
@@ -44,29 +59,70 @@ export function useFailureList(windowMinutes: Ref<number>, limit = 5) {
     }
   }
 
+  async function refreshUncovered() {
+    if (!draft.value.instance) {
+      uncovered.value = 0
+      return
+    }
+    try {
+      const found = await apiGet<{ unlabeled: number }>(
+        `/api/failures/uncovered?${buildQuery(toRequestQuery(draft.value))}`,
+      )
+      uncovered.value = found.unlabeled
+    } catch {
+      // The notice is advisory; a failed count must not hide the list.
+      uncovered.value = 0
+    }
+  }
+
+  function restartTimer() {
+    if (timer) {
+      clearInterval(timer)
+      timer = null
+    }
+    // An absolute bracket is a fixed question, so refreshing it on a timer would
+    // only move the answer under the operator's feet.
+    if (!isAbsolute(draft.value)) timer = setInterval(() => void refresh(), POLL_INTERVAL_MS)
+  }
+
   async function refresh() {
+    const now = Date.now()
+    const bracket = resolveBracket(draft.value, now)
+    const invalid = validateBracket(bracket, now)
+    if (invalid) {
+      error.value = invalid
+      groups.value = []
+      markers.value = new Set()
+      uncovered.value = 0
+      return
+    }
+
     try {
       groups.value = await apiGet<FailureGroup[]>(
-        `/api/failures?windowMinutes=${windowMinutes.value}&limit=${limit}`,
+        `/api/failures?${buildQuery({ ...toRequestQuery(draft.value), limit: String(limit) })}`,
       )
       error.value = null
     } catch (cause) {
       error.value = String(cause)
-      // A failed window switch must not leave the previous window's badges behind.
+      // A failed switch must not leave the previous bracket's badges behind.
       markers.value = new Set()
+      uncovered.value = 0
       return
     }
-    await refreshMarkers()
+    await Promise.all([refreshMarkers(), refreshUncovered()])
   }
 
   onMounted(() => {
     void refresh()
-    timer = setInterval(refresh, 15_000)
+    restartTimer()
   })
   onUnmounted(() => {
     if (timer) clearInterval(timer)
   })
-  watch(windowMinutes, () => void refresh())
+  watch(draft, () => {
+    void refresh()
+    restartTimer()
+  })
 
-  return { groups, markers, error, refresh, refreshMarkers }
+  return { groups, markers, error, uncovered, refresh, refreshMarkers }
 }

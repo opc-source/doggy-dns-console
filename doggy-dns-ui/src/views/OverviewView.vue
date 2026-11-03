@@ -8,11 +8,13 @@ import KpiCard from '@/components/KpiCard.vue'
 import TrendChart from '@/components/TrendChart.vue'
 import { useFailureList } from '@/composables/useFailureList'
 import { useOverview } from '@/composables/useOverview'
+import { relativeDraft } from '@/lib/failureFilter'
 import { useUiStore } from '@/stores/ui'
 
 const ui = useUiStore()
 const { data, error, loading, lastUpdated, windowMinutes, setWindow, refresh } = useOverview(60)
-const { groups: failures, markers } = useFailureList(windowMinutes)
+const draft = computed(() => relativeDraft(windowMinutes.value))
+const { groups: failures, markers } = useFailureList(draft, 5)
 
 const windows = [
   { label: '1h', value: 60 },
