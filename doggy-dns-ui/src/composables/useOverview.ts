@@ -31,9 +31,14 @@ export function useOverview(draft: Ref<FilterDraft>) {
       validateDraft(draft.value) ?? validateBracket(resolveBracket(draft.value, now), now)
     if (refusal) {
       // The URL asks something illegal: say so, show nothing stale behind it.
+      // `++seq` above already made this call the current one, so it also owns
+      // the spinner: the retired request's `finally` skips clearing, and an
+      // absolute bracket installs no timer, so leaving the flag set would park
+      // `:disabled="loading"` on the refresh button forever.
       invalid.value = refusal
       data.value = null
       error.value = null
+      loading.value = false
       return
     }
     invalid.value = null

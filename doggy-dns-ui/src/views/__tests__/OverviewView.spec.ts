@@ -10,6 +10,10 @@ import OverviewView from '@/views/OverviewView.vue'
 
 const HOUR = 3_600_000
 const DAY = 24 * HOUR
+// Pinned clock for the fake-timer cases below: `vi.setSystemTime` fixes
+// `Date.now()` where the timer advance then moves it, so a window sitting on the
+// 7-day ceiling cannot drift past validation mid-case.
+const NOW = Date.parse('2026-11-04T12:00:00.000Z')
 
 const overview = {
   windowMinutes: 60,
@@ -241,6 +245,31 @@ describe('OverviewView', () => {
 
     await vi.advanceTimersByTimeAsync(45_000)
     expect(fetches.filter((url) => url.includes('/api/overview'))).toHaveLength(1)
+    vi.useRealTimers()
+    wrapper.unmount()
+  })
+
+  it('sends a relative week as windowMinutes and keeps polling it', async () => {
+    // D8 stops the auto-refresh for an ABSOLUTE bracket only: a relative week has
+    // to re-anchor on every poll, otherwise "近 7 天" freezes at the instant it was
+    // opened. This is the unit-level guard against a "a week is a fixed bracket,
+    // so don't poll it" confusion creeping into the relative path.
+    vi.useFakeTimers()
+    // A fixed clock, so the widest legal window cannot drift out of the ceiling
+    // while the fake timers move `Date.now()` under the assertion.
+    vi.setSystemTime(NOW)
+    stubApi(() => json(overview))
+    // 10080 is `MAX_RANGE_MINUTES` — a relative week, the widest window the
+    // picker can ask for without an absolute `from`/`to`.
+    const { wrapper } = await mountOverview('/?windowMinutes=10080')
+
+    const overviewCalls = () => fetches.filter((url) => url.includes('/api/overview'))
+    expect(overviewCalls()).toHaveLength(1)
+    expect(overviewCalls()[0]).toContain('windowMinutes=10080')
+
+    await vi.advanceTimersByTimeAsync(45_000)
+    // 15 s × 3: the same re-anchoring the one-hour window already had.
+    expect(overviewCalls()).toHaveLength(4)
     vi.useRealTimers()
     wrapper.unmount()
   })

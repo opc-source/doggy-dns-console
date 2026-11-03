@@ -140,4 +140,56 @@ describe('useOverview', () => {
     expect(overview.data.value).toBeNull()
     wrapper.unmount()
   })
+
+  it('releases loading when a refusal supersedes an in-flight request', async () => {
+    // The refresh button is `:disabled="loading"` and a refusal re-enters the
+    // same early return, so a stuck flag would park a spinner forever on exactly
+    // the absolute URLs where manual refresh is the only affordance D8 leaves:
+    // nothing resets it, because an absolute bracket installs no timer and the
+    // retired request's `finally` deliberately skips clearing.
+    let release!: (response: Response) => void
+    const pending = new Promise<Response>((resolve) => {
+      release = resolve
+    })
+    const draft = ref(relativeDraft(60))
+    const { overview, wrapper } = mountOverview(draft, () => pending)
+    await flushPromises()
+    expect(overview.loading.value).toBe(true)
+
+    draft.value = { ...emptyDraft(), windowMinutes: 20_000 }
+    await flushPromises()
+    expect(overview.invalid.value).toContain('10080')
+    expect(overview.loading.value).toBe(false)
+
+    // Honest on both halves: clearing the flag must not re-admit the late answer
+    // for the bracket the URL just refused.
+    release(json(overviewBody))
+    await flushPromises()
+    expect(overview.data.value).toBeNull()
+    expect(overview.loading.value).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('tears the poll down when a relative draft becomes an absolute bracket', async () => {
+    // D8 is two halves: an absolute bracket asks for nothing new, and switching
+    // to one stops the interval the relative draft was living on. Without the
+    // teardown a week-old `from`/`to` keeps being re-queried every 15 s.
+    const draft = ref(relativeDraft(60))
+    const { wrapper } = mountOverview(draft)
+    await flushPromises()
+    expect(fetches.length).toBe(1)
+
+    await vi.advanceTimersByTimeAsync(45_000)
+    expect(fetches.length).toBe(4) // 15 s × 3, the relative window is polling
+
+    draft.value = { ...emptyDraft(), fromMs: NOW - HOUR, toMs: NOW }
+    await flushPromises()
+    // The watch's own refresh, not a poll: the absolute bracket is a fixed question.
+    expect(fetches.length).toBe(5)
+
+    const frozen = fetches.length
+    await vi.advanceTimersByTimeAsync(45_000)
+    expect(fetches.length).toBe(frozen)
+    wrapper.unmount()
+  })
 })
