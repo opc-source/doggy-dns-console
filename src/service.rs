@@ -48,6 +48,10 @@ impl ConsoleService {
         self.telemetry.failures(filter).await
     }
 
+    pub async fn unlabeled_failures(&self, filter: FailureFilter) -> Result<u64, DataError> {
+        self.telemetry.unlabeled_failures(filter).await
+    }
+
     pub async fn failure_detail(
         &self,
         trace_id: &str,

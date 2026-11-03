@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::api::error::ApiError;
 use crate::api::state::ApiState;
@@ -41,6 +41,28 @@ pub async fn failure_detail(
     // entry it was opened from; the limit is irrelevant to a single trace.
     let filter = investigation_filter(query, 1, state.service.now_ms())?;
     Ok(Json(state.service.failure_detail(&trace_id, filter).await?))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UncoveredEvidence {
+    pub unlabeled: u64,
+}
+
+/// Counts failures in the bracket that have no host label, i.e. the rows the
+/// `instance` filter on `GET /api/failures` structurally cannot show.
+///
+/// Registered before `/api/failures/{trace_id}` so the literal path is not
+/// swallowed by the trace-id segment; `uncovered_is_not_matched_by_the_trace_route`
+/// pins that.
+pub async fn uncovered(
+    State(state): State<ApiState>,
+    Query(query): Query<FailureQuery>,
+) -> Result<Json<UncoveredEvidence>, ApiError> {
+    let filter = investigation_filter(query, 1, state.service.now_ms())?;
+    Ok(Json(UncoveredEvidence {
+        unlabeled: state.service.unlabeled_failures(filter).await?,
+    }))
 }
 
 /// Turn a query string into the filter the investigation chain runs with.

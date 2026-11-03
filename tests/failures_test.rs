@@ -4,6 +4,7 @@ use doggy_dns_console::config::{OpenObserveAuth, OpenObserveConfig};
 use doggy_dns_console::datasource::openobserve::client::OpenObserveClient;
 use doggy_dns_console::datasource::openobserve::failures::{
     failure_group_query, failure_groups_query, failure_logs_query, trace_spans_query,
+    unlabeled_failures_query,
 };
 use doggy_dns_console::datasource::openobserve::normalize::{
     normalize_failure_group_row, normalize_log_row,
@@ -319,5 +320,80 @@ async fn failure_detail_returns_not_found_without_a_failure_group() {
     assert!(
         matches!(result, Err(DataError::NotFound(_))),
         "expected NotFound, got {result:?}"
+    );
+}
+
+#[test]
+fn instance_filter_is_a_case_insensitive_equality() {
+    let mut filter = window_filter(50);
+    filter.instance = Some("DNS-Node-2".to_owned());
+
+    let sql = failure_groups_query("doggy_dns", &filter, 1_000, 2_000, 50);
+    assert!(
+        sql.contains("lower(host_name) = lower('DNS-Node-2')"),
+        "unexpected SQL: {sql}"
+    );
+    // The bracket is still microsecond `_timestamp` predicates, not the ms pair.
+    assert!(
+        sql.contains("_timestamp >= 1000000"),
+        "unexpected SQL: {sql}"
+    );
+    assert!(
+        sql.contains("_timestamp <= 2000000"),
+        "unexpected SQL: {sql}"
+    );
+}
+
+#[test]
+fn no_instance_filter_adds_no_host_clause() {
+    let filter = window_filter(50);
+    let sql = failure_groups_query("doggy_dns", &filter, 1_000, 2_000, 50);
+    // GROUP_COLUMNS always selects `first_value(host_name …) AS host_name` (it
+    // carries the instance name into the list row), so the real contract is
+    // that no host *predicate* is added.
+    assert!(!sql.contains("lower(host_name)"), "unexpected SQL: {sql}");
+}
+
+#[test]
+fn unlabeled_count_query_keeps_the_scope_but_drops_the_host_clause() {
+    let mut filter = window_filter(50);
+    filter.instance = Some("dns-node-2".to_owned());
+    filter.response_code = Some("REFUSED".to_owned());
+
+    let sql = unlabeled_failures_query("doggy_dns", &filter, 1_000, 2_000);
+
+    assert!(sql.contains("COUNT(*)"), "unexpected SQL: {sql}");
+    assert!(
+        sql.contains("(host_name IS NULL OR host_name = '')"),
+        "unexpected SQL: {sql}"
+    );
+    // The responseCode stays in scope — the count answers "what this filter
+    // could not reach", not "everything in the bracket".
+    assert!(
+        sql.contains("lower(response_code) = lower('REFUSED')"),
+        "unexpected SQL: {sql}"
+    );
+    // …and the host equality must not appear, or the count would be zero by
+    // construction.
+    assert!(!sql.contains("lower(host_name)"), "unexpected SQL: {sql}");
+    assert!(
+        sql.contains("_timestamp >= 1000000"),
+        "unexpected SQL: {sql}"
+    );
+}
+
+#[test]
+fn instance_and_host_clause_escapes_quotes() {
+    let mut filter = window_filter(50);
+    filter.instance = Some("node'\" OR 1=1".to_owned());
+
+    let sql = failure_groups_query("doggy_dns", &filter, 1_000, 2_000, 50);
+    // sql_escape doubles the quote, so the injection attempt stays inside one
+    // quoted literal (`lower('node''" OR 1=1')`). A bare `!contains("OR 1=1")`
+    // could never pass — the payload text survives doubling; what matters is
+    // that it is pinned inside the literal, i.e. that it is not bare SQL.
+    assert!(
+        sql.contains("lower('node''\" OR 1=1')"),
+        "unexpected SQL: {sql}"
     );
 }

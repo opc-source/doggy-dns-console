@@ -53,6 +53,16 @@ pub trait TelemetrySource: Send + Sync {
         trace_id: &str,
         filter: FailureFilter,
     ) -> Result<FailureDetail, DataError>;
+
+    /// Failures in the filter's bracket and domain/responseCode scope that carry no
+    /// host label, so the instance equality in the list query cannot reach them.
+    ///
+    /// Sources that cannot count them keep the default of zero; the UI then hides
+    /// the notice instead of inventing a number.
+    async fn unlabeled_failures(&self, _filter: FailureFilter) -> Result<u64, DataError> {
+        Ok(0)
+    }
+
     async fn seen_instances(&self, window: Window) -> Result<Vec<SeenInstance>, DataError>;
 
     /// Aggregate query/failure counts for a window. Sources without metric

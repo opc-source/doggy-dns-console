@@ -22,6 +22,7 @@ pub fn business_router(state: ApiState) -> Router {
         .route("/api/console/health", get(health::console_health))
         .route("/api/overview", get(overview::overview))
         .route("/api/failures", get(failures::failures))
+        .route("/api/failures/uncovered", get(failures::uncovered))
         .route("/api/failures/{trace_id}", get(failures::failure_detail))
         .route("/api/failures/{trace_id}/evidence", get(evidence::evidence))
         .route(

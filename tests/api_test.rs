@@ -13,6 +13,7 @@ use doggy_dns_console::domain::{
 use doggy_dns_console::error::DataError;
 use doggy_dns_console::service::ConsoleService;
 use http_body_util::BodyExt;
+use serde_json::Value;
 use tower::ServiceExt;
 
 struct AlwaysHealthy;
@@ -44,6 +45,13 @@ impl TelemetrySource for RecordingTelemetry {
         filter: FailureFilter,
     ) -> Result<FailureDetail, DataError> {
         self.inner.failure_detail(trace_id, filter).await
+    }
+    async fn unlabeled_failures(&self, filter: FailureFilter) -> Result<u64, DataError> {
+        // Record the resolved filter, then delegate: `FixtureSource` does not
+        // override the method either, so the count still answers through the
+        // trait default.
+        *self.last_filter.lock().unwrap() = Some(filter.clone());
+        self.inner.unlabeled_failures(filter).await
     }
     async fn seen_instances(&self, window: Window) -> Result<Vec<SeenInstance>, DataError> {
         self.inner.seen_instances(window).await
@@ -351,4 +359,81 @@ async fn failures_pass_the_instance_and_default_a_relative_hour() {
         60 * 60_000,
         "the default bracket is one hour"
     );
+}
+
+#[tokio::test]
+async fn uncovered_reports_the_count_for_the_requested_bracket() {
+    let (app, recorder) = app_with_recorder().await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/failures/uncovered?instance=dns-node-2&to=1761436800000&windowMinutes=120")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["unlabeled"], 0);
+
+    let filter = recorder.last_filter.lock().unwrap().clone().unwrap();
+    assert_eq!(filter.instance.as_deref(), Some("dns-node-2"));
+    assert_eq!(
+        filter.range,
+        Range::new(1_761_429_600_000, 1_761_436_800_000)
+    );
+}
+
+#[tokio::test]
+async fn uncovered_is_not_matched_by_the_trace_route() {
+    // `/api/failures/{trace_id}` must not answer this literal path: the detail
+    // handler would look up a trace named "uncovered" and miss.
+    let (app, _recorder) = app_with_recorder().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/failures/uncovered")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(body.get("unlabeled").is_some(), "unexpected body: {body}");
+}
+
+#[tokio::test]
+async fn uncovered_rejects_a_too_long_bracket() {
+    let now_ms: i64 = 1_761_436_800_000;
+    let (app, _recorder) = app_with_recorder().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/failures/uncovered?from={}&to={}",
+                    now_ms - 7 * 1440 * 60_000 - 1,
+                    now_ms
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }

@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use crate::datasource::openobserve::client::{OpenObserveClient, PromSeries};
 use crate::datasource::openobserve::failures::{
     failure_group_query, failure_groups_query, failure_logs_query, trace_spans_query,
+    unlabeled_failures_query,
 };
 use crate::datasource::openobserve::normalize::{
     normalize_failure_group_row, normalize_log_row, normalize_span_row,
@@ -144,6 +145,17 @@ impl TelemetrySource for OpenObserveTelemetry {
             spans,
             spans_unavailable,
         })
+    }
+
+    async fn unlabeled_failures(&self, filter: FailureFilter) -> Result<u64, DataError> {
+        let (start, end) = (filter.range.start_ms, filter.range.end_ms);
+        let sql = unlabeled_failures_query(&self.client.config().log_stream, &filter, start, end);
+        let rows = self.client.search_logs(&sql, start, end, 1).await?;
+        let unlabeled = rows
+            .iter()
+            .find_map(|row| row.get("count").and_then(serde_json::Value::as_i64))
+            .unwrap_or_default();
+        Ok(unlabeled.max(0) as u64)
     }
 
     async fn failure_metrics(
