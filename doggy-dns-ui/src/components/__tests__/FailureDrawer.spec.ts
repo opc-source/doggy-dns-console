@@ -908,18 +908,35 @@ describe('FailureDrawer investigation panel', () => {
   })
 
   it('hands the investigation a ref to the bracket filter', async () => {
-    mountDrawer()
+    const wrapper = mountDrawer()
     await flushPromises()
 
-    const handed = investigationArgs[0]?.[1]
+    const handed = investigationArgs[0]?.[1] as Ref<InvestigationFilter>
     expect(isRef(handed)).toBe(true)
-    expect((handed as Ref<InvestigationFilter>).value).toMatchObject({
+    expect(handed.value).toMatchObject({
       from: 1_761_433_200_000,
       to: 1_761_436_800_000,
       domain: null,
       responseCode: null,
       instance: null,
     })
+
+    // Pin: the drawer hands `toRef(props, 'filter')`, not a setup-time
+    // `ref({ ...props.filter })` snapshot. The mock never reads `.value`, so a
+    // snapshot would still pass the mount-time assertions above — it only
+    // diverges once the prop changes. Task 11's page replaces the filter object
+    // on every URL write, so the handed ref must keep tracking the live bracket
+    // through the same ref it was given at mount; a snapshot would freeze the
+    // first value and leave the composable reading a stale range.
+    const heldAtSetup = handed.value
+    await wrapper.setProps({ filter: { ...FILTER, from: 1_761_429_600_000 } })
+
+    // The same ref object is still the one handed in at setup...
+    expect(investigationArgs[0]?.[1]).toBe(handed)
+    // ...its `.value` now reflects the updated prop...
+    expect(handed.value.from).toBe(1_761_429_600_000)
+    // ...and it is no longer the setup-time object it was holding.
+    expect(handed.value).not.toBe(heldAtSetup)
   })
 
   it('shows the bracket chip before any evidence loads', async () => {
@@ -940,6 +957,16 @@ describe('FailureDrawer investigation panel', () => {
     current = investigation
 
     const wrapper = mountDrawer()
+    await flushPromises()
+    expect(investigation.loadEvidence).toHaveBeenCalledTimes(1)
+
+    // Pin: the watch keys off `JSON.stringify(props.filter)`, not object
+    // identity. Task 11's page writes a fresh parsed draft object on every URL
+    // change even when the bracket is unchanged, so a same-value filter passed
+    // as a brand-new object must NOT re-run the investigation. A regression to
+    // an identity watch (`watch([trace, () => props.filter, ...])`) would fire
+    // here and bump the call count to 2.
+    await wrapper.setProps({ filter: { ...FILTER } })
     await flushPromises()
     expect(investigation.loadEvidence).toHaveBeenCalledTimes(1)
 
