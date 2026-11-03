@@ -125,6 +125,26 @@ describe('query round-trip', () => {
     expect(parseFilterQuery({ from: '1' }).fromMs).toBe(1)
   })
 
+  // The grammars must genuinely differ per Rust type: `window_minutes` is
+  // `Option<u32>` in `FailureQuery` (`src/api/failures.rs`), so a negative
+  // window is rejected by the backend and pre-rejected here, while `from`/
+  // `to` stay `Option<i64>` and keep accepting a leading minus.
+  it('rejects a negative windowMinutes but still parses negative from/to', () => {
+    expect(parseFilterQuery({ windowMinutes: '-5' }).windowMinutes).toBeNull()
+    const signed = parseFilterQuery({ from: '-5', to: '-5' })
+    expect(signed.fromMs).toBe(-5)
+    expect(signed.toMs).toBe(-5)
+  })
+
+  it('degrades a tampered negative windowMinutes to the default relative hour', () => {
+    const draft = parseFilterQuery({ windowMinutes: '-5' })
+    expect(resolveBracket(draft, NOW)).toEqual({ startMs: NOW - HOUR, endMs: NOW })
+    // Delivered behaviour for a null window with no absolute bounds: the
+    // request query emits neither windowMinutes nor from/to, so the server
+    // applies its own default — a '-5' never reaches the wire.
+    expect(toRequestQuery(draft)).toEqual({})
+  })
+
   it('writes a relative draft as windowMinutes only', () => {
     const query = toRouteQuery(relativeDraft(60))
     expect(query).toEqual({ windowMinutes: '60' })

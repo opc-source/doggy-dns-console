@@ -53,14 +53,17 @@ function firstSingle(value: string | string[] | null | undefined): string | null
 }
 
 /**
- * The backend's integer grammar, not JavaScript's: `from`/`to` deserialise as
- * `i64` and `windowMinutes` as `u32` (see `FailureQuery` in
- * `src/api/failures.rs`), which reject hex, exponent, fraction and padded
- * text. Anything the strict grammar drops falls back to the default relative
- * window instead of a guessed value.
+ * The backend's integer grammar, per field: `from`/`to` deserialise as
+ * `Option<i64>` (signed) but `FailureQuery.window_minutes` in
+ * `src/api/failures.rs` is `Option<u32>`, so a negative window is a 400
+ * there and must be pre-rejected here — the grammar follows each field's
+ * Rust type, because this module is one contract with `src/domain.rs`, not
+ * two. Hex, exponent, fraction and padded text fail both grammars; a
+ * leading minus fails only the unsigned one. Anything dropped falls back
+ * to the default relative window instead of a guessed value.
  */
-function parseStrictInt(value: string | null): number | null {
-  if (value === null || !/^-?\d+$/.test(value)) return null
+function parseStrictInt(value: string | null, unsigned = false): number | null {
+  if (value === null || !(unsigned ? /^\d+$/ : /^-?\d+$/).test(value)) return null
   return Number(value)
 }
 
@@ -68,7 +71,7 @@ export function parseFilterQuery(query: RawQuery): FilterDraft {
   return {
     fromMs: parseStrictInt(firstSingle(query.from)),
     toMs: parseStrictInt(firstSingle(query.to)),
-    windowMinutes: parseStrictInt(firstSingle(query.windowMinutes)),
+    windowMinutes: parseStrictInt(firstSingle(query.windowMinutes), true),
     domain: firstSingle(query.domain) ?? '',
     responseCode: firstSingle(query.responseCode) ?? '',
     instance: firstSingle(query.instance) ?? '',
