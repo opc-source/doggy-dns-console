@@ -67,3 +67,26 @@ test('the drawer opens from a row and keeps the bracket', async ({ page }) => {
   await expect(page).toHaveURL(/\/failures\?windowMinutes=10080$/)
   await expect(page.getByTestId('failure-row')).toHaveCount(6)
 })
+
+test('the instance drawer counts failures over the chosen bracket', async ({ page }) => {
+  const card = page.getByRole('button', { name: /^dns-node-1\b/ })
+
+  await page.goto('/instances?windowMinutes=10080')
+  await card.click()
+  const count = page.getByTestId('failure-count')
+  // A counted week is a number, never the em dash that means "the telemetry
+  // source could not count at all".
+  await expect(count).not.toHaveText('—')
+  const week = Number(await count.innerText())
+
+  await page.goto('/instances?windowMinutes=60')
+  await card.click()
+  const hour = Number(await page.getByTestId('failure-count').innerText())
+
+  // The fixture spreads its groups from 10 minutes to 8 days, so a week counts
+  // rows an hour cannot see. Asserting the number itself moves is the point:
+  // a drawer that only *sends* the bracket and shows a constant would pass a
+  // request-only assertion.
+  expect(Number.isNaN(week)).toBe(false)
+  expect(week).toBeGreaterThan(hour)
+})

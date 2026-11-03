@@ -2,6 +2,7 @@ import { onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
 
 import { apiGet } from '@/api/http'
 import type { Instance, InstanceDetail } from '@/api/types'
+import { type FilterDraft, toRequestQuery } from '@/lib/failureFilter'
 
 export function useInstances() {
   const instances = ref<Instance[]>([])
@@ -27,7 +28,7 @@ export function useInstances() {
   return { instances, error, refresh }
 }
 
-export function useInstanceDetail(id: Ref<string | null>) {
+export function useInstanceDetail(id: Ref<string | null>, draft: Ref<FilterDraft>) {
   const detail = ref<InstanceDetail | null>(null)
   const error = ref<string | null>(null)
   const loading = ref(false)
@@ -39,8 +40,11 @@ export function useInstanceDetail(id: Ref<string | null>) {
     }
     loading.value = true
     try {
+      // The bracket travels with the request: the failure number is a range
+      // answer, everything else in the detail is live MCP data.
+      const query = new URLSearchParams(toRequestQuery(draft.value)).toString()
       detail.value = await apiGet<InstanceDetail>(
-        `/api/instances/${encodeURIComponent(id.value)}`,
+        `/api/instances/${encodeURIComponent(id.value)}?${query}`,
       )
       error.value = null
     } catch (cause) {
@@ -50,6 +54,9 @@ export function useInstanceDetail(id: Ref<string | null>) {
     }
   }
 
-  watch(id, () => void refresh(), { immediate: true })
+  // `immediate` rather than `onMounted`: this composable owns no timer, so it
+  // needs no lifecycle hook — and that is also why its spec can call it without
+  // a host component, unlike `useOverview`.
+  watch([id, draft], () => void refresh(), { immediate: true })
   return { detail, error, loading, refresh }
 }

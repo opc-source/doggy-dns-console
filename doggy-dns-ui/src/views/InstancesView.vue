@@ -1,18 +1,49 @@
 <script setup lang="ts">
 import { computed, ref, toRef } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { RefreshCw, X } from '@lucide/vue'
 
 import ConfigPanel from '@/components/ConfigPanel.vue'
 import ErrorBanner from '@/components/ErrorBanner.vue'
 import InstanceCard from '@/components/InstanceCard.vue'
 import StatusDot from '@/components/StatusDot.vue'
+import TimeRangeControl from '@/components/TimeRangeControl.vue'
 import { useInstanceDetail, useInstances } from '@/composables/useInstances'
 import type { Instance } from '@/api/types'
+import {
+  DEFAULT_WINDOW_MINUTES,
+  parseFilterQuery,
+  relativeDraft,
+  toRouteQuery,
+  type FilterDraft,
+} from '@/lib/failureFilter'
+
+const route = useRoute()
+const router = useRouter()
+
+// `route.query` is a `LocationQuery`,数组成员可能为 null;`parseFilterQuery` 只取
+// 第一个字符串,所以两边运行时对得上,只需要一处不加宽度的转换。
+type FilterQuery = Parameters<typeof parseFilterQuery>[0]
+
+// 与 `OverviewView.vue` 同款:URL 是唯一状态来源,draft 从路由派生,写入只回到
+// 路由。一条时间参数都没有时补 `relativeDraft(DEFAULT_WINDOW_MINUTES)`,抽屉就
+// 永远带一个显式窗口去请求;抽屉开合是本地 `selected`,不是区间语义,不进 URL。
+const draft = computed(() => {
+  const parsed = parseFilterQuery(route.query as FilterQuery)
+  if (parsed.fromMs === null && parsed.toMs === null && parsed.windowMinutes === null) {
+    return relativeDraft(DEFAULT_WINDOW_MINUTES)
+  }
+  return parsed
+})
+
+function setDraft(next: FilterDraft) {
+  void router.replace({ query: toRouteQuery(next) })
+}
 
 const { instances, error, refresh } = useInstances()
 const selected = ref<string | null>(null)
 const selectedId = toRef(selected)
-const { detail, error: detailError, loading } = useInstanceDetail(selectedId)
+const { detail, error: detailError, loading } = useInstanceDetail(selectedId, draft)
 
 const online = computed(() => instances.value.filter((item) => item.online).length)
 
@@ -44,9 +75,12 @@ function describeSignal(signal: unknown): string | null {
         <h1 class="mt-1 text-2xl font-semibold tracking-tight lg:text-3xl">Instances</h1>
         <p class="mt-1 text-sm text-muted">{{ online }} online · {{ instances.length }} known</p>
       </div>
-      <button class="focus-ring flex items-center gap-2 rounded-xl border border-border bg-surface px-3 py-2 text-xs text-muted hover:text-text" @click="refresh">
-        <RefreshCw :size="13" /> Refresh
-      </button>
+      <div class="flex items-center gap-2">
+        <TimeRangeControl :model-value="draft" @update:model-value="setDraft" />
+        <button class="focus-ring flex items-center gap-2 rounded-xl border border-border bg-surface px-3 py-2 text-xs text-muted hover:text-text" @click="refresh">
+          <RefreshCw :size="13" /> Refresh
+        </button>
+      </div>
     </header>
 
     <ErrorBanner v-if="error" :message="error" @retry="refresh" />
@@ -91,6 +125,18 @@ function describeSignal(signal: unknown): string | null {
           <p v-else-if="detailError" class="rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">{{ detailError }}</p>
           <template v-else-if="detail">
             <section class="grid grid-cols-2 gap-2">
+              <div class="panel p-3">
+                <p class="text-[10px] uppercase tracking-wide text-muted">区间内失败</p>
+                <p class="mono mt-1 text-sm" data-testid="failure-count">{{ detail.failureCount ?? '—' }}</p>
+                <RouterLink
+                  class="mono mt-1 inline-block text-[10px] text-accent"
+                  :to="{
+                    name: 'failures-list',
+                    query: { ...toRouteQuery(draft), instance: detail.instance.host },
+                  }"
+                  >在失败列表里看这台主机</RouterLink
+                >
+              </div>
               <div class="panel p-3">
                 <p class="text-[10px] uppercase tracking-wide text-muted">uptime</p>
                 <p class="mt-1 text-sm">{{ Math.floor((detail.uptimeSeconds ?? 0) / 3600) }}h</p>

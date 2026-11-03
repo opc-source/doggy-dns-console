@@ -79,7 +79,10 @@ export interface InstanceDetail {
   configToml: string | null
   redactedKeys: string[]
   runtime: RuntimeStatus | null
-  recentFailures: number
+  /** Failure rows for this host inside the requested bracket; `null` means the
+   * telemetry source could not count them — the drawer renders an em dash
+   * rather than a fabricated zero (mirrors `Option<u64>` in `src/domain.rs`). */
+  failureCount: number | null
 }
 
 export interface Connections {
