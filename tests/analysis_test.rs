@@ -24,7 +24,11 @@ async fn fixture_bundle() -> EvidenceBundle {
         &*telemetry,
         &*instances,
         "4bf92f3577b34da6",
-        &FailureFilter::default(),
+        // Task 7 made the fixture honour the bracket: `Range::default()`
+        // (`0..0`) is inert and would match nothing, so this harness requests
+        // the same legal 60-minute bracket the demo endpoints resolve by
+        // default, anchored on the fixture clock.
+        &FailureFilter::new(Range::new(NOW_MS - 60 * 60_000, NOW_MS)),
         &FixedClock(NOW_MS),
     )
     .await

@@ -19,6 +19,11 @@ impl FixtureSource {
         Self { clock }
     }
 
+    /// Eight rows spread from 10 minutes to 8 days across three hosts plus one
+    /// host-less row, so "1h" and "7d" answers genuinely differ (D10). Ages are
+    /// relative to the fixture clock: `first_seen = now - (age + 10) minutes`,
+    /// `last_seen = now - age`; the ten-minute span keeps each group a window,
+    /// not a point.
     fn groups(&self) -> Vec<FailureGroup> {
         let now = self.clock.now_ms();
         let rows = [
@@ -27,9 +32,10 @@ impl FixtureSource {
                 "user-service.DEFAULT_GROUP.public.nacos.local.",
                 "SERVFAIL",
                 "upstream timed out",
-                12,
-                "dns-node-1",
+                12usize,
+                Some("dns-node-1"),
                 "nacos[nacos.local]",
+                15i64,
             ),
             (
                 "5cf92f3577b34da7",
@@ -37,8 +43,9 @@ impl FixtureSource {
                 "SERVFAIL",
                 "upstream connection refused",
                 7,
-                "dns-node-2",
+                Some("dns-node-2"),
                 "forward[8.8.8.8:53]",
+                180,
             ),
             (
                 "6df92f3577b34da8",
@@ -46,8 +53,9 @@ impl FixtureSource {
                 "NXDOMAIN",
                 "no authority handled query",
                 31,
-                "dns-node-1",
+                Some("dns-node-1"),
                 "none",
+                45,
             ),
             (
                 "7ef92f3577b34da9",
@@ -55,8 +63,9 @@ impl FixtureSource {
                 "REFUSED",
                 "query refused by policy",
                 3,
-                "dns-node-3",
+                Some("dns-node-3"),
                 "native",
+                3 * 1440,
             ),
             (
                 "8ff92f3577b34da0",
@@ -64,33 +73,97 @@ impl FixtureSource {
                 "SERVFAIL",
                 "upstream timeout after 5s",
                 2,
-                "dns-node-2",
+                Some("dns-node-2"),
                 "forward[1.1.1.1:53]",
+                10,
+            ),
+            (
+                "9af92f3577b34db1",
+                "batch.internal.",
+                "SERVFAIL",
+                "upstream reset",
+                4,
+                Some("dns-node-2"),
+                "forward[9.9.9.9:53]",
+                6 * 1440,
+            ),
+            (
+                "a0f92f3577b34db2",
+                "old.internal.",
+                "SERVFAIL",
+                "upstream timed out",
+                9,
+                Some("dns-node-1"),
+                "nacos[nacos.local]",
+                8 * 1440,
+            ),
+            (
+                "b1f92f3577b34db3",
+                "unlabeled.example.com.",
+                "SERVFAIL",
+                "upstream timed out",
+                5,
+                None,
+                "forward[8.8.8.8:53]",
+                20,
             ),
         ];
 
         rows.into_iter()
             .map(
-                |(trace, query, code, error, count, instance, authority)| FailureGroup {
-                    key: format!("trace:{trace}"),
-                    trace_id: Some(trace.to_string()),
-                    query: query.to_string(),
-                    qtype: "A".to_string(),
-                    instance: Some(instance.to_string()),
-                    authority: Some(authority.to_string()),
-                    response_code: code.to_string(),
-                    error: Some(error.to_string()),
-                    count,
-                    first_seen: now - 30 * 60 * 1000,
-                    last_seen: now - 60 * 1000,
-                    duration_ms: if code == "SERVFAIL" {
-                        Some(5012)
-                    } else {
-                        Some(2)
-                    },
+                |(trace, query, code, error, count, instance, authority, age_minutes)| {
+                    FailureGroup {
+                        key: format!("trace:{trace}"),
+                        trace_id: Some(trace.to_string()),
+                        query: query.to_string(),
+                        qtype: "A".to_string(),
+                        instance: instance.map(str::to_string),
+                        authority: Some(authority.to_string()),
+                        response_code: code.to_string(),
+                        error: Some(error.to_string()),
+                        count: count as u64,
+                        first_seen: now - (age_minutes + 10) * 60_000,
+                        last_seen: now - age_minutes * 60_000,
+                        duration_ms: if code == "SERVFAIL" {
+                            Some(5012)
+                        } else {
+                            Some(2)
+                        },
+                    }
                 },
             )
             .collect()
+    }
+
+    /// Demo-side stand-in for the OpenObserve WHERE clause: overlap on the bracket,
+    /// substring on the domain, equality on the response code, host equality on the
+    /// instance. An unlabeled group is never reachable by the host filter.
+    fn matches(&self, group: &FailureGroup, filter: &FailureFilter) -> bool {
+        if group.response_code.eq_ignore_ascii_case("NXDOMAIN") {
+            return false;
+        }
+        if group.last_seen < filter.range.start_ms || group.first_seen > filter.range.end_ms {
+            return false;
+        }
+        if let Some(domain) = &filter.domain
+            && !group.query.contains(domain.as_str())
+        {
+            return false;
+        }
+        if let Some(code) = &filter.response_code
+            && !group.response_code.eq_ignore_ascii_case(code)
+        {
+            return false;
+        }
+        if let Some(instance) = &filter.instance {
+            let Some(host) = &group.instance else {
+                return false;
+            };
+            if !host.eq_ignore_ascii_case(instance) {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -121,13 +194,7 @@ impl TelemetrySource for FixtureSource {
 
     async fn failures(&self, filter: FailureFilter) -> Result<Vec<FailureGroup>, DataError> {
         let mut groups = self.groups();
-        groups.retain(|group| !group.response_code.eq_ignore_ascii_case("NXDOMAIN"));
-        if let Some(domain) = &filter.domain {
-            groups.retain(|group| group.query.contains(domain.as_str()));
-        }
-        if let Some(code) = &filter.response_code {
-            groups.retain(|group| group.response_code.eq_ignore_ascii_case(code));
-        }
+        groups.retain(|group| self.matches(group, &filter));
         groups.sort_by(|left, right| {
             right
                 .count
@@ -147,21 +214,14 @@ impl TelemetrySource for FixtureSource {
             .groups()
             .into_iter()
             .find(|group| {
-                group.trace_id.as_deref() == Some(trace_id)
-                    && !group.response_code.eq_ignore_ascii_case("NXDOMAIN")
-                    && filter
-                        .domain
-                        .as_ref()
-                        .is_none_or(|domain| group.query.contains(domain.as_str()))
-                    && filter
-                        .response_code
-                        .as_ref()
-                        .is_none_or(|code| group.response_code.eq_ignore_ascii_case(code))
+                group.trace_id.as_deref() == Some(trace_id) && self.matches(group, &filter)
             })
             .ok_or_else(|| DataError::NotFound(format!("failure trace {trace_id}")))?;
-        let now = self.clock.now_ms();
         let logs = vec![LogRecord {
-            ts: now - 60 * 1000,
+            // Inside the group's own window: the drawer's log row must not sit
+            // in the future relative to `first_seen`, and it must move with
+            // rows that spread across days.
+            ts: group.last_seen + 5 * 60_000,
             severity: "ERROR".to_string(),
             message: group
                 .error
@@ -197,6 +257,21 @@ impl TelemetrySource for FixtureSource {
             spans,
             spans_unavailable: false,
         })
+    }
+
+    async fn unlabeled_failures(&self, filter: FailureFilter) -> Result<u64, DataError> {
+        let unlabeled = self
+            .groups()
+            .into_iter()
+            .filter(|group| group.instance.is_none())
+            .filter(|group| {
+                // Same scope as the list, minus the host equality that cannot match.
+                let mut scope = filter.clone();
+                scope.instance = None;
+                self.matches(group, &scope)
+            })
+            .count();
+        Ok(unlabeled as u64)
     }
 
     async fn seen_instances(&self, _window: Window) -> Result<Vec<SeenInstance>, DataError> {

@@ -47,9 +47,8 @@ impl TelemetrySource for RecordingTelemetry {
         self.inner.failure_detail(trace_id, filter).await
     }
     async fn unlabeled_failures(&self, filter: FailureFilter) -> Result<u64, DataError> {
-        // Record the resolved filter, then delegate: `FixtureSource` does not
-        // override the method either, so the count still answers through the
-        // trait default.
+        // Record the resolved filter, then delegate: since Task 7 the fixture
+        // answers this on the demo path, so the count is the real one.
         *self.last_filter.lock().unwrap() = Some(filter.clone());
         self.inner.unlabeled_failures(filter).await
     }
@@ -382,7 +381,10 @@ async fn uncovered_reports_the_count_for_the_requested_bracket() {
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(body["unlabeled"], 0);
+    // The fixture's one host-less row (`b1f9…`, 20 minutes old) sits inside a
+    // 120-minute bracket, so the demo path reports it instead of the trait
+    // default answering zero.
+    assert_eq!(body["unlabeled"], 1);
 
     let filter = recorder.last_filter.lock().unwrap().clone().unwrap();
     assert_eq!(filter.instance.as_deref(), Some("dns-node-2"));
