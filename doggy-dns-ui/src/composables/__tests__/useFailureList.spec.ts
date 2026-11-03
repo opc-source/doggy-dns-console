@@ -309,4 +309,68 @@ describe('useFailureList filter drafts', () => {
     expect(uncovered.value).toBe(1)
     wrapper.unmount()
   })
+
+  it('drops an uncovered answer that lands after the bracket was refused', async () => {
+    let releaseStale!: (response: Response) => void
+    const stale = new Promise<Response>((resolve) => {
+      releaseStale = resolve
+    })
+    let uncoveredCalls = 0
+    const draft = ref({ ...relativeDraft(60), instance: 'dns-node-1' })
+    const { uncovered, wrapper } = mountList(draft, {
+      uncovered: () => {
+        uncoveredCalls += 1
+        return uncoveredCalls === 1 ? stale : json({ unlabeled: 3 })
+      },
+    })
+
+    await flushPromises()
+    expect(uncoveredCalls).toBe(1)
+    expect(uncovered.value).toBe(0)
+
+    // An unusable bracket clears the table and returns before the notice is
+    // re-requested, so the count in flight must be retired with it.
+    draft.value = { ...draft.value, fromMs: 10, toMs: 20, windowMinutes: null }
+    await flushPromises()
+    expect(uncoveredCalls).toBe(1)
+    expect(uncovered.value).toBe(0)
+
+    releaseStale(json({ unlabeled: 7 }))
+    await flushPromises()
+    expect(uncovered.value).toBe(0)
+    wrapper.unmount()
+  })
+
+  it('drops an uncovered answer that lands after the list request failed', async () => {
+    let releaseStale!: (response: Response) => void
+    const stale = new Promise<Response>((resolve) => {
+      releaseStale = resolve
+    })
+    let uncoveredCalls = 0
+    let failGroups = false
+    const draft = ref({ ...relativeDraft(60), instance: 'dns-node-1' })
+    const { uncovered, wrapper } = mountList(draft, {
+      failGroups: () => failGroups,
+      uncovered: () => {
+        uncoveredCalls += 1
+        return uncoveredCalls === 1 ? stale : json({ unlabeled: 3 })
+      },
+    })
+
+    await flushPromises()
+    expect(uncovered.value).toBe(0)
+
+    // The same host filter, now on a bracket whose list call fails: the table
+    // is empty, so a late count would be the only thing left on screen.
+    failGroups = true
+    draft.value = { ...relativeDraft(120), instance: 'dns-node-1' }
+    await flushPromises()
+    expect(uncoveredCalls).toBe(1)
+    expect(uncovered.value).toBe(0)
+
+    releaseStale(json({ unlabeled: 7 }))
+    await flushPromises()
+    expect(uncovered.value).toBe(0)
+    wrapper.unmount()
+  })
 })

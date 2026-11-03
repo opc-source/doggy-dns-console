@@ -95,7 +95,7 @@ describe('AiPanel', () => {
 
     await bar.get('[data-test="reopen-failure"]').trigger('click')
     expect(push).toHaveBeenCalledWith({
-      name: 'failure',
+      name: 'failure-detail',
       params: { traceId: 't1' },
       query: { from: '1761433200000', to: '1761436800000' },
     })

@@ -57,7 +57,11 @@ function reopenFailure() {
     query.from = String(handoff.fromMs)
     query.to = String(handoff.toMs)
   }
-  void router.push({ name: 'failure', params: { traceId: handoff.traceId }, query })
+  void router.push({
+    name: 'failure-detail',
+    params: { traceId: handoff.traceId },
+    query,
+  })
 }
 
 // A run grows one segment's text in place, so the message and segment counts alone

@@ -122,14 +122,26 @@ describe('FailureView', () => {
     expect(wrapper.findComponent(DrawerStub).props('analysisId')).toBeUndefined()
   })
 
-  it('navigates back to the overview when the drawer closes', async () => {
-    const { wrapper, router } = await mountView('/failures/t1?windowMinutes=360&analysis=a1')
+  it('returns to the list with the bracket when the drawer closes', async () => {
+    const from = NOW - 2 * HOUR
+    const { wrapper, router } = await mountView(
+      `/failures/t1?from=${from}&to=${NOW}&instance=dns-node-2&analysis=a1`,
+    )
 
     wrapper.findComponent(DrawerStub).vm.$emit('close')
 
-    // The overview route is lazily imported, so the navigation settles later.
-    await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('overview'), {
+    // The list route is lazily imported, so the navigation settles later.
+    await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('failures-list'), {
       timeout: 5000,
     })
+
+    // Only the analysis deep-link param is dropped: the bracket and the host
+    // filter come back exactly as the operator left them.
+    expect(router.currentRoute.value.query).toEqual({
+      from: String(from),
+      to: String(NOW),
+      instance: 'dns-node-2',
+    })
+    expect(router.currentRoute.value.query.analysis).toBeUndefined()
   })
 })

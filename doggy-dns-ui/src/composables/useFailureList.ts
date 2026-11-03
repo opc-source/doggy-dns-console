@@ -98,6 +98,10 @@ export function useFailureList(draft: Ref<FilterDraft>, limit = 5) {
       error.value = invalid
       groups.value = []
       markers.value = new Set()
+      // Retire the notice's in-flight count too: `refreshUncovered()` is never
+      // reached here, so without the bump a count for the bracket that was just
+      // refused could re-land above an empty table.
+      uncoveredSeq += 1
       uncovered.value = 0
       return
     }
@@ -111,6 +115,9 @@ export function useFailureList(draft: Ref<FilterDraft>, limit = 5) {
       error.value = String(cause)
       // A failed switch must not leave the previous bracket's badges behind.
       markers.value = new Set()
+      // Same reason as the refused bracket: this path returns before
+      // `refreshUncovered()` can retire the count still in flight.
+      uncoveredSeq += 1
       uncovered.value = 0
       return
     }

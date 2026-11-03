@@ -1,0 +1,150 @@
+import { mount, type VueWrapper } from '@vue/test-utils'
+import { defineComponent } from 'vue'
+import { createMemoryHistory, createRouter } from 'vue-router'
+import { afterEach, describe, expect, it } from 'vitest'
+
+import FailureList from '../FailureList.vue'
+import type { FailureGroup } from '@/api/types'
+import { msToDatetime } from '@/lib/failureFilter'
+
+const LONG_QUERY = 'nacos-a.internal.nsvc.svc.cluster.local.test.'
+
+const GROUP: FailureGroup = {
+  key: 'trace:4bf9',
+  traceId: '4bf92f3577b34da6',
+  query: LONG_QUERY,
+  qtype: 'A',
+  instance: 'dns-node-2',
+  authority: 'forward[8.8.8.8:53]',
+  responseCode: 'SERVFAIL',
+  error: 'upstream timed out',
+  count: 12,
+  firstSeen: 1_761_433_200_000,
+  lastSeen: 1_761_436_800_000,
+  durationMs: 5012,
+}
+
+/** A grouped row with no trace, host or duration: everything nullable. */
+const UNLABELED: FailureGroup = {
+  key: 'query:b.example.',
+  traceId: null,
+  query: 'b.example.',
+  qtype: 'AAAA',
+  instance: null,
+  authority: null,
+  responseCode: 'REFUSED',
+  error: null,
+  count: 3,
+  firstSeen: 1_761_433_200_000,
+  lastSeen: 1_761_436_800_000,
+  durationMs: null,
+}
+
+function makeRouter() {
+  return createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/', name: 'overview', component: defineComponent({ name: 'RootStub' }) },
+      {
+        path: '/failures',
+        name: 'failures-list',
+        component: defineComponent({ name: 'ListStub' }),
+      },
+    ],
+  })
+}
+
+const wrappers: VueWrapper[] = []
+
+function mountList(
+  props: Partial<{
+    groups: FailureGroup[]
+    markers: Set<string>
+    limit: number
+    seeAll: boolean
+    dense: boolean
+    title: string
+    subtitle: string
+  }> = {},
+) {
+  const router = makeRouter()
+  const wrapper = mount(FailureList, {
+    props: { groups: [GROUP], ...props },
+    global: { plugins: [router] },
+  })
+  wrappers.push(wrapper)
+  return { router, wrapper }
+}
+
+afterEach(() => {
+  for (const wrapper of wrappers.splice(0)) wrapper.unmount()
+})
+
+describe('FailureList', () => {
+  it('keeps the dense card row down to code, query, count and badge', () => {
+    const { wrapper } = mountList({ markers: new Set([GROUP.traceId as string]) })
+
+    const row = wrapper.find('[data-testid="failure-row"]')
+    expect(row.text()).toContain('SERVFAIL')
+    expect(row.text()).toContain(LONG_QUERY.slice(0, 39))
+    expect(row.text()).toContain('…')
+    expect(row.text()).not.toContain(LONG_QUERY)
+    expect(row.text()).toContain(String(GROUP.count))
+    expect(row.find('[data-testid="analyzed-badge"]').text()).toBe('已有分析')
+    // The overview card has no room for a host column, and its e2e case is the
+    // page's, so the dense row must not claim the test id.
+    expect(row.find('[data-testid="row-instance"]').exists()).toBe(false)
+    expect(row.text()).not.toContain(GROUP.authority as string)
+  })
+
+  it('adds the host, authority and timestamps in full mode', () => {
+    const { wrapper } = mountList({ dense: false })
+
+    const row = wrapper.find('[data-testid="failure-row"]')
+    expect(row.find('[data-testid="row-instance"]').text()).toBe('dns-node-2')
+    expect(row.text()).toContain('forward[8.8.8.8:53]')
+    expect(row.text()).toContain(msToDatetime(GROUP.firstSeen))
+    expect(row.text()).toContain(msToDatetime(GROUP.lastSeen))
+    expect(row.text()).toContain('upstream timed out')
+    expect(row.text()).toContain('5012')
+  })
+
+  it('renders a missing field as a dash, never as null', () => {
+    const { wrapper } = mountList({ dense: false, groups: [UNLABELED] })
+
+    const row = wrapper.find('[data-testid="failure-row"]')
+    expect(row.text()).not.toContain('null')
+    expect(row.find('[data-testid="row-instance"]').text()).toBe('—')
+  })
+
+  it('emits the clicked group so the parent can build the detail link', async () => {
+    const { wrapper } = mountList()
+
+    await wrapper.find('[data-testid="failure-row"]').trigger('click')
+
+    expect(wrapper.emitted('select')?.[0]).toEqual([GROUP])
+  })
+
+  it('keeps the overview card at five rows and lets the page ask for more', () => {
+    const groups = Array.from({ length: 8 }, (_unused, index) => ({
+      ...GROUP,
+      key: `trace:t${index}`,
+      traceId: `t${index}`,
+    }))
+
+    expect(mountList({ groups }).wrapper.findAll('[data-testid="failure-row"]')).toHaveLength(5)
+    expect(
+      mountList({ groups, limit: 200 }).wrapper.findAll('[data-testid="failure-row"]'),
+    ).toHaveLength(8)
+  })
+
+  it('links to the whole list only when the card is not the list', () => {
+    const card = mountList({ title: 'Top failures', subtitle: 'last window' })
+    expect(card.wrapper.find('[data-testid="see-all"]').exists()).toBe(false)
+
+    const { wrapper, router } = mountList({ seeAll: true })
+    const link = wrapper.find('[data-testid="see-all"]')
+    expect(link.text()).toBe('查看全部')
+    expect(link.attributes('href')).toBe(router.resolve({ name: 'failures-list' }).href)
+  })
+})

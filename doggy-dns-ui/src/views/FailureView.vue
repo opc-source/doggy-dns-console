@@ -10,6 +10,10 @@ import {
   validateBracket,
 } from '@/lib/failureFilter'
 
+// This view is `failures-list`'s child route, so the list stays mounted behind the
+// drawer. Its outer section keeps its own padding rather than the parent's: the
+// drawer is a `fixed inset-0` overlay, and the only content that renders in place
+// here is the invalid-bracket notice.
 const route = useRoute()
 const router = useRouter()
 
@@ -32,9 +36,11 @@ const analysisId = computed(() => {
 })
 
 function close() {
-  // Returning to the overview keeps working until the failure list owns the
-  // drawer mount; Task 12 replaces this with a query-preserving push.
-  void router.push({ name: 'overview' })
+  // Back to the list, bracket intact: only the analysis deep-link param is
+  // dropped, so the rows the operator was looking at come back unchanged.
+  const rest = { ...route.query }
+  delete rest.analysis
+  void router.push({ name: 'failures-list', query: rest })
 }
 </script>
 

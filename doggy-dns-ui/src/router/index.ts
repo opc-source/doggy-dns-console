@@ -17,9 +17,18 @@ export const routes = [
     component: () => import('@/views/SessionsView.vue'),
   },
   {
-    path: '/failures/:traceId',
-    name: 'failure',
-    component: () => import('@/views/FailureView.vue'),
+    path: '/failures',
+    name: 'failures-list',
+    component: () => import('@/views/FailuresView.vue'),
+    // The drawer is a child of the list, so the URL stays the only way to open
+    // it and the filtered rows stay mounted behind it (D5).
+    children: [
+      {
+        path: ':traceId',
+        name: 'failure-detail',
+        component: () => import('@/views/FailureView.vue'),
+      },
+    ],
   },
 ]
 
