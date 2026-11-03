@@ -1,8 +1,13 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use doggy_dns_console::agent::tools::{self, InstanceArgs, OverviewArgs};
+use async_trait::async_trait;
+use doggy_dns_console::agent::tools::{self, FailureArgs, InstanceArgs, OverviewArgs, TraceArgs};
 use doggy_dns_console::datasource::fixture::FixtureSource;
 use doggy_dns_console::datasource::{FixedClock, InstanceSource, TelemetrySource};
+use doggy_dns_console::domain::{
+    FailureDetail, FailureFilter, FailureGroup, Overview, Range, SeenInstance, Window,
+};
+use doggy_dns_console::error::DataError;
 use doggy_dns_console::service::ConsoleService;
 
 fn fixture_service() -> ConsoleService {
@@ -50,4 +55,185 @@ async fn get_instance_detail_tool_returns_live_runtime_and_redactions() {
             .as_array()
             .is_some_and(|keys| !keys.is_empty())
     );
+}
+
+#[tokio::test]
+async fn failure_tool_descriptions_state_the_absolute_range_and_the_real_ceilings() {
+    let service = fixture_service();
+    let tools = tools::build_tools(Arc::new(service.clone()));
+
+    let list = tools
+        .iter()
+        .find(|tool| tool.name() == "list_failures")
+        .expect("list_failures");
+    let detail = tools
+        .iter()
+        .find(|tool| tool.name() == "get_failure_detail")
+        .expect("get_failure_detail");
+    let overview = tools
+        .iter()
+        .find(|tool| tool.name() == "get_overview")
+        .expect("get_overview");
+
+    let list_text = list.description();
+    let detail_text = detail.description();
+    for text in [&list_text, &detail_text] {
+        assert!(text.contains("from"), "{text}");
+        assert!(text.contains("to"), "{text}");
+        assert!(text.contains("instance"), "{text}");
+        assert!(text.contains("10080") || text.contains("7 days"), "{text}");
+        assert!(text.contains("epoch milliseconds"), "{text}");
+    }
+    assert!(
+        detail_text.contains("same from/to/domain/responseCode/instance"),
+        "the detail tool no longer tells the model to match the list call: {detail_text}"
+    );
+    // The live class keeps its 1440-minute ceiling and must not promise a week.
+    assert!(
+        !overview.description().contains("10080"),
+        "get_overview advertises the investigation ceiling: {}",
+        overview.description()
+    );
+}
+
+#[tokio::test]
+async fn list_failures_resolves_an_absolute_bracket_and_rejects_an_impossible_one() {
+    let service = fixture_service();
+
+    let value = tools::list_failures(
+        &service,
+        FailureArgs {
+            from: Some(1_761_436_800_000 - 3 * 24 * 60 * 60_000),
+            to: Some(1_761_436_800_000),
+            ..FailureArgs::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(value.is_array(), "expected a group array, got {value}");
+
+    let error = tools::list_failures(
+        &service,
+        FailureArgs {
+            from: Some(1_761_436_800_000 - 8 * 24 * 60 * 60_000),
+            to: Some(1_761_436_800_000),
+            ..FailureArgs::default()
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(error, DataError::Invalid(_)),
+        "expected a rejection, got {error:?}"
+    );
+}
+
+/// Telemetry double that records the exact filter the tools hand to the
+/// service. The pin is at the tool layer — the resolved bracket, the caller's
+/// instance and the limit — not at the fixture, which only starts filtering
+/// its own rows in Task 7.
+struct RecordingTelemetry {
+    inner: FixtureSource,
+    last_filter: Arc<Mutex<Option<FailureFilter>>>,
+}
+
+#[async_trait]
+impl TelemetrySource for RecordingTelemetry {
+    async fn overview(&self, window: Window) -> Result<Overview, DataError> {
+        self.inner.overview(window).await
+    }
+    async fn failures(&self, filter: FailureFilter) -> Result<Vec<FailureGroup>, DataError> {
+        *self.last_filter.lock().unwrap() = Some(filter);
+        Ok(vec![])
+    }
+    async fn failure_detail(
+        &self,
+        trace_id: &str,
+        filter: FailureFilter,
+    ) -> Result<FailureDetail, DataError> {
+        *self.last_filter.lock().unwrap() = Some(filter.clone());
+        Ok(FailureDetail {
+            group: FailureGroup {
+                key: trace_id.to_owned(),
+                trace_id: Some(trace_id.to_owned()),
+                query: "failure.example".to_owned(),
+                qtype: "A".to_owned(),
+                instance: filter.instance.clone(),
+                authority: None,
+                response_code: "SERVFAIL".to_owned(),
+                error: None,
+                count: 1,
+                first_seen: 0,
+                last_seen: 0,
+                duration_ms: None,
+            },
+            logs: vec![],
+            spans: vec![],
+            spans_unavailable: false,
+        })
+    }
+    async fn seen_instances(&self, window: Window) -> Result<Vec<SeenInstance>, DataError> {
+        self.inner.seen_instances(window).await
+    }
+}
+
+fn recording_service() -> (ConsoleService, Arc<Mutex<Option<FailureFilter>>>) {
+    let clock = Arc::new(FixedClock(1_761_436_800_000));
+    let recorder = Arc::new(RecordingTelemetry {
+        inner: FixtureSource::new(clock.clone()),
+        last_filter: Arc::new(Mutex::new(None)),
+    });
+    let recorded = recorder.last_filter.clone();
+    let instances = Arc::new(FixtureSource::new(clock.clone())) as Arc<dyn InstanceSource>;
+    let service = ConsoleService::new(recorder as Arc<dyn TelemetrySource>, instances, clock);
+    (service, recorded)
+}
+
+#[tokio::test]
+async fn failure_tools_pass_the_resolved_bracket_and_instance_into_the_filter() {
+    let (service, recorded) = recording_service();
+    let from = 1_761_436_800_000 - 7 * 1440 * 60_000;
+    let to = 1_761_436_800_000;
+
+    tools::list_failures(
+        &service,
+        FailureArgs {
+            from: Some(from),
+            to: Some(to),
+            instance: Some("dns-node-3".to_owned()),
+            ..FailureArgs::default()
+        },
+    )
+    .await
+    .unwrap();
+    let filter = recorded
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("list_failures handed the service a filter");
+    assert_eq!(filter.instance.as_deref(), Some("dns-node-3"));
+    assert_eq!(filter.range, Range::new(from, to));
+
+    tools::get_failure_detail(
+        &service,
+        TraceArgs {
+            trace_id: "trace-1".to_owned(),
+            window_minutes: None,
+            from: Some(from),
+            to: Some(to),
+            domain: None,
+            response_code: None,
+            instance: Some("dns-node-3".to_owned()),
+        },
+    )
+    .await
+    .unwrap();
+    let filter = recorded
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("get_failure_detail handed the service a filter");
+    assert_eq!(filter.instance.as_deref(), Some("dns-node-3"));
+    assert_eq!(filter.range, Range::new(from, to));
+    assert_eq!(filter.limit, 1);
 }

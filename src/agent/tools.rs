@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::domain::{DEFAULT_WINDOW_MINUTES, FailureFilter, Range, Window};
+use crate::domain::{FailureFilter, Range, Window};
 use crate::error::DataError;
 use crate::service::ConsoleService;
 
@@ -19,9 +19,17 @@ pub struct OverviewArgs {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FailureArgs {
+    /// Relative shortcut; expanded to `[to - n, to]`. Ignored when both `from`
+    /// and `to` are given.
     pub window_minutes: Option<u32>,
+    /// Absolute bracket start in epoch milliseconds.
+    pub from: Option<i64>,
+    /// Absolute bracket end in epoch milliseconds; defaults to now.
+    pub to: Option<i64>,
     pub domain: Option<String>,
     pub response_code: Option<String>,
+    /// Case-insensitive host equality; omit to cover every host.
+    pub instance: Option<String>,
     pub limit: Option<usize>,
 }
 
@@ -30,8 +38,11 @@ pub struct FailureArgs {
 pub struct TraceArgs {
     pub trace_id: String,
     pub window_minutes: Option<u32>,
+    pub from: Option<i64>,
+    pub to: Option<i64>,
     pub domain: Option<String>,
     pub response_code: Option<String>,
+    pub instance: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -61,18 +72,13 @@ pub async fn list_failures(
     service: &ConsoleService,
     args: FailureArgs,
 ) -> Result<Value, DataError> {
-    let now_ms = service.now_ms();
-    let range = Range::checked(
-        now_ms - i64::from(args.window_minutes.unwrap_or(60)) * 60_000,
-        now_ms,
-        now_ms,
-    )
-    .unwrap_or_else(|_| Range::from_window(Window::new(DEFAULT_WINDOW_MINUTES), now_ms));
+    let range = Range::resolve(args.from, args.to, args.window_minutes, service.now_ms())
+        .map_err(DataError::Invalid)?;
     let filter = FailureFilter {
         range,
         domain: args.domain,
         response_code: args.response_code,
-        instance: None,
+        instance: args.instance,
         limit: args.limit.unwrap_or(50).clamp(1, 200),
     };
     let groups = service.failures(filter).await?;
@@ -83,18 +89,13 @@ pub async fn get_failure_detail(
     service: &ConsoleService,
     args: TraceArgs,
 ) -> Result<Value, DataError> {
-    let now_ms = service.now_ms();
-    let range = Range::checked(
-        now_ms - i64::from(args.window_minutes.unwrap_or(60)) * 60_000,
-        now_ms,
-        now_ms,
-    )
-    .unwrap_or_else(|_| Range::from_window(Window::new(DEFAULT_WINDOW_MINUTES), now_ms));
+    let range = Range::resolve(args.from, args.to, args.window_minutes, service.now_ms())
+        .map_err(DataError::Invalid)?;
     let filter = FailureFilter {
         range,
         domain: args.domain,
         response_code: args.response_code,
-        instance: None,
+        instance: args.instance,
         limit: 1,
     };
     let detail = service.failure_detail(&args.trace_id, filter).await?;
@@ -120,7 +121,7 @@ pub fn build_tools(service: Arc<ConsoleService>) -> Vec<Arc<dyn Tool>> {
         Arc::new(
             StatefulTool::new(
                 "get_overview",
-                "Return DNS overview: instances online/total, query volume, failure count, success rate, p95 latency and the series. Use this before quoting any KPI.",
+                "Return DNS overview: instances online/total, query volume, failure count, success rate, p95 latency and the series. Use this before quoting any KPI. The overview only accepts the relative windowMinutes shortcut and clamps it to 5-1440 minutes; for a longer look-back use list_failures.",
                 state.clone(),
                 tool_get_overview,
             )
@@ -131,7 +132,7 @@ pub fn build_tools(service: Arc<ConsoleService>) -> Vec<Arc<dyn Tool>> {
         Arc::new(
             StatefulTool::new(
                 "list_failures",
-                "List DNS failures (SERVFAIL / REFUSED / FORMERR / timeouts) grouped by trace_id. NXDOMAIN is a normal negative answer and is always excluded.",
+                "List DNS failures (SERVFAIL / REFUSED / FORMERR / timeouts) grouped by trace_id. NXDOMAIN is a normal negative answer and is always excluded. Frame the window with from/to in epoch milliseconds (span up to 7 days, i.e. 10080 minutes) or with the windowMinutes shortcut; a bracket under 5 minutes, over 10080 minutes, with start at or after end, or ending more than 60 seconds in the future is rejected. Set instance to a host name to restrict to that node; rows without a host label are then excluded.",
                 state.clone(),
                 tool_list_failures,
             )
@@ -142,7 +143,7 @@ pub fn build_tools(service: Arc<ConsoleService>) -> Vec<Arc<dyn Tool>> {
         Arc::new(
             StatefulTool::new(
                 "get_failure_detail",
-                "Return the failure group, logs and spans for one trace_id so the analysis can cite real evidence. Pass the same windowMinutes/domain/responseCode used by list_failures.",
+                "Return the failure group, logs and spans for one trace_id so the analysis can cite real evidence. Pass the same from/to/domain/responseCode/instance used by list_failures so the detail cannot drift from the row the operator clicked; from/to are epoch milliseconds and the span is capped at 7 days (10080 minutes), with a 5-minute floor.",
                 state.clone(),
                 tool_failure_detail,
             )
