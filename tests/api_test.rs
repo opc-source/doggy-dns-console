@@ -499,3 +499,113 @@ async fn uncovered_rejects_a_too_long_bracket() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
+
+const FIXED_NOW_MS: i64 = 1_761_436_800_000;
+
+#[tokio::test]
+async fn overview_takes_an_absolute_bracket_without_clamping_it() {
+    let app = app_with(fixture() as Arc<dyn TelemetrySource>);
+    let response = app
+        .oneshot(
+            Request::get(format!(
+                "/api/overview?from={}&to={}",
+                FIXED_NOW_MS - 1_000 * 60_000,
+                FIXED_NOW_MS
+            ))
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    // 1000 分钟在 10080 上限之内,却远在旧的 5-1440 clamp 之外:
+    // 桥接实现(Task 2 留的)会在这里答 60,断言 `windowMinutes` 才抓得住它。
+    assert_eq!(body["windowMinutes"], 1_000);
+}
+
+#[tokio::test]
+async fn overview_takes_a_week_from_the_relative_shortcut() {
+    let app = app_with(fixture() as Arc<dyn TelemetrySource>);
+    let response = app
+        .oneshot(
+            Request::get("/api/overview?windowMinutes=10080")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_body(response).await["windowMinutes"], 10_080);
+}
+
+#[tokio::test]
+async fn overview_refuses_a_bracket_the_investigation_chain_refuses() {
+    // 四条规则、同一个 400,而且最重要的是:不 clamp。
+    // `windowMinutes=20000` 过去会悄悄变成 1440。
+    for uri in [
+        "/api/overview?windowMinutes=20000",
+        "/api/overview?from=1000&to=2000",
+        "/api/overview?from=2000&to=1000",
+        &format!("/api/overview?to={}", FIXED_NOW_MS + 61_000),
+    ] {
+        let app = app_with(fixture() as Arc<dyn TelemetrySource>);
+        let response = app
+            .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = json_body(response).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+        assert_eq!(body["error"]["code"], "invalid_request", "{uri}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn a_negative_window_minutes_is_refused_at_the_parameter_layer() {
+    let app = app_with(fixture() as Arc<dyn TelemetrySource>);
+    let response = app
+        .oneshot(
+            Request::get("/api/overview?windowMinutes=-1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // `window_minutes` 是 `u32`,负数在 axum 的反序列化层就 400,压根进不到
+    // `Range::resolve`;因此只钉状态码,不钉 `{error:{code,message}}` 信封。
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn the_overview_and_the_failure_list_refuse_identically() {
+    let overview_app = app_with(fixture() as Arc<dyn TelemetrySource>);
+    let overview = json_body(
+        overview_app
+            .oneshot(
+                Request::get("/api/overview?windowMinutes=20000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let failures_app = app_with(fixture() as Arc<dyn TelemetrySource>);
+    let failures = json_body(
+        failures_app
+            .oneshot(
+                Request::get("/api/failures?windowMinutes=20000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        overview["error"]["message"],
+        "invalid request: range is longer than the 10080-minute ceiling"
+    );
+    assert_eq!(overview, failures);
+}

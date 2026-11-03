@@ -10,8 +10,31 @@ pub mod state;
 
 use axum::Router;
 use axum::routing::{get, post};
+use serde::Deserialize;
 
 use crate::api::state::ApiState;
+use crate::domain::Range;
+use crate::error::DataError;
+
+/// The bracket grammar every time-ranged endpoint reads: `from`/`to` in epoch
+/// milliseconds win over `windowMinutes`, a lone bound still participates, and
+/// an illegal span is a `400` — never a clamp (spec D2). `FailureQuery` and
+/// `StartQuery` keep their own copies of these three fields because they also
+/// carry domain/responseCode/instance; reusing them here would advertise
+/// filters the overview does not have.
+#[derive(Debug, Deserialize)]
+pub struct RangeQuery {
+    #[serde(rename = "windowMinutes")]
+    pub window_minutes: Option<u32>,
+    pub from: Option<i64>,
+    pub to: Option<i64>,
+}
+
+impl RangeQuery {
+    pub fn range(&self, now_ms: i64) -> Result<Range, DataError> {
+        Range::resolve(self.from, self.to, self.window_minutes, now_ms).map_err(DataError::Invalid)
+    }
+}
 
 pub fn router() -> Router {
     health::routes()

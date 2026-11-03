@@ -28,6 +28,7 @@ async fn get_overview_tool_returns_service_payload() {
         &service,
         OverviewArgs {
             window_minutes: Some(60),
+            ..OverviewArgs::default()
         },
     )
     .await
@@ -70,10 +71,6 @@ async fn failure_tool_descriptions_state_the_absolute_range_and_the_real_ceiling
         .iter()
         .find(|tool| tool.name() == "get_failure_detail")
         .expect("get_failure_detail");
-    let overview = tools
-        .iter()
-        .find(|tool| tool.name() == "get_overview")
-        .expect("get_overview");
 
     let list_text = list.description();
     let detail_text = detail.description();
@@ -96,12 +93,6 @@ async fn failure_tool_descriptions_state_the_absolute_range_and_the_real_ceiling
     assert!(
         detail_text.contains("windowMinutes"),
         "the detail tool omits the relative shortcut the model actually has: {detail_text}"
-    );
-    // The live class keeps its 1440-minute ceiling and must not promise a week.
-    assert!(
-        !overview.description().contains("10080"),
-        "get_overview advertises the investigation ceiling: {}",
-        overview.description()
     );
 }
 
@@ -287,4 +278,69 @@ async fn failure_tools_pass_the_resolved_bracket_and_instance_into_the_filter() 
     assert_eq!(filter.instance.as_deref(), Some("dns-node-3"));
     assert_eq!(filter.range, Range::new(from, to));
     assert_eq!(filter.limit, 1);
+}
+
+#[tokio::test]
+async fn the_overview_tool_promises_the_bracket_it_actually_takes() {
+    let service = fixture_service();
+    let tools = tools::build_tools(Arc::new(service.clone()));
+    let overview = tools
+        .iter()
+        .find(|tool| tool.name() == "get_overview")
+        .expect("get_overview is registered");
+    let text = overview.description();
+    for needle in [
+        "from",
+        "to",
+        "windowMinutes",
+        "epoch milliseconds",
+        "7 days",
+        "10080",
+        "worst bucket",
+        "rejected",
+    ] {
+        assert!(
+            text.contains(needle),
+            "get_overview description lost `{needle}`: {text}"
+        );
+    }
+    // 反向钉子:描述不许再承诺 clamp,也不许再提 1440(那是看板不再有
+    // 的旧 live 类上限)。
+    assert!(!text.contains("1440"), "{text}");
+    assert!(!text.contains("clamps"), "{text}");
+}
+
+#[tokio::test]
+async fn get_overview_tool_takes_a_week_without_clamping_it() {
+    let service = fixture_service();
+    let value = tools::get_overview(
+        &service,
+        OverviewArgs {
+            window_minutes: Some(10_080),
+            ..OverviewArgs::default()
+        },
+    )
+    .await
+    .expect("a week is inside the ceiling");
+    // 桥接实现会在这里报 1440。
+    assert_eq!(value["windowMinutes"], 10_080);
+}
+
+#[tokio::test]
+async fn get_overview_tool_refuses_a_week_plus_a_day() {
+    let service = fixture_service();
+    let error = tools::get_overview(
+        &service,
+        OverviewArgs {
+            from: Some(1_761_436_800_000 - 11_000 * 60_000),
+            to: Some(1_761_436_800_000),
+            ..OverviewArgs::default()
+        },
+    )
+    .await
+    .expect_err("a bracket over the ceiling must not be clamped");
+    assert!(
+        error.to_string().contains("10080-minute ceiling"),
+        "{error}"
+    );
 }

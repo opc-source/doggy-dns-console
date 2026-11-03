@@ -6,14 +6,22 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::domain::{FailureFilter, Range, Window, host_filter};
+use crate::domain::{FailureFilter, Range, host_filter};
 use crate::error::DataError;
 use crate::service::ConsoleService;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct OverviewArgs {
+    /// Relative shortcut; expanded to `[to - n, to]`. Used to derive the start
+    /// when from is absent; ignored when from is given.
     pub window_minutes: Option<u32>,
+    /// Absolute bracket start in epoch milliseconds. Wins over `windowMinutes`
+    /// when `to` is present too.
+    pub from: Option<i64>,
+    /// Absolute bracket end in epoch milliseconds; also anchors `windowMinutes`
+    /// when `from` is absent. Defaults to the server clock.
+    pub to: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -62,13 +70,8 @@ pub async fn get_overview(
     service: &ConsoleService,
     args: OverviewArgs,
 ) -> Result<Value, DataError> {
-    // Temporary bridge until Task 3: `get_overview` still only accepts
-    // `windowMinutes`, so the bracket is expanded from the service clock here
-    // and the 5-1440 clamp still lives in `Window::new`.
-    let range = Range::from_window(
-        Window::new(args.window_minutes.unwrap_or(60)),
-        service.now_ms(),
-    );
+    let range = Range::resolve(args.from, args.to, args.window_minutes, service.now_ms())
+        .map_err(DataError::Invalid)?;
     let overview = service.overview(range).await?;
     serde_json::to_value(overview).map_err(|error| DataError::Invalid(error.to_string()))
 }
@@ -126,7 +129,7 @@ pub fn build_tools(service: Arc<ConsoleService>) -> Vec<Arc<dyn Tool>> {
         Arc::new(
             StatefulTool::new(
                 "get_overview",
-                "Return DNS overview: instances online/total, query volume, failure count, success rate, p95 latency and the series. Use this before quoting any KPI. The overview only accepts the relative windowMinutes shortcut and clamps it to 5-1440 minutes; for a longer look-back use list_failures.",
+                "Get fleet-wide DNS health for a time bracket: instances online/total, query volume, failure count, success rate, p95 latency and the trend series. Use this before quoting any KPI. Frame the window with from/to in epoch milliseconds (a span of 5 minutes up to 7 days, i.e. 10080 minutes) or with the windowMinutes shortcut; a bracket shorter than 5 minutes, longer than 10080 minutes, with a start at or after its end, or ending more than 60 seconds in the future is rejected, never clamped. P95 is the worst bucket inside the bracket, so a wider bracket reads higher.",
                 state.clone(),
                 tool_get_overview,
             )
