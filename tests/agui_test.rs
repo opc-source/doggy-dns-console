@@ -62,7 +62,11 @@ async fn spawn_test_app_with_mcp(
     let fixture = Arc::new(FixtureSource::new(Arc::new(FixedClock(1_761_436_800_000))));
     let telemetry = fixture.clone() as Arc<dyn TelemetrySource>;
     let instances = fixture as Arc<dyn InstanceSource>;
-    let service = Arc::new(ConsoleService::new(telemetry, instances.clone()));
+    let service = Arc::new(ConsoleService::new(
+        telemetry,
+        instances.clone(),
+        Arc::new(FixedClock(1_761_436_800_000)),
+    ));
     let sessions = Arc::new(adk_rust::session::InMemorySessionService::new());
     let mut cfg = config();
     cfg.ui_dist = dist;

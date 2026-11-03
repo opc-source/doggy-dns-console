@@ -4,7 +4,7 @@ use serde::Deserialize;
 
 use crate::api::error::ApiError;
 use crate::api::state::ApiState;
-use crate::domain::{FailureDetail, FailureFilter, FailureGroup, Window};
+use crate::domain::{FailureDetail, FailureFilter, FailureGroup, Range, Window};
 
 #[derive(Debug, Deserialize)]
 pub struct FailureQuery {
@@ -20,7 +20,7 @@ pub async fn failures(
     State(state): State<ApiState>,
     Query(query): Query<FailureQuery>,
 ) -> Result<Json<Vec<FailureGroup>>, ApiError> {
-    let filter = filter_from(query, 50);
+    let filter = filter_from(query, 50, state.service.now_ms());
     Ok(Json(state.service.failures(filter).await?))
 }
 
@@ -31,15 +31,16 @@ pub async fn failure_detail(
 ) -> Result<Json<FailureDetail>, ApiError> {
     // The detail must aggregate over the same window and filters as the list
     // entry it was opened from; the limit is irrelevant to a single trace.
-    let filter = filter_from(query, 1);
+    let filter = filter_from(query, 1, state.service.now_ms());
     Ok(Json(state.service.failure_detail(&trace_id, filter).await?))
 }
 
-pub(crate) fn filter_from(query: FailureQuery, default_limit: usize) -> FailureFilter {
+pub(crate) fn filter_from(query: FailureQuery, default_limit: usize, now_ms: i64) -> FailureFilter {
     FailureFilter {
-        window: Window::new(query.window_minutes.unwrap_or(60)),
+        range: Range::from_window(Window::new(query.window_minutes.unwrap_or(60)), now_ms),
         domain: query.domain,
         response_code: query.response_code,
+        instance: None,
         limit: query.limit.unwrap_or(default_limit).clamp(1, 200),
     }
 }

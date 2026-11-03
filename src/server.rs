@@ -79,7 +79,11 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         let fixture = Arc::new(FixtureSource::new(clock.clone()));
         let telemetry = fixture.clone() as Arc<dyn TelemetrySource>;
         let instances = fixture as Arc<dyn InstanceSource>;
-        let service = Arc::new(ConsoleService::new(telemetry, instances.clone()));
+        let service = Arc::new(ConsoleService::new(
+            telemetry,
+            instances.clone(),
+            clock.clone(),
+        ));
         (
             service,
             instances,
@@ -108,7 +112,11 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             config.mcp.control_port,
             clock.clone(),
         ));
-        let service = Arc::new(ConsoleService::new(telemetry, instances.clone()));
+        let service = Arc::new(ConsoleService::new(
+            telemetry,
+            instances.clone(),
+            clock.clone(),
+        ));
 
         let (openobserve_mcp_health, extra_tools, mcp_client) = if config.openobserve_mcp.enabled {
             let client = Arc::new(crate::agent::openobserve_mcp::OpenObserveMcpClient::new(

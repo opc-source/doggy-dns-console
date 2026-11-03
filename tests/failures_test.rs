@@ -10,7 +10,7 @@ use doggy_dns_console::datasource::openobserve::normalize::{
 };
 use doggy_dns_console::datasource::openobserve::telemetry::OpenObserveTelemetry;
 use doggy_dns_console::datasource::{FixedClock, TelemetrySource};
-use doggy_dns_console::domain::{FailureFilter, Window};
+use doggy_dns_console::domain::{FailureFilter, Range};
 use doggy_dns_console::error::DataError;
 use wiremock::matchers::{body_string_contains, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -38,7 +38,8 @@ fn telemetry(server: &MockServer) -> OpenObserveTelemetry {
 
 fn window_filter(limit: usize) -> FailureFilter {
     FailureFilter {
-        window: Window::new(60),
+        range: Range::new(NOW_MS - 60 * 60_000, NOW_MS),
+        instance: None,
         limit,
         ..Default::default()
     }
@@ -146,7 +147,8 @@ fn failure_group_row_applies_newest_non_empty_fallbacks() {
 #[test]
 fn failure_queries_share_the_predicate_and_escape_filters() {
     let filter = FailureFilter {
-        window: Window::new(60),
+        range: Range::new(1, 2),
+        instance: None,
         domain: Some("O'Reilly.example".to_string()),
         response_code: Some("ServFail".to_string()),
         limit: 50,

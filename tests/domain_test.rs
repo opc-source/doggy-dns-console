@@ -1,4 +1,4 @@
-use doggy_dns_console::domain::{Overview, Range, Window};
+use doggy_dns_console::domain::{FailureFilter, Overview, Range, Window};
 
 #[test]
 fn success_rate_is_none_without_queries() {
@@ -80,4 +80,41 @@ fn range_resolve_reports_the_rejection_reason() {
     let error =
         Range::resolve(Some(now - 60 * 60_000), Some(now + 120_000), None, now).unwrap_err();
     assert!(error.contains("future"), "unexpected error: {error}");
+}
+
+#[test]
+fn legacy_failure_filter_json_still_decodes() {
+    // What src/analysis/store.rs wrote before the absolute range existed.
+    // `SqliteInvestigationStore::decode_record` runs this same `from_str`, so a
+    // failure here would be a 500 on every historical row.
+    let legacy = r#"{"window":{"minutes":60},"domain":null,"responseCode":null,"limit":50}"#;
+    let filter: FailureFilter = serde_json::from_str(legacy).unwrap();
+
+    assert_eq!(filter.limit, 50);
+    assert_eq!(filter.domain, None);
+    assert_eq!(filter.response_code, None);
+    assert_eq!(filter.instance, None);
+    // The unknown `window` key is ignored and the missing `range` decodes to the
+    // inert 0..0 bracket; nothing reads it off the evidence echo after the
+    // fingerprint decoupling.
+    assert_eq!(filter.range, Range::default());
+    assert_eq!(filter.range.start_ms, 0);
+    assert_eq!(filter.range.end_ms, 0);
+}
+
+#[test]
+fn failure_filter_new_defaults_the_limit() {
+    let filter = FailureFilter::new(Range::new(1_000, 2_000));
+    assert_eq!(filter.range, Range::new(1_000, 2_000));
+    assert_eq!(filter.limit, 50);
+    assert_eq!(filter.domain, None);
+    assert_eq!(filter.response_code, None);
+    assert_eq!(filter.instance, None);
+
+    // Default stays available for tests and is defined as `new(0..0)`; the live
+    // limit of 50 keeps it out of `#[derive(Default)]`'s reach.
+    assert_eq!(
+        FailureFilter::default(),
+        FailureFilter::new(Range::default())
+    );
 }

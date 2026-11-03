@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use crate::datasource::{InstanceSource, SystemClock, TelemetrySource};
+use crate::datasource::{Clock, InstanceSource, TelemetrySource};
 use crate::domain::{
-    FailureDetail, FailureFilter, FailureGroup, Instance, InstanceDetail, Overview, Window,
+    FailureDetail, FailureFilter, FailureGroup, Instance, InstanceDetail, Overview, Range, Window,
 };
 use crate::error::DataError;
 use crate::evidence::assemble::assemble;
@@ -12,14 +12,27 @@ use crate::evidence::model::EvidenceBundle;
 pub struct ConsoleService {
     telemetry: Arc<dyn TelemetrySource>,
     instances: Arc<dyn InstanceSource>,
+    clock: Arc<dyn Clock>,
 }
 
 impl ConsoleService {
-    pub fn new(telemetry: Arc<dyn TelemetrySource>, instances: Arc<dyn InstanceSource>) -> Self {
+    pub fn new(
+        telemetry: Arc<dyn TelemetrySource>,
+        instances: Arc<dyn InstanceSource>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
         Self {
             telemetry,
             instances,
+            clock,
         }
+    }
+
+    /// The single source of truth for "now" behind every resolved bracket, so
+    /// the service and its datasource agree even in demo mode, where the fixture
+    /// is anchored on the same clock.
+    pub fn now_ms(&self) -> i64 {
+        self.clock.now_ms()
     }
 
     pub async fn overview(&self, window: Window) -> Result<Overview, DataError> {
@@ -58,7 +71,7 @@ impl ConsoleService {
             &*self.instances,
             trace_id,
             filter,
-            &SystemClock,
+            &*self.clock,
         )
         .await
     }
@@ -69,10 +82,7 @@ impl ConsoleService {
 
     pub async fn instance_detail(&self, id: &str) -> Result<InstanceDetail, DataError> {
         let mut detail = self.instances.detail(id).await?;
-        let filter = FailureFilter {
-            window: Window::new(60),
-            ..Default::default()
-        };
+        let filter = FailureFilter::new(Range::from_window(Window::new(60), self.now_ms()));
         if let Ok(groups) = self.telemetry.failures(filter).await {
             detail.recent_failures = groups
                 .iter()

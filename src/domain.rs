@@ -125,9 +125,14 @@ impl Overview {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FailureFilter {
-    pub window: Window,
+    /// The absolute bracket the investigation chain queries. `#[serde(default)]`
+    /// keeps rows written before this field existed decodable.
+    #[serde(default)]
+    pub range: Range,
     pub domain: Option<String>,
     pub response_code: Option<String>,
+    /// Case-insensitive equality against the telemetry `host_name` column.
+    pub instance: Option<String>,
     pub limit: usize,
 }
 
@@ -281,13 +286,20 @@ pub struct InstanceDetail {
     pub recent_failures: u64,
 }
 
-impl Default for FailureFilter {
-    fn default() -> Self {
+impl FailureFilter {
+    pub fn new(range: Range) -> Self {
         Self {
-            window: Window::default(),
+            range,
             domain: None,
             response_code: None,
+            instance: None,
             limit: 50,
         }
+    }
+}
+
+impl Default for FailureFilter {
+    fn default() -> Self {
+        Self::new(Range::default())
     }
 }

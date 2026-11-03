@@ -80,7 +80,7 @@ impl TelemetrySource for OpenObserveTelemetry {
     }
 
     async fn failures(&self, filter: FailureFilter) -> Result<Vec<FailureGroup>, DataError> {
-        let (start, end) = self.range(filter.window);
+        let (start, end) = (filter.range.start_ms, filter.range.end_ms);
         let limit = filter.limit.clamp(1, 200);
         let sql =
             failure_groups_query(&self.client.config().log_stream, &filter, start, end, limit);
@@ -97,7 +97,7 @@ impl TelemetrySource for OpenObserveTelemetry {
         trace_id: &str,
         filter: FailureFilter,
     ) -> Result<FailureDetail, DataError> {
-        let (start, end) = self.range(filter.window);
+        let (start, end) = (filter.range.start_ms, filter.range.end_ms);
         let log_stream = &self.client.config().log_stream;
         let trace_stream = &self.client.config().trace_stream;
 

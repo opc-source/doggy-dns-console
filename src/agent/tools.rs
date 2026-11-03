@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::domain::{FailureFilter, Window};
+use crate::domain::{DEFAULT_WINDOW_MINUTES, FailureFilter, Range, Window};
 use crate::error::DataError;
 use crate::service::ConsoleService;
 
@@ -61,10 +61,18 @@ pub async fn list_failures(
     service: &ConsoleService,
     args: FailureArgs,
 ) -> Result<Value, DataError> {
+    let now_ms = service.now_ms();
+    let range = Range::checked(
+        now_ms - i64::from(args.window_minutes.unwrap_or(60)) * 60_000,
+        now_ms,
+        now_ms,
+    )
+    .unwrap_or_else(|_| Range::from_window(Window::new(DEFAULT_WINDOW_MINUTES), now_ms));
     let filter = FailureFilter {
-        window: Window::new(args.window_minutes.unwrap_or(60)),
+        range,
         domain: args.domain,
         response_code: args.response_code,
+        instance: None,
         limit: args.limit.unwrap_or(50).clamp(1, 200),
     };
     let groups = service.failures(filter).await?;
@@ -75,10 +83,18 @@ pub async fn get_failure_detail(
     service: &ConsoleService,
     args: TraceArgs,
 ) -> Result<Value, DataError> {
+    let now_ms = service.now_ms();
+    let range = Range::checked(
+        now_ms - i64::from(args.window_minutes.unwrap_or(60)) * 60_000,
+        now_ms,
+        now_ms,
+    )
+    .unwrap_or_else(|_| Range::from_window(Window::new(DEFAULT_WINDOW_MINUTES), now_ms));
     let filter = FailureFilter {
-        window: Window::new(args.window_minutes.unwrap_or(60)),
+        range,
         domain: args.domain,
         response_code: args.response_code,
+        instance: None,
         limit: 1,
     };
     let detail = service.failure_detail(&args.trace_id, filter).await?;

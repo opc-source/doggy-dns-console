@@ -82,7 +82,11 @@ fn fixture() -> Arc<FixtureSource> {
 fn app_with(telemetry: Arc<dyn TelemetrySource>) -> axum::Router {
     let fixture = fixture();
     let instances = fixture.clone() as Arc<dyn InstanceSource>;
-    let service = Arc::new(ConsoleService::new(telemetry, instances.clone()));
+    let service = Arc::new(ConsoleService::new(
+        telemetry,
+        instances.clone(),
+        Arc::new(FixedClock(1_761_436_800_000)),
+    ));
     doggy_dns_console::api::business_router(ApiState {
         service,
         instances,

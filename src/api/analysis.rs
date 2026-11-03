@@ -172,6 +172,7 @@ pub async fn start(
             limit: None,
         },
         1,
+        state.service.now_ms(),
     );
     let bundle = state.service.evidence(&trace_id, &filter).await?;
     match analysis

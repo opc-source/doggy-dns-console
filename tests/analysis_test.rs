@@ -1386,7 +1386,7 @@ use doggy_dns_console::analysis::store::{
     CacheKey, InvestigationMarker, InvestigationOutcome, InvestigationRecord, InvestigationStatus,
     InvestigationStore, NewInvestigation, SqliteInvestigationStore,
 };
-use doggy_dns_console::domain::Window;
+use doggy_dns_console::domain::Range;
 use sqlx::Row;
 
 const EVIDENCE_FINGERPRINT: &str = "sha256:evidence-fingerprint";
@@ -1394,7 +1394,8 @@ const MODEL: &str = "test-model";
 
 fn sample_filter() -> FailureFilter {
     FailureFilter {
-        window: Window::new(30),
+        range: Range::new(NOW_MS - 30 * 60_000, NOW_MS),
+        instance: None,
         domain: Some("example.com".to_string()),
         response_code: Some("SERVFAIL".to_string()),
         limit: 20,

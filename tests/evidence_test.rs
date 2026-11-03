@@ -7,8 +7,8 @@ use doggy_dns_console::datasource::fixture::FixtureSource;
 use doggy_dns_console::datasource::{Clock, FixedClock, InstanceSource, TelemetrySource};
 use doggy_dns_console::domain::{
     FailureDetail, FailureFilter, FailureGroup, Instance, InstanceDetail, InstanceIdentity,
-    LogRecord, MatchQuality, MatchedInstance, MetricCounts, Overview, PluginInfo, SeenInstance,
-    SpanRecord, Window, WindowMetrics,
+    LogRecord, MatchQuality, MatchedInstance, MetricCounts, Overview, PluginInfo, Range,
+    SeenInstance, SpanRecord, Window, WindowMetrics,
 };
 use doggy_dns_console::error::DataError;
 use doggy_dns_console::evidence::assemble::assemble;
@@ -1413,7 +1413,14 @@ impl InstanceSource for FakeInstances {
 
 fn assemble_filter() -> FailureFilter {
     FailureFilter {
-        window: Window::new(60),
+        // Exactly 60 minutes, anchored on the fixture clock
+        // (`FixedClock(1_761_436_800_000)`): the span keeps the interim
+        // `EvidenceFilter` echo at `window_minutes: 60` for the assertions
+        // below, and the fixture rows (which hang off that same clock) stay
+        // inside the bracket for Task 7's real filtering. Task 5 deletes the
+        // echo.
+        range: Range::new(1_761_436_800_000 - 60 * 60_000, 1_761_436_800_000),
+        instance: None,
         domain: None,
         response_code: None,
         limit: 10,
@@ -2293,6 +2300,7 @@ async fn console_service_evidence_delegates_to_assembly_with_fixture_sources() {
     let service = ConsoleService::new(
         fixture.clone() as Arc<dyn TelemetrySource>,
         fixture as Arc<dyn InstanceSource>,
+        Arc::new(FixedClock(1_761_436_800_000)),
     );
 
     let bundle = service

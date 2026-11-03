@@ -17,6 +17,6 @@ pub async fn evidence(
     Path(trace_id): Path<String>,
     Query(query): Query<FailureQuery>,
 ) -> Result<Json<EvidenceBundle>, ApiError> {
-    let filter = filter_from(query, 1);
+    let filter = filter_from(query, 1, state.service.now_ms());
     Ok(Json(state.service.evidence(&trace_id, &filter).await?))
 }

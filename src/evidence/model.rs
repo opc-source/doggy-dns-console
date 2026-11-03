@@ -50,8 +50,9 @@ pub struct EvidenceFilter {
 
 impl From<&FailureFilter> for EvidenceFilter {
     fn from(filter: &FailureFilter) -> Self {
+        let span_minutes = ((filter.range.end_ms - filter.range.start_ms) / 60_000).max(1);
         Self {
-            window_minutes: filter.window.minutes,
+            window_minutes: span_minutes as u32,
             domain: filter.domain.clone(),
             response_code: filter.response_code.clone(),
         }

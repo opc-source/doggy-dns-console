@@ -2,16 +2,15 @@ use std::sync::Arc;
 
 use doggy_dns_console::datasource::fixture::FixtureSource;
 use doggy_dns_console::datasource::{InstanceSource, TelemetrySource};
-use doggy_dns_console::domain::{FailureFilter, Window};
+use doggy_dns_console::domain::{FailureFilter, Range, Window};
 use doggy_dns_console::service::ConsoleService;
 
 fn service() -> ConsoleService {
-    let fixture = Arc::new(FixtureSource::new(Arc::new(
-        doggy_dns_console::datasource::FixedClock(1_761_436_800_000),
-    )));
+    let clock = Arc::new(doggy_dns_console::datasource::FixedClock(1_761_436_800_000));
+    let fixture = Arc::new(FixtureSource::new(clock.clone()));
     let telemetry = fixture.clone() as Arc<dyn TelemetrySource>;
     let instances = fixture as Arc<dyn InstanceSource>;
-    ConsoleService::new(telemetry, instances)
+    ConsoleService::new(telemetry, instances, clock)
 }
 
 #[tokio::test]
@@ -27,7 +26,8 @@ async fn fixture_overview_has_nodes_and_success_rate() {
 async fn fixture_failure_detail_contains_trace_evidence() {
     let groups = service()
         .failures(FailureFilter {
-            window: Window::new(60),
+            range: Range::new(0, 1_761_436_800_000 + 60 * 60_000),
+            instance: None,
             ..Default::default()
         })
         .await
@@ -37,7 +37,8 @@ async fn fixture_failure_detail_contains_trace_evidence() {
         .failure_detail(
             &trace_id,
             FailureFilter {
-                window: Window::new(60),
+                range: Range::new(0, 1_761_436_800_000 + 60 * 60_000),
+                instance: None,
                 ..Default::default()
             },
         )

@@ -45,11 +45,12 @@ impl TelemetrySource for CountingTelemetry {
 
 fn service(calls: Arc<AtomicUsize>) -> Arc<ConsoleService> {
     let clock = Arc::new(FixedClock(1_761_436_800_000));
-    let inner = FixtureSource::new(clock);
+    let inner = FixtureSource::new(clock.clone());
     let instances = Arc::new(FixtureSource::new(Arc::new(FixedClock(1_761_436_800_000))));
     Arc::new(ConsoleService::new(
         Arc::new(CountingTelemetry { inner, calls }),
         instances as Arc<dyn InstanceSource>,
+        clock,
     ))
 }
 
