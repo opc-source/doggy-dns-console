@@ -118,6 +118,25 @@ describe('FailureList', () => {
     expect(row.text()).toContain(LONG_QUERY)
   })
 
+  it("moves the page row's meta fields off the query's line", () => {
+    // Browser-measured at a 1440 x 900 viewport: the page row put nine `shrink-0`
+    // spans plus the query in one flex line, and they needed ~1014px of a 874px
+    // content box. The query was the only shrinkable child, so it went to 0 width
+    // and `break-all` painted it one character per line (a 656px-tall row). The
+    // meta fields now own a second line, which jsdom can see as a second parent.
+    const { wrapper } = mountList({ dense: false, groups: [GROUP] })
+    const row = wrapper.get('[data-testid="failure-row"]')
+    const query = row.get('[data-testid="row-query"]')
+    const meta = row.get('[data-testid="row-meta"]')
+
+    expect(query.element.parentElement).not.toBe(meta.element.parentElement)
+    expect(meta.text()).toContain('dns-node-2')
+    expect(meta.text()).toContain(msToDatetime(GROUP.firstSeen))
+    expect(meta.text()).toContain('5012')
+    // The dense card row has no meta line, so it keeps its single line.
+    expect(mountList({ groups: [GROUP] }).wrapper.find('[data-testid="row-meta"]').exists()).toBe(false)
+  })
+
   it('truncates a dense query only past 42 characters', () => {
     // Distinct characters around the cut: a longer prefix must not hide inside the
     // expected one, and a shorter one must not match it either.
