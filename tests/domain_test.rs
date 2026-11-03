@@ -151,3 +151,31 @@ fn failure_filter_new_defaults_the_limit() {
         FailureFilter::new(Range::default())
     );
 }
+
+#[test]
+fn bucket_width_tiles_a_bracket_into_at_most_168_points() {
+    let bracket = |minutes: i64| Range::new(0, minutes * 60_000);
+    assert_eq!(bracket(5).bucket_minutes(), 1);
+    assert_eq!(bracket(60).bucket_minutes(), 1);
+    assert_eq!(bracket(168).bucket_minutes(), 1);
+    assert_eq!(bracket(169).bucket_minutes(), 2);
+    assert_eq!(bracket(1_440).bucket_minutes(), 9);
+    assert_eq!(bracket(10_080).bucket_minutes(), 60);
+    assert_eq!(bracket(10_080).step_seconds(), 3_600);
+}
+
+#[test]
+fn rate_window_never_drops_below_five_minutes() {
+    let bracket = |minutes: i64| Range::new(0, minutes * 60_000);
+    assert_eq!(bracket(60).rate_window_minutes(), 5);
+    assert_eq!(bracket(1_440).rate_window_minutes(), 9);
+    assert_eq!(bracket(10_080).rate_window_minutes(), 60);
+}
+
+#[test]
+fn totals_are_sampled_once_over_the_whole_bracket() {
+    assert_eq!(Range::new(0, 60 * 60_000).whole_step_seconds(), 3_600);
+    assert_eq!(Range::new(0, 10_080 * 60_000).whole_step_seconds(), 604_800);
+    assert_eq!(Range::new(0, 5 * 60_000).span_minutes(), 5);
+    assert_eq!(Range::new(0, 90_000).span_minutes(), 2);
+}

@@ -25,6 +25,13 @@ pub const MIN_RANGE_MINUTES: u32 = 5;
 /// The investigation chain may look back a full week; the live class stays at
 /// 1440 minutes and keeps clamping through [`Window::new`].
 pub const MAX_RANGE_MINUTES: u32 = 7 * 1440;
+/// The trend chart stays readable at about this many points; the bucket width
+/// is derived from it, never tuned per query.
+pub const MAX_SERIES_POINTS: u32 = 168;
+/// The narrowest rate window a trend query uses.
+pub const MIN_RATE_WINDOW_MINUTES: u32 = 5;
+/// The widest bucket: seven days at one point per hour.
+pub const MAX_BUCKET_MINUTES: u32 = 60;
 /// Clock skew between the console and the browser, in milliseconds.
 pub const FUTURE_TOLERANCE_MS: i64 = 60_000;
 pub const DEFAULT_WINDOW_MINUTES: u32 = 60;
@@ -90,6 +97,41 @@ impl Range {
             ));
         }
         Ok(Self::new(start_ms, end_ms))
+    }
+
+    /// Whole minutes covered by the bracket, rounded up so a sub-minute sliver
+    /// still gets its own bucket instead of a zero-width one.
+    pub fn span_minutes(&self) -> u32 {
+        let span_ms = self.end_ms.saturating_sub(self.start_ms).max(0);
+        ((span_ms + 59_999) / 60_000).max(1) as u32
+    }
+
+    /// Bucket width the trend and p95 queries share (spec D15). A one-hour
+    /// bracket gets `1`, so the default chart keeps the 60-second step it has
+    /// always used.
+    pub fn bucket_minutes(&self) -> u32 {
+        self.span_minutes()
+            .div_ceil(MAX_SERIES_POINTS)
+            .clamp(1, MAX_BUCKET_MINUTES)
+    }
+
+    /// Rate window for the trend and p95 queries: never narrower than five
+    /// minutes, which is what keeps the default one-hour curve byte-identical
+    /// to the pre-bracket version.
+    pub fn rate_window_minutes(&self) -> u32 {
+        self.bucket_minutes().max(MIN_RATE_WINDOW_MINUTES)
+    }
+
+    /// Range-query step, in seconds, that tiles the bracket into buckets.
+    pub fn step_seconds(&self) -> u64 {
+        u64::from(self.bucket_minutes()) * 60
+    }
+
+    /// Range-query step, in seconds, for a single sample covering the bracket.
+    /// Totals use this so a seven-day chart does not replay the same
+    /// `increase` window ten thousand times.
+    pub fn whole_step_seconds(&self) -> u64 {
+        u64::from(self.span_minutes()) * 60
     }
 }
 
