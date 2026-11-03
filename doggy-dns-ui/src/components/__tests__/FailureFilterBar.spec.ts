@@ -119,7 +119,7 @@ describe('FailureFilterBar', () => {
 
     // An absolute pair is not any chip: none of them may claim it.
     const absolute = mountBar({ ...emptyDraft(), fromMs: NOW - 3 * HOUR, toMs: NOW })
-    for (const id of ['quick-1h', 'quick-24h', 'quick-7d']) {
+    for (const id of ['quick-1h', 'quick-6h', 'quick-24h', 'quick-7d']) {
       expect(absolute.find(`[data-testid="${id}"]`).attributes('aria-pressed')).toBe('false')
     }
   })

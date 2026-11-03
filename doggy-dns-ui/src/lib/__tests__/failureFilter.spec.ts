@@ -222,8 +222,9 @@ describe('rangeLabel', () => {
   it('names a relative hour', () => {
     expect(rangeLabel(relativeDraft(60), NOW)).toBe('近 1 小时')
     expect(rangeLabel(relativeDraft(30), NOW)).toBe('近 30 分钟')
-    // 1440 is the widest option the live picker offers; its label must not
-    // flip to a different unit at the value the picker itself shows.
+    // 1440 is the 24h chip the shared picker offers in hour units (its widest
+    // preset is now 10080); the label must not flip to a different unit at a
+    // value the picker itself shows.
     expect(rangeLabel(relativeDraft(1440), NOW)).toBe('近 24 小时')
   })
 

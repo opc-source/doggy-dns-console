@@ -271,12 +271,13 @@ describe('FailuresView', () => {
     expect(wrapper.find('[data-testid="row-instance"]').text()).toBe('dns-node-2')
   })
 
-  it('quotes both ceilings in the hint line', async () => {
+  it('quotes the one ceiling and names the windowless endpoint', async () => {
     const { wrapper } = await mountView('/failures?windowMinutes=60')
 
     const hint = wrapper.find('[data-testid="range-hint"]')
     expect(hint.text()).toContain('5 分钟到 10080 分钟')
-    expect(hint.text()).toContain('1440')
+    expect(hint.text()).not.toContain('1440')
+    expect(hint.text()).toContain('/api/instances')
   })
 
   it('offers the discovered hosts, not just the ones on screen', async () => {

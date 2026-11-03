@@ -195,8 +195,8 @@ export function rangeLabel(draft: FilterDraft, _nowMs: number): string {
   }
   const minutes = draft.windowMinutes ?? DEFAULT_WINDOW_MINUTES
   if (minutes < 60) return `近 ${minutes} 分钟`
-  // 1440 is the live picker's widest option; the hour unit holds through it,
-  // so the label only flips to days above the relative class's ceiling.
+  // 1440 keeps the hour unit: the shared picker's widest preset is now 10080
+  // (7 天), so the label only flips to days above a day's worth of minutes.
   if (minutes <= 1440) return `近 ${formatQuantity(minutes / 60)} 小时`
   return `近 ${formatQuantity(minutes / 1440)} 天`
 }
