@@ -21,6 +21,76 @@ impl Default for Window {
     }
 }
 
+pub const MIN_RANGE_MINUTES: u32 = 5;
+/// The investigation chain may look back a full week; the live class stays at
+/// 1440 minutes and keeps clamping through [`Window::new`].
+pub const MAX_RANGE_MINUTES: u32 = 7 * 1440;
+/// Clock skew between the console and the browser, in milliseconds.
+pub const FUTURE_TOLERANCE_MS: i64 = 60_000;
+pub const DEFAULT_WINDOW_MINUTES: u32 = 60;
+
+/// An absolute `[start, end]` bracket in epoch milliseconds.
+///
+/// `Default` is the deliberately inert `0..0`: legacy `filter_json` blobs stored
+/// before the range was introduced decode into it, and nothing reads the range
+/// off the evidence echo any more (see the fingerprint decoupling).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Range {
+    pub start_ms: i64,
+    pub end_ms: i64,
+}
+
+impl Range {
+    pub fn new(start_ms: i64, end_ms: i64) -> Self {
+        Self { start_ms, end_ms }
+    }
+
+    /// Expand a relative window into `[now - minutes, now]`.
+    pub fn from_window(window: Window, now_ms: i64) -> Self {
+        let span = i64::from(window.minutes) * 60_000;
+        Self::new(now_ms - span, now_ms)
+    }
+
+    /// Apply the precedence rule: an explicit `from`/`to` pair wins, otherwise
+    /// `windowMinutes` (default 60) is measured backwards from `to` (default
+    /// `now`). A lone `from` or lone `to` still participates, which is why the
+    /// fallback anchors on the resolved `end`.
+    pub fn resolve(
+        from: Option<i64>,
+        to: Option<i64>,
+        window_minutes: Option<u32>,
+        now_ms: i64,
+    ) -> Result<Self, String> {
+        let end_ms = to.unwrap_or(now_ms);
+        let minutes = i64::from(window_minutes.unwrap_or(DEFAULT_WINDOW_MINUTES));
+        let start_ms = from.unwrap_or(end_ms - minutes * 60_000);
+        Self::checked(start_ms, end_ms, now_ms)
+    }
+
+    /// The three rejection rules plus the future tolerance, and nothing else.
+    pub fn checked(start_ms: i64, end_ms: i64, now_ms: i64) -> Result<Self, String> {
+        if start_ms >= end_ms {
+            return Err("range start must be before range end".to_owned());
+        }
+        if end_ms > now_ms + FUTURE_TOLERANCE_MS {
+            return Err("range end is too far in the future".to_owned());
+        }
+        let span_ms = end_ms - start_ms;
+        if span_ms < i64::from(MIN_RANGE_MINUTES) * 60_000 {
+            return Err(format!(
+                "range is shorter than the {MIN_RANGE_MINUTES}-minute floor"
+            ));
+        }
+        if span_ms > i64::from(MAX_RANGE_MINUTES) * 60_000 {
+            return Err(format!(
+                "range is longer than the {MAX_RANGE_MINUTES}-minute ceiling"
+            ));
+        }
+        Ok(Self::new(start_ms, end_ms))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesPoint {
