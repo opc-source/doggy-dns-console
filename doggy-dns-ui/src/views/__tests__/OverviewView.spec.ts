@@ -8,6 +8,9 @@ import FailureDrawer from '@/components/FailureDrawer.vue'
 import { routes } from '@/router'
 import OverviewView from '@/views/OverviewView.vue'
 
+const HOUR = 3_600_000
+const DAY = 24 * HOUR
+
 const overview = {
   windowMinutes: 60,
   instancesOnline: 3,
@@ -56,11 +59,15 @@ function json(body: unknown, status = 200) {
   })
 }
 
+// Recorded by `stubApi` so a case can count the requests the view actually made.
+const fetches: string[] = []
+
 function stubApi(overviewResponse: () => Response) {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
+      fetches.push(url)
       if (url.includes('/api/overview')) return overviewResponse()
       if (url.includes('/api/analysis/markers')) return json(markers)
       return json(failures)
@@ -75,9 +82,11 @@ const wrappers: VueWrapper[] = []
  * view is mounted with the app's own route table: a hand-copied one would keep
  * passing after somebody renamed a route.
  */
-async function mountOverview(): Promise<{ router: Router; wrapper: VueWrapper }> {
+async function mountOverview(
+  path = '/',
+): Promise<{ router: Router; wrapper: VueWrapper }> {
   const router = createRouter({ history: createMemoryHistory(), routes })
-  await router.push('/')
+  await router.push(path)
   await router.isReady()
 
   const wrapper = mount(OverviewView, {
@@ -86,13 +95,6 @@ async function mountOverview(): Promise<{ router: Router; wrapper: VueWrapper }>
   wrappers.push(wrapper)
   await flushPromises()
   return { router, wrapper }
-}
-
-/** The window chips are plain buttons labelled `1h`/`6h`/`24h` with no test id. */
-function chipByText(wrapper: VueWrapper, label: string) {
-  const [chip] = wrapper.findAll('button').filter((button) => button.text() === label)
-  if (!chip) throw new Error(`no ${label} window chip`)
-  return chip
 }
 
 /**
@@ -125,6 +127,10 @@ describe('OverviewView', () => {
     // Unmounting stops the 15 s refresh interval even when an assertion failed.
     for (const wrapper of wrappers.splice(0)) wrapper.unmount()
     vi.unstubAllGlobals()
+    // The week case below installs fake timers; reset them so a failure part-way
+    // through that case cannot leak the frozen clock into the next one.
+    vi.useRealTimers()
+    fetches.length = 0
   })
 
   it('keeps stale data on error', async () => {
@@ -175,7 +181,7 @@ describe('OverviewView', () => {
     stubApi(() => json(overview))
     const { router, wrapper } = await mountOverview()
 
-    await chipByText(wrapper, '24h').trigger('click')
+    await wrapper.get('[data-testid="quick-24h"]').trigger('click')
     await flushPromises()
     await clickRow(wrapper, router)
 
@@ -196,14 +202,14 @@ describe('OverviewView', () => {
     stubApi(() => json(overview))
     const { wrapper } = await mountOverview()
 
-    await chipByText(wrapper, '6h').trigger('click')
+    await wrapper.get('[data-testid="quick-6h"]').trigger('click')
     await flushPromises()
 
     // The rows are 6 h old; a bare /failures would silently show 60 minutes.
     const href = wrapper.find('[data-testid="see-all"]').attributes('href')
     expect(href).toMatch(/\/failures\?windowMinutes=360$/)
-    expect(chipByText(wrapper, '6h').attributes('aria-pressed')).toBe('true')
-    expect(chipByText(wrapper, '1h').attributes('aria-pressed')).toBe('false')
+    expect(wrapper.get('[data-testid="quick-6h"]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('[data-testid="quick-1h"]').attributes('aria-pressed')).toBe('false')
   })
 
   it('never mounts a drawer from the store', async () => {
@@ -216,5 +222,38 @@ describe('OverviewView', () => {
     // The drawer is `failure-detail`'s alone: a second mount here is what lets a
     // pasted deep link and the browser's back button disagree with the screen.
     expect(wrapper.findComponent(FailureDrawer).exists()).toBe(false)
+  })
+
+  it('takes a week bracket from the URL and does not poll it', async () => {
+    // The overview used to poll unconditionally; a 7-day bracket refreshed every
+    // 15 s is a load test against OpenObserve, not a live view. Only an absolute
+    // bracket stops the poll (design D8), so the week arrives as `from`/`to`: a
+    // relative `windowMinutes=10080` would still re-anchor on every refresh.
+    vi.useFakeTimers()
+    const to = Date.now()
+    stubApi(() => json(overview))
+    const { wrapper } = await mountOverview(`/?from=${to - 7 * DAY}&to=${to}`)
+
+    const overviewCalls = fetches.filter((url) => url.includes('/api/overview'))
+    expect(overviewCalls).toHaveLength(1)
+    expect(overviewCalls[0]).toContain(`from=${to - 7 * DAY}`)
+    expect(overviewCalls[0]).toContain(`to=${to}`)
+
+    await vi.advanceTimersByTimeAsync(45_000)
+    expect(fetches.filter((url) => url.includes('/api/overview'))).toHaveLength(1)
+    vi.useRealTimers()
+    wrapper.unmount()
+  })
+
+  it('labels the header with the bracket a deep link describes', async () => {
+    const to = Date.now()
+    stubApi(() => json(overview))
+    const { wrapper } = await mountOverview(`/?from=${to - 3 * HOUR}&to=${to}`)
+
+    // `rangeLabel` renders an absolute pair as `起 ~ 止`; a relative draft never
+    // contains the tilde, so the copy itself proves the bracket came from the URL.
+    expect(wrapper.get('[data-testid="range-label"]').text()).toContain('~')
+    expect(fetches.some((url) => url.includes(`from=${to - 3 * HOUR}`))).toBe(true)
+    wrapper.unmount()
   })
 })

@@ -3,9 +3,17 @@ import { computed } from 'vue'
 import VChart from 'vue-echarts'
 
 import type { SeriesPoint } from '@/api/types'
+import { seriesSpanMs, seriesTick } from '@/lib/chartLabels'
 import '@/lib/echarts'
 
 const props = defineProps<{ series: SeriesPoint[] }>()
+
+// Tick labels are their own computed: an IIFE inside the option literal would
+// re-derive the span once per label and hide the one-day threshold from review.
+const tickLabels = computed(() => {
+  const spanMs = seriesSpanMs(props.series)
+  return props.series.map((point) => seriesTick(point.ts, spanMs))
+})
 
 const option = computed(() => ({
   animationDuration: 220,
@@ -27,9 +35,7 @@ const option = computed(() => ({
   xAxis: {
     type: 'category',
     boundaryGap: false,
-    data: props.series.map((point) =>
-      new Date(point.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    ),
+    data: tickLabels.value,
     axisLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } },
     axisLabel: { color: '#8b90a0', fontSize: 10 },
   },
