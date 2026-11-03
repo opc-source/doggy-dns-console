@@ -1934,12 +1934,23 @@ test('an absolute bracket is asked for once and never polled', async ({ page }) 
 
 - [ ] **Step 3: 浏览器实测(不是"看起来对")**
 
-demo 模式起服务:`CONSOLE_DEMO=1 bun run dev`(或后端直读 `dist`:先 `cd doggy-dns-ui && bun run build`,再在仓库根 `CONSOLE_DEMO=1 cargo run`),用 chrome-devtools 走:
-1. `/` → 点"7 天" → 网络里 `/api/overview?windowMinutes=10080`,趋势轴出现日期;等 20s 看是否仍刷新(相对窗口应当继续刷新,记录次数)。
-2. `/` → 手输 `?from&to` 绝对区间 → 20s 内只 1 次请求。
-3. `/` → `?windowMinutes=20000` → 卡片全空 + 横幅文案含"10080"。
-4. `/instances` → 选 7 天 → 打开 dns-node-1 → "区间内失败" 数字随区间变;`failureCount` 为 `null` 时显示 `—`(可临时在 devtools 里改 `$pinia`/组件状态验证,或直接看 `/api/instances/dns-node-1` 的 JSON 形状)。
-5. `/failures` → 三处时间控件形态一致、预设 1h/6h/24h/7d 都在。
+起服务(两条命令、两个终端,不是一条):demo 开关属于 **Rust 服务端**,vite 只做代理 —— `doggy-dns-ui/vite.config.ts:16-19` 把 `/api` 代理到 `http://127.0.0.1:8787`,所以 `CONSOLE_DEMO=1 bun run dev` 这种写法不会让任何进入进程读到它。正确做法:
+
+```bash
+# 终端 1:仓库根,后端 demo 模式监听 8787(/api/health 可探活)
+CONSOLE_DEMO=1 cargo run --quiet
+# 终端 2:doggy-dns-ui/,前端 5173,/api 走代理
+bun run dev
+```
+
+然后 **MCP 起浏览器**:`mcp_call` → `mcp__plugin_chrome-devtools-mcp_chrome-devtools__new_page`(url `http://localhost:5173/`),后续步骤用 `navigate_page` / `click` / `list_network_requests` / `take_snapshot`,每次都带上这个 page 的 `pageId`。若浏览器 MCP 起不来,退回 Playwright 跑同一段脚本并在报告里写明"未做浏览器实测",不要把"看起来对"当成证据。
+
+逐条走完并把**实测到的数字、请求 URL、文案原样**贴回报告:
+1. `/` → 点"7 天"(`quick-7d`)→ 网络里出现 `/api/overview?windowMinutes=10080`,趋势轴出现日期;等 20s 数请求次数(相对窗口应当继续刷新,记录次数)。
+2. `/` → 手输一个 7 天内的 `?from&to` 绝对区间 → 等 20s,`/api/overview` 只 1 次。
+3. `/` → `?windowMinutes=20000` → 卡片全空 + 提示含"10080"(先确认它走的是 `validateDraft` 的本地拒绝,不是服务端 400)。
+4. `/instances` → 选 7 天 → 打开 dns-node-1 → "区间内失败" 数字随区间变(1h vs 7d 各读一次);`failureCount` 为 `null` 时显示 `—` —— demo fixture 不会给出 `null`,所以这一步用 `/api/instances/dns-node-1?windowMinutes=60` 的 JSON 形状 + 单元用例(`InstancesView.spec.ts` 的 null/0 对)共同证明,报告里要分开写哪条是浏览器看到的、哪条是测试证明的。
+5. `/failures` 与 `/` 与 `/instances` 抽屉三处时间控件形态一致、预设 1h/6h/24h/7d 都在。
 6. p95 卡片 hint 是 "worst bucket in range"。
 把实测到的数字/文案原样贴回报告,不许只写"符合预期"。
 
