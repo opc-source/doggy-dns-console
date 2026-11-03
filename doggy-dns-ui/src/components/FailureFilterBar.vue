@@ -19,11 +19,18 @@ function patch(next: Partial<FilterDraft>) {
 <template>
   <section class="panel flex flex-wrap items-end gap-3 px-4 py-3">
     <!-- The whole time section — presets, bracket, reset, hint — is shared with
-         the dashboard and the instance drawer through this one control. -->
-    <TimeRangeControl
-      :model-value="modelValue"
-      @update:model-value="emit('update:modelValue', $event)"
-    />
+         the dashboard and the instance drawer through this one control. The
+         control has several root nodes, so in this flex row its roots would each
+         become a direct flex item and the hint's `w-full` would force a wrap in
+         the MIDDLE of the bar, shoving the three filter fields below it. Wrapping
+         the control in its own flex container makes the whole time section a
+         single flex item, so the hint stays on its own line above the fields. -->
+    <div class="flex flex-wrap items-end gap-3">
+      <TimeRangeControl
+        :model-value="modelValue"
+        @update:model-value="emit('update:modelValue', $event)"
+      />
+    </div>
 
     <label class="flex flex-col gap-1 text-[11px] text-muted">
       实例

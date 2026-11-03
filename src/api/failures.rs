@@ -12,7 +12,8 @@ pub struct FailureQuery {
     #[serde(rename = "windowMinutes")]
     pub window_minutes: Option<u32>,
     /// Absolute bracket start in epoch milliseconds. Wins over `windowMinutes`
-    /// when `to` is present too.
+    /// on its own: `to` need not be present, and an absent `to` is the server
+    /// clock.
     pub from: Option<i64>,
     /// Absolute bracket end in epoch milliseconds; also anchors `windowMinutes`
     /// when `from` is absent. Defaults to the server clock.
