@@ -174,13 +174,13 @@ const activeQuick = computed(() =>
       <!--
         Both ceilings are interpolated, never typed: the investigation chain
         rejects outside 5–10080 (`Range::checked` in `src/domain.rs`), while the
-        live overview/instance views use `Window::new` (`src/domain.rs:13`), a
-        CLAMP at 5–1440 — a different mechanism and a different type, so the
-        number below is documentation of that clamp rather than a shared
-        constant, and there is no MAX_WINDOW_MINUTES to import.
+        live overview uses `Window::new` (`src/domain.rs:13`), a CLAMP at 5–1440
+        — a different mechanism and a different type, so the number below is
+        documentation of that clamp rather than a shared constant, and there is
+        no MAX_WINDOW_MINUTES to import. The instance views send no window at
+        all: `/api/instances` takes none.
       -->
-      回溯链支持 {{ MIN_RANGE_MINUTES }} 分钟到 {{ MAX_RANGE_MINUTES }} 分钟（7 天）；看板与实例视图仍限
-      1440 分钟。
+      回溯链支持 {{ MIN_RANGE_MINUTES }} 分钟到 {{ MAX_RANGE_MINUTES }} 分钟（7 天）；看板仍限 1440 分钟，实例视图不取时间窗。
     </p>
   </section>
 </template>

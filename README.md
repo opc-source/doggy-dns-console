@@ -83,11 +83,10 @@ only sizes a page. The `/failures` page asks for 200 rows and says so when the
 answer is exactly 200.
 
 `/api/failures/uncovered` returns `{"unlabeled": n}` — the in-scope failures
-that carry no `host_name`, which the `instance` equality on the list query
-cannot reach. The count shares the list's scope (same bracket, `domain` and
+whose `host_name` is null or empty, which the `instance` equality on the list
+query cannot reach. The count shares the list's scope (same bracket, `domain` and
 `responseCode`) and drops only the host equality. Its `instance` parameter is
-accepted for symmetry and ignored: the count is exactly the rows that equality
-cannot match.
+accepted for symmetry and ignored.
 
 ### Evidence API
 
@@ -105,8 +104,9 @@ investigation chain (`/api/failures`, `/uncovered`, `/evidence`, `/analysis`) ac
 a bracket from 5 minutes to 10080 minutes (7 days) and answers `400 invalid_request`
 — it never clamps — when the start is at or after the end, the span is outside that
 band, or `to` is more than 60 seconds in the future. The overview view is the live
-class and still takes a relative 5–1440 minute window; `/api/instances` takes no
-window, and the instance detail's recent-failure number is a fixed 60 minutes.
+class and still takes a relative window clamped to 5–1440 minutes; `/api/instances`
+takes no window, and the instance detail's recent-failure number is a fixed 60
+minutes.
 
 The response contains:
 
@@ -129,11 +129,12 @@ The response contains:
 - `missing`: `instance_unreachable`, `instance_not_found`, `spans_unavailable`,
   `metrics_unavailable`, `logs_truncated`.
 
-Errors: `400 invalid_request` for a malformed query, including a bracket whose
-start is at or after its end, a span outside 5–10080 minutes, or a `to` more
-than 60 seconds in the future — the investigation chain rejects an out-of-range
-bracket instead of clamping it; `404` when the trace is not a failure group in
-that window, `502` when OpenObserve itself fails. Because a production
+Errors: `400` for a malformed query — a non-numeric integer is rejected by the
+parameter extractor as plain text, while a bracket whose start is at or after its
+end, a span outside 5–10080 minutes, or a `to` more than 60 seconds in the future
+is a `400 invalid_request` JSON error: the investigation chain rejects an
+out-of-range bracket instead of clamping it. `404` when the trace is not a failure
+group in that window, `502` when OpenObserve itself fails. Because a production
 start still requires a model API key, evidence-only operation without one means
 `CONSOLE_DEMO=1`; the endpoint itself never calls the model.
 
@@ -274,7 +275,8 @@ and a row opens the drawer at `/failures/{traceId}?` carrying the list's filter 
 Adding `analysis=<id>` restores that attempt instead of starting a new one; an unknown
 id falls back to a fresh analysis. The drawer keeps no store state of its own — the URL
 is the only input — so reloading or sharing it reproduces the same request; a relative
-window re-anchors on the server clock, exactly as the list does. The list shows a
+window re-anchors when it is reopened — the list on the server clock, the drawer in
+the browser. The list shows a
 marker for traces that already have an investigation and never triggers analysis
 itself.
 
