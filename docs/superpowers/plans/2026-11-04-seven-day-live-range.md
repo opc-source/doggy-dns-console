@@ -1514,22 +1514,47 @@ describe('seriesTick', () => {
 - `mountOverview()`(:78-89)加一个入口路径参数:`async function mountOverview(path = '/')`,把 `await router.push('/')` 换成 `await router.push(path)`。现有 6 条用例都不传参,行为不变。
 - `stubApi`(:59-69)加请求记录:`const fetches: string[] = []`(模块级,`afterEach` 里清空),stub 内 `fetches.push(String(input))`。没有它,新增的"只发一次请求"断言无从读起。该文件目前没有 `HOUR`,顶部补 `const HOUR = 3_600_000`。
 
-新增两条:
+新增三条(两条 D8 方向 + 一条标题文案;`mountOverview` 已带 `path` 参数,`fetches` 已就位):
 
 ```ts
-it('takes a week from the URL and does not poll it', async () => {
-  // The overview used to poll unconditionally; a 7-day bracket refreshed every
-  // 15 s is a load test against OpenObserve, not a live view.
+const WEEK = 7 * 24 * HOUR
+// A fixed clock: the fake timers below move Date.now() with them, so a deep
+// link built from the real clock would drift out of the 7-day ceiling.
+const NOW = Date.parse('2026-11-04T12:00:00.000Z')
+
+it('sends a relative week as windowMinutes and keeps polling it', async () => {
   vi.useFakeTimers()
+  vi.setSystemTime(NOW)
   stubApi(() => json(overview))
   const { wrapper } = await mountOverview('/?windowMinutes=10080')
 
-  const overviewCalls = fetches.filter((url) => url.includes('/api/overview'))
-  expect(overviewCalls).toHaveLength(1)
-  expect(overviewCalls[0]).toContain('windowMinutes=10080')
+  const overviewCalls = () => fetches.filter((url) => url.includes('/api/overview'))
+  expect(overviewCalls()).toHaveLength(1)
+  expect(overviewCalls()[0]).toContain('windowMinutes=10080')
+
+  // D8 only stops the timer for an ABSOLUTE bracket: a relative week has to
+  // re-anchor, otherwise "最近 7 天" would freeze at the moment it was opened.
+  await vi.advanceTimersByTimeAsync(45_000)
+  expect(overviewCalls()).toHaveLength(4)
+  vi.useRealTimers()
+  wrapper.unmount()
+})
+
+it('asks for an absolute week once and never polls it', async () => {
+  // The overview used to poll unconditionally; a 7-day bracket refreshed every
+  // 15 s is a load test against OpenObserve, not a live view.
+  vi.useFakeTimers()
+  vi.setSystemTime(NOW)
+  stubApi(() => json(overview))
+  const { wrapper } = await mountOverview(`/?from=${NOW - WEEK}&to=${NOW}`)
+
+  const overviewCalls = () => fetches.filter((url) => url.includes('/api/overview'))
+  expect(overviewCalls()).toHaveLength(1)
+  expect(overviewCalls()[0]).toContain(`from=${NOW - WEEK}`)
+  expect(overviewCalls()[0]).toContain(`to=${NOW}`)
 
   await vi.advanceTimersByTimeAsync(45_000)
-  expect(fetches.filter((url) => url.includes('/api/overview'))).toHaveLength(1)
+  expect(overviewCalls()).toHaveLength(1)
   vi.useRealTimers()
   wrapper.unmount()
 })
