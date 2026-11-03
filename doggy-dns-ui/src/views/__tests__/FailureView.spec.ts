@@ -46,64 +46,67 @@ afterEach(() => {
   for (const wrapper of wrappers.splice(0)) wrapper.unmount()
 })
 
+const NOW = Date.now()
+const HOUR = 3_600_000
+
 describe('FailureView', () => {
-  it('passes the trace, window and analysis from the deep link to the drawer', async () => {
-    const { wrapper } = await mountView('/failures/t1?windowMinutes=360&analysis=a1')
+  it('passes an absolute bracket straight to the drawer', async () => {
+    const from = NOW - 26 * HOUR
+    const { wrapper } = await mountView(`/failures/t1?from=${from}&to=${NOW}`)
 
     const drawer = wrapper.findComponent(DrawerStub)
     expect(drawer.exists()).toBe(true)
     expect(drawer.props('traceId')).toBe('t1')
-    expect(bracketMinutes(drawer.props('filter'))).toBe(360)
-    expect(drawer.props('analysisId')).toBe('a1')
+    const passed = drawer.props('filter')
+    expect(passed.from).toBe(from)
+    expect(passed.to).toBe(NOW)
+    expect(passed.instance).toBeNull()
     expect(wrapper.find('[aria-label="Failure investigation"]').exists()).toBe(true)
     // AppShell already owns the page's <main> landmark.
     expect(wrapper.find('main').exists()).toBe(false)
   })
 
-  it('falls back to a 60 minute window and no attempt for invalid query values', async () => {
-    const { wrapper } = await mountView('/failures/t2?windowMinutes=abc')
+  it('expands a relative shortcut against the server clock without clamping', async () => {
+    const { wrapper } = await mountView('/failures/t1?windowMinutes=10080')
 
-    const drawer = wrapper.findComponent(DrawerStub)
-    expect(drawer.props('traceId')).toBe('t2')
-    expect(bracketMinutes(drawer.props('filter'))).toBe(60)
-    expect(drawer.props('analysisId')).toBeUndefined()
+    const passed = wrapper.findComponent(DrawerStub).props('filter')
+    expect(bracketMinutes(passed)).toBe(10080)
   })
 
-  it.each([
-    ['zero', '/failures/t3?windowMinutes=0'],
-    ['a fractional value', '/failures/t3?windowMinutes=1.5'],
-    ['a hexadecimal value', '/failures/t3?windowMinutes=0x10'],
-    ['an exponent value', '/failures/t3?windowMinutes=1e3'],
-  ])('falls back to 60 for %s', async (_label, path) => {
-    const { wrapper } = await mountView(path)
+  it('keeps a seven-day bracket instead of folding it back to a day', async () => {
+    const from = NOW - 7 * 24 * HOUR
+    const { wrapper } = await mountView(`/failures/t1?from=${from}&to=${NOW}`)
 
-    expect(bracketMinutes(wrapper.findComponent(DrawerStub).props('filter'))).toBe(60)
+    expect(wrapper.findComponent(DrawerStub).props('filter').from).toBe(from)
+    expect(wrapper.find('[data-testid="invalid-range"]').exists()).toBe(false)
   })
 
-  it.each([
-    ['below the backend minimum', '/failures/t6?windowMinutes=1', 5],
-    ['above the backend maximum', '/failures/t6?windowMinutes=5000', 1440],
-    ['beyond u32', '/failures/t6?windowMinutes=99999999999999999999', 1440],
-    ['too large for a finite float', `/failures/t6?windowMinutes=${'9'.repeat(400)}`, 1440],
-  ])('clamps a window %s to the backend range', async (_label, path, expected) => {
-    const { wrapper } = await mountView(path)
+  it('carries domain, responseCode and instance into the request filter', async () => {
+    const { wrapper } = await mountView(
+      `/failures/t1?from=${NOW - 2 * HOUR}&to=${NOW}&domain=nacos&responseCode=SERVFAIL&instance=dns-node-2`,
+    )
 
-    expect(bracketMinutes(wrapper.findComponent(DrawerStub).props('filter'))).toBe(expected)
+    const passed = wrapper.findComponent(DrawerStub).props('filter')
+    expect(passed).toMatchObject({
+      domain: 'nacos',
+      responseCode: 'SERVFAIL',
+      instance: 'dns-node-2',
+    })
   })
 
-  it('trims whitespace around a positive integer window', async () => {
-    const { wrapper } = await mountView('/failures/t4?windowMinutes=%20360%20')
+  it('names an impossible bracket instead of querying something else', async () => {
+    const { wrapper } = await mountView(`/failures/t1?from=${NOW}&to=${NOW}`)
 
-    expect(bracketMinutes(wrapper.findComponent(DrawerStub).props('filter'))).toBe(360)
+    expect(wrapper.find('[data-testid="invalid-range"]').text()).toMatch(/早于|结束|分钟/)
+    expect(wrapper.findComponent(DrawerStub).exists()).toBe(false)
   })
 
-  it.each([
-    ['an empty analysis value', '/failures/t5?analysis='],
-    ['a whitespace analysis value', '/failures/t5?analysis=%20'],
-  ])('omits the analysis id for %s', async (_label, path) => {
-    const { wrapper } = await mountView(path)
+  it('still restores a deep-linked analysis id', async () => {
+    const { wrapper } = await mountView(
+      `/failures/t1?from=${NOW - 2 * HOUR}&to=${NOW}&analysis=inv-9`,
+    )
 
-    expect(wrapper.findComponent(DrawerStub).props('analysisId')).toBeUndefined()
+    expect(wrapper.findComponent(DrawerStub).props('analysisId')).toBe('inv-9')
   })
 
   it('navigates back to the overview when the drawer closes', async () => {

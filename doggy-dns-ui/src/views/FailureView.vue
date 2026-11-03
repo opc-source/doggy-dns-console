@@ -2,66 +2,53 @@
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import type { InvestigationFilter } from '@/api/types'
 import FailureDrawer from '@/components/FailureDrawer.vue'
+import {
+  parseFilterQuery,
+  resolveBracket,
+  toInvestigationFilter,
+  validateBracket,
+} from '@/lib/failureFilter'
 
 const route = useRoute()
 const router = useRouter()
 
-const DEFAULT_WINDOW_MINUTES = 60
-// The backend clamps the evidence window to this range; parsing here keeps the
-// drawer's request (and the restore link) inside it instead of earning a 400.
-const MIN_WINDOW_MINUTES = 5
-const MAX_WINDOW_MINUTES = 1440
-const POSITIVE_INTEGER = /^\d+$/
+// `route.query` is a `LocationQuery` whose array members may hold nulls;
+// `parseFilterQuery` reads the first string either way, so the shapes agree
+// at runtime and only need a widen-free cast to type-check.
+type FilterQuery = Parameters<typeof parseFilterQuery>[0]
 
-function firstQueryValue(value: unknown): string | null {
-  if (Array.isArray(value)) {
-    const first = value[0]
-    return typeof first === 'string' ? first : null
-  }
-  return typeof value === 'string' ? value : null
-}
-
+const draft = computed(() => parseFilterQuery(route.query as FilterQuery))
+// Date.now() per evaluation: a relative deep link resolves at the instant the
+// operator opened it, and the bracket never round-trips into the URL.
+const bracket = computed(() => resolveBracket(draft.value, Date.now()))
+const invalid = computed(() => validateBracket(bracket.value, Date.now()))
+const filter = computed(() => toInvestigationFilter(draft.value, Date.now()))
 const traceId = computed(() => String(route.params.traceId ?? ''))
-
-const windowMinutes = computed(() => {
-  const raw = firstQueryValue(route.query.windowMinutes)?.trim()
-  if (!raw || !POSITIVE_INTEGER.test(raw)) return DEFAULT_WINDOW_MINUTES
-  const parsed = Number(raw)
-  if (Number.isNaN(parsed) || parsed <= 0) return DEFAULT_WINDOW_MINUTES
-  // Clamp before the infinity check: a value too large for a finite float is
-  // still "too large", not invalid.
-  return Math.min(Math.max(parsed, MIN_WINDOW_MINUTES), MAX_WINDOW_MINUTES)
-})
-
-// Task 11 replaces the windowMinutes clamp block above wholesale; until then the
-// deep link still carries a relative window, so bridge it to an absolute bracket
-// for the drawer. `now` is captured once so the span is exactly the window.
-const filter = computed<InvestigationFilter>(() => {
-  const now = Date.now()
-  return {
-    from: now - windowMinutes.value * 60_000,
-    to: now,
-    domain: null,
-    responseCode: null,
-    instance: null,
-  }
-})
-
 const analysisId = computed(() => {
-  const raw = firstQueryValue(route.query.analysis)?.trim()
-  return raw ? raw : undefined
+  const value = route.query.analysis
+  const raw = typeof value === 'string' ? value.trim() : ''
+  return raw !== '' ? raw : undefined
 })
 
 function close() {
+  // Returning to the overview keeps working until the failure list owns the
+  // drawer mount; Task 12 replaces this with a query-preserving push.
   void router.push({ name: 'overview' })
 }
 </script>
 
 <template>
   <section class="mx-auto max-w-[1440px] p-5 lg:p-7" aria-label="Failure investigation">
+    <p
+      v-if="invalid"
+      data-testid="invalid-range"
+      class="rounded-lg border border-error/40 bg-error/10 px-3 py-2 text-sm text-error"
+    >
+      {{ invalid }}
+    </p>
     <FailureDrawer
+      v-else-if="traceId"
       :trace-id="traceId"
       :filter="filter"
       :analysis-id="analysisId"
