@@ -946,9 +946,13 @@ EOF
 
 **Files:**
 - Create: `doggy-dns-ui/src/components/TimeRangeControl.vue`
-- Modify: `doggy-dns-ui/src/components/FailureFilterBar.vue`
 - Create: `doggy-dns-ui/src/components/__tests__/TimeRangeControl.spec.ts`
-- Modify: `doggy-dns-ui/src/components/__tests__/FailureFilterBar.spec.ts`、`doggy-dns-ui/src/views/FailuresView.vue`(若它直接依赖内部 testid)
+- Modify: `doggy-dns-ui/src/components/FailureFilterBar.vue`
+- Modify: `doggy-dns-ui/src/components/__tests__/FailureFilterBar.spec.ts`(预设清单补 6h)
+- Modify: `doggy-dns-ui/src/views/__tests__/FailuresView.spec.ts`(:274-280 钉着已退役的"看板仍限 1440"文案,必须跟着反转)
+- Modify: `doggy-dns-ui/src/lib/failureFilter.ts:198`、`src/lib/__tests__/failureFilter.spec.ts:225`(**只改注释**:两处都写"1440 是实时看板最宽的选项",Task 5 之后不成立。`rangeLabel` 的行为不动 —— 1440 仍读"近 24 小时"、10080 读"近 7 天",这条翻转只是分单位,不是上限)
+
+`src/views/FailuresView.vue` 不改:它只渲染 `<FailureFilterBar>`,而 `mount` 深渲染子组件,所以 spec 里 `find('[data-testid="range-hint"]')` / `quick-7d` 在抽取后仍然命中。同理 `FailureFilterBar.spec.ts:20-24` 的 `dateInput()`(按 `input[type="datetime-local"]` 的位置找)穿过子组件照样有效,不必改。
 
 **Interfaces:**
 - Consumes: `@/lib/failureFilter` 的 `FilterDraft`/`relativeDraft`/`datetimeToMs`/`msToDatetime`/`DEFAULT_WINDOW_MINUTES`/`MIN_RANGE_MINUTES`/`MAX_RANGE_MINUTES`(**不改这个模块的行为**)。
@@ -957,14 +961,25 @@ EOF
 - [ ] **Step 1: 写失败的测试**
 
 ```ts
+import { mount, type VueWrapper } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
-import { mount } from '@vue/test-utils'
 
 import TimeRangeControl from '@/components/TimeRangeControl.vue'
-import { emptyDraft } from '@/lib/failureFilter'
+import { emptyDraft, msToDatetime, type FilterDraft } from '@/lib/failureFilter'
 
-function bar(wrapper: ReturnType<typeof mount>) {
-  return wrapper.find('[data-testid="range-hint"]').text()
+const HOUR = 3_600_000
+
+// `VueWrapper`, the same handle `FailureFilterBar.spec.ts` uses: `mount` is
+// generic, so `ReturnType<typeof mount>` collapses to a wrapper the helpers
+// cannot index.
+function hintText(wrapper: VueWrapper): string {
+  return wrapper.get('[data-testid="range-hint"]').text()
+}
+
+function lastDraft(wrapper: VueWrapper): FilterDraft {
+  const events = wrapper.emitted('update:modelValue')
+  if (!events || events.length === 0) throw new Error('the control emitted no draft')
+  return events[events.length - 1]![0] as FilterDraft
 }
 
 describe('TimeRangeControl', () => {
@@ -977,23 +992,28 @@ describe('TimeRangeControl', () => {
     }
     expect(wrapper.get('[data-testid="quick-6h"]').attributes('aria-pressed')).toBe('true')
     await wrapper.get('[data-testid="quick-7d"]').trigger('click')
-    const draft = wrapper.emitted('update:modelValue')?.at(-1)?.[0] as Record<string, unknown>
-    expect(draft).toMatchObject({ fromMs: null, toMs: null, windowMinutes: 10080 })
+    expect(lastDraft(wrapper)).toMatchObject({ fromMs: null, toMs: null, windowMinutes: 10080 })
   })
 
   it('never emits a half bracket', async () => {
     const wrapper = mount(TimeRangeControl, { props: { modelValue: emptyDraft() } })
-    await wrapper.get('[data-testid="range-from"]').setValue('2026-01-01T00:00')
-    const draft = wrapper.emitted('update:modelValue')?.at(-1)?.[0] as Record<string, unknown>
-    expect(draft.fromMs).not.toBeNull()
+    // An hour ago, not a fixed 2026-01-01: `setFrom` completes the pair with the
+    // browser's now, so a dated-from would make the emitted bracket wider than
+    // the very ceiling the hint below advertises — the test would pass while
+    // proving nothing about a draft the page could actually submit.
+    const fromText = msToDatetime(Date.now() - HOUR)
+
+    await wrapper.get('[data-testid="range-from"]').setValue(fromText)
+
+    const draft = lastDraft(wrapper)
+    expect(draft.fromMs).toBe(Date.parse(fromText))
     expect(draft.toMs).not.toBeNull()
+    expect(draft.windowMinutes).toBeNull()
   })
 
   it('states the one ceiling and the one endpoint without a window', () => {
-    const wrapper = mount(TimeRangeControl, { props: { modelValue: emptyDraft() } })
-    const hint = bar(wrapper)
-    expect(hint).toContain('5')
-    expect(hint).toContain('10080')
+    const hint = hintText(mount(TimeRangeControl, { props: { modelValue: emptyDraft() } }))
+    expect(hint).toContain('5 分钟到 10080 分钟')
     // The old copy ("看板仍限 1440 分钟") is now false; the new copy must not
     // re-grow a per-endpoint number.
     expect(hint).not.toContain('1440')
@@ -1026,21 +1046,34 @@ const QUICK_WINDOWS = [
 <p data-testid="range-hint" class="w-full text-[11px] text-muted">
   <!--
     One class now: every endpoint that takes a time range rejects outside
-    {{ MIN_RANGE_MINUTES }}–{{ MAX_RANGE_MINUTES }} minutes instead of clamping
-    (`Range::checked` in `src/domain.rs`), so the numbers below are the request
-    contract, not a per-page ceiling. `/api/instances` is the one endpoint with
-    no window at all — its rows are identity and reachability, so the hint has
-    to name it or an operator will read a frozen instance list as a stale one.
+    5–10080 minutes instead of clamping (`Range::resolve` in `src/domain.rs`,
+    reached from `RangeQuery::range`, `FailureQuery` and each copilot tool), so
+    the numbers below are the request contract, not a per-page ceiling. The one
+    remaining `Window::new` clamp lives in internal host discovery
+    (`src/datasource/instances.rs`), which no request parameter reaches.
+    `/api/instances` is the one endpoint with no window at all — its rows are
+    identity and reachability, so the hint has to name it or an operator will
+    read a frozen instance list as a stale one.
+    注释里写死数字、正文插值:模板注释不参与编译,别在这里放 mustache。
   -->
   时间区间支持 {{ MIN_RANGE_MINUTES }} 分钟到 {{ MAX_RANGE_MINUTES }} 分钟（7 天），所有端点超限直接拒绝、不再夹回；
   实例列表（/api/instances）不取时间窗。
 </p>
 ```
 
-- [ ] **Step 3: 让筛选条只用它**
+- [ ] **Step 3: 让筛选条只用它,并反转两处旧断言**
 
-`FailureFilterBar.vue` 删掉搬走的片段与 `QUICK_WINDOWS`,改成 `<TimeRangeControl :model-value="modelValue" @update:model-value="emit('update:modelValue', $event)" />`,其余(实例/响应码/域名)不动。Run: `bun x vitest run src/components/__tests__/FailureFilterBar.spec.ts src/views/__tests__/FailuresView.spec.ts`
-Expected: PASS(若断言写死了内部 DOM,更新到新的 testid,不改被测行为)。
+`FailureFilterBar.vue` 删掉搬走的片段与 `QUICK_WINDOWS`,改成 `<TimeRangeControl :model-value="modelValue" @update:model-value="emit('update:modelValue', $event)" />`,其余(实例/响应码/域名)不动。
+
+然后**必须**改这两处已经变成假话的断言(Step 1 的新文案让旧断言必红;不反转就等于把旧文案钉回来):
+
+- `src/views/__tests__/FailuresView.spec.ts:274-280` —— 用例名 `quotes both ceilings in the hint line` 与 `expect(hint.text()).toContain('1440')`。改名 `quotes the one ceiling and names the windowless endpoint`,把 `toContain('1440')` 换成 `expect(hint.text()).not.toContain('1440')` + `expect(hint.text()).toContain('/api/instances')`;`toContain('5 分钟到 10080 分钟')` 那行留着,它是这条文案唯一还成立的数字断言。
+- `src/components/__tests__/FailureFilterBar.spec.ts:122` —— 循环清单 `['quick-1h', 'quick-24h', 'quick-7d']` 补 `'quick-6h'`。新增预设不补进"绝对区间时谁都不许亮"的清单,等于没测。
+
+顺带把 Files 里那两处"1440 是最宽选项"的注释改成实话(不碰任何行为)。
+
+Run: `bun x vitest run src/components/__tests__/FailureFilterBar.spec.ts src/views/__tests__/FailuresView.spec.ts`
+Expected: PASS。
 
 - [ ] **Step 4: 红/绿自查 + gate + 提交**
 
@@ -1062,85 +1095,178 @@ EOF
 ### Task 6: 看板按区间取数
 
 **Files:**
-- Modify: `doggy-dns-ui/src/composables/useOverview.ts`
+- Modify: `doggy-dns-ui/src/composables/useOverview.ts`(`useOverview(initialWindow = 60)` → `useOverview(draft: Ref<FilterDraft>)`;只 `OverviewView.vue:14` 一个调用点)
+- Create: `doggy-dns-ui/src/composables/__tests__/useOverview.spec.ts`(此文件现在不存在,Step 1 是新建)
 - Modify: `doggy-dns-ui/src/views/OverviewView.vue`
-- Create: `doggy-dns-ui/src/lib/chartLabels.ts`
-- Modify: `doggy-dns-ui/src/components/TrendChart.vue`
-- Modify: `doggy-dns-ui/src/views/__tests__/OverviewView.spec.ts`、`doggy-dns-ui/src/components/__tests__/KpiCard.spec.ts`(如需)
+- Create: `doggy-dns-ui/src/lib/chartLabels.ts`、`doggy-dns-ui/src/lib/__tests__/chartLabels.spec.ts`
+- Modify: `doggy-dns-ui/src/components/TrendChart.vue`(只换 `xAxis.data` 的标签来源)
+- Modify: `doggy-dns-ui/src/views/__tests__/OverviewView.spec.ts`
+
+`src/components/__tests__/KpiCard.spec.ts` **不改**:`hint` 早就是 `KpiCard` 的入参,本任务只换传进去的字符串。`e2e/console.spec.ts` 也不改——它没点过看板的任何时间胶囊(全文只 `goto('/')` + `/failures?...`)。
 
 **Interfaces:**
-- Consumes: Task 5 的 `TimeRangeControl`;`failureFilter.ts` 的 `parseFilterQuery`/`toRouteQuery`/`toRequestQuery`/`isAbsolute`/`validateDraft`/`validateBracket`/`resolveBracket`/`rangeLabel`;Task 3 的 `/api/overview?from&to`。
-- Produces: `useOverview(draft: Ref<FilterDraft>)` → `{ data, error, invalid, loading, lastUpdated, refresh }`;`seriesTick(ts: number, spanMs: number): string`。
+- Consumes: Task 5 的 `TimeRangeControl`;`failureFilter.ts` 的 `parseFilterQuery`/`toRouteQuery`/`toRequestQuery`/`isAbsolute`/`validateDraft`/`validateBracket`/`resolveBracket`/`rangeLabel`/`relativeDraft`/`DEFAULT_WINDOW_MINUTES`(**不改这个模块的行为**);Task 3 的 `/api/overview?from&to`。
+- Produces: `useOverview(draft: Ref<FilterDraft>)` → `{ data, error, invalid, loading, lastUpdated, refresh }`(不再有 `windowMinutes`/`setWindow`);`seriesTick(ts: number, spanMs: number): string`、`seriesSpanMs(points: { ts: number }[]): number`。
 
 - [ ] **Step 1: 写失败的测试(composable)**
 
+`apiGet` 走的就是全局 `fetch`(`src/api/http.ts:13`),所以 spy `fetch` 是对的出口。
+
+**必须**照 `useFailureList.spec.ts:120-135` 的宿主组件写法挂载:`useOverview` 的首次请求和轮询都登记在 `onMounted` 里,在 setup 上下文之外直接调用 `useOverview(draft)` 时 `onMounted` 是空操作——那样"停轮询"用例会因为**什么都没启动**而通过,等于没测。
+
 ```ts
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { defineComponent, h, ref, type Ref } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ref } from 'vue'
 
 import { useOverview } from '@/composables/useOverview'
-import { relativeDraft, emptyDraft } from '@/lib/failureFilter'
+import { emptyDraft, relativeDraft, type FilterDraft } from '@/lib/failureFilter'
 
+const HOUR = 3_600_000
+const NOW = 1_761_436_800_000
+
+const overviewBody = {
+  windowMinutes: 60,
+  instancesOnline: 3,
+  instancesTotal: 4,
+  queries: 10,
+  failures: 1,
+  successRate: 0.9,
+  p95LatencyMs: 12.4,
+  series: [],
+}
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+}
+
+const wrappers: VueWrapper[] = []
+let fetches: string[] = []
+
+// 照 `useFailureList.spec.ts` 的 `mountList`:helper 里不 await,`mount()` 已同步
+// 跑完 `onMounted`,请求落地由用例自己 `await flushPromises()`。
+function mountOverview(draft: Ref<FilterDraft>, respond: () => Response = () => json(overviewBody)) {
+  fetches = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL) => {
+      fetches.push(String(input))
+      return respond()
+    }),
+  )
+  let overview!: ReturnType<typeof useOverview>
+  const wrapper = mount(
+    defineComponent({
+      setup() {
+        overview = useOverview(draft)
+        return () => h('div')
+      },
+    }),
+  )
+  wrappers.push(wrapper)
+  return { overview, wrapper }
+}
+```
+
+```ts
 beforeEach(() => {
   vi.useFakeTimers()
-  vi.stubGlobal('fetch', vi.fn())
+  // 钉住时钟:`setFrom` 之类的 `Date.now()` 与 15 s 轮询都要落在可预测的刻度上。
+  vi.setSystemTime(NOW)
 })
 afterEach(() => {
-  vi.useRealTimers()
+  for (const wrapper of wrappers.splice(0)) wrapper.unmount()
   vi.unstubAllGlobals()
+  vi.useRealTimers()
 })
 
 describe('useOverview', () => {
-  it('stops polling once the draft is an absolute bracket', async () => {
-    // D8: a week refreshed every 15s is a load test, not a live view.
-    const draft = ref({ ...emptyDraft(), fromMs: 1_760_000_000_000, toMs: 1_760_600_000_000 })
-    const { refresh } = useOverview(draft)
-    await refresh()
-    const calls = vi.mocked(fetch).mock.calls.length
+  it('asks for the absolute bracket and stops polling it', async () => {
+    // D8: a week refreshed every 15 s is a load test, not a live view.
+    const draft = ref({ ...emptyDraft(), fromMs: NOW - 3 * HOUR, toMs: NOW })
+    const { wrapper } = mountOverview(draft)
+    await flushPromises()
+
+    expect(fetches.length).toBe(1)
+    expect(fetches[0]).toContain(`from=${NOW - 3 * HOUR}`)
+    expect(fetches[0]).toContain(`to=${NOW}`)
+    expect(fetches[0]).not.toContain('windowMinutes=')
+
+    const initial = fetches.length
     await vi.advanceTimersByTimeAsync(45_000)
-    expect(vi.mocked(fetch).mock.calls.length).toBe(calls)
+    expect(fetches.length).toBe(initial)
+    wrapper.unmount()
   })
 
   it('keeps polling a relative window', async () => {
-    const draft = ref(relativeDraft(60))
-    useOverview(draft)
+    const { wrapper } = mountOverview(ref(relativeDraft(60)))
+    await flushPromises()
+    expect(fetches.length).toBe(1)
+
     await vi.advanceTimersByTimeAsync(45_000)
-    expect(vi.mocked(fetch).mock.calls.length).toBeGreaterThan(1)
+    expect(fetches.length).toBe(4) // 15 s × 3
+    wrapper.unmount()
   })
 
   it('refuses a bad bracket without asking the server', async () => {
-    const draft = ref({ ...emptyDraft(), windowMinutes: 20_000 })
-    const { invalid, refresh } = useOverview(draft)
-    await refresh()
-    expect(vi.mocked(fetch)).not.toHaveBeenCalled()
-    expect(invalid.value).toContain('10080')
+    const { overview, wrapper } = mountOverview(ref({ ...emptyDraft(), windowMinutes: 20_000 }))
+    await flushPromises()
+
+    expect(fetches.length).toBe(0)
+    expect(overview.invalid.value).toContain('10080')
+    expect(overview.error.value).toBeNull()
+    wrapper.unmount()
   })
 
   it('drops the previous bracket\'s data when the new one is refused', async () => {
     const draft = ref(relativeDraft(60))
-    const { data, invalid, refresh } = useOverview(draft)
-    vi.mocked(fetch).mockResolvedValueOnce(
-      new Response(JSON.stringify({ windowMinutes: 60, series: [], instancesOnline: 0, instancesTotal: 0, queries: 1, failures: 0, successRate: 1, p95LatencyMs: null }), { headers: { 'content-type': 'application/json' } }),
-    )
-    await refresh()
-    expect(data.value).not.toBeNull()
+    const { overview, wrapper } = mountOverview(draft)
+    await flushPromises()
+    expect(overview.data.value).not.toBeNull()
+
     draft.value = { ...emptyDraft(), windowMinutes: 20_000 }
-    await refresh()
+    await flushPromises()
     // A chart that no longer matches the URL is worse than an empty one.
-    expect(data.value).toBeNull()
-    expect(invalid.value).toContain('10080')
+    expect(overview.data.value).toBeNull()
+    expect(overview.invalid.value).toContain('10080')
+    wrapper.unmount()
+  })
+
+  it('retires an in-flight answer when the bracket that asked for it is refused', async () => {
+    // `refresh()` bumps the sequence before it looks at the draft, so the
+    // answer still in flight belongs to a bracket that no longer exists.
+    // Without that, the late response would re-paint a chart the URL refuses.
+    let release!: (response: Response) => void
+    const pending = new Promise<Response>((resolve) => {
+      release = resolve
+    })
+    const draft = ref(relativeDraft(60))
+    const { overview, wrapper } = mountOverview(draft, () => pending)
+    await flushPromises()
+
+    draft.value = { ...emptyDraft(), windowMinutes: 20_000 }
+    await flushPromises()
+    expect(overview.data.value).toBeNull()
+
+    release(json(overviewBody))
+    await flushPromises()
+    expect(overview.data.value).toBeNull()
+    wrapper.unmount()
   })
 })
 ```
 
-> 先读 `doggy-dns-ui/src/api/http.ts` 确认 `apiGet` 走的是 `fetch`(若是 axios 之类,把 spy 换成该层的实际出口)。`/failures` 侧的 `useFailureList` 已有同类测试可参考 `src/composables/__tests__/`。
-
 - [ ] **Step 2: 跑测试确认失败**
 
 Run: `bun x vitest run src/composables/__tests__/useOverview.spec.ts`
-Expected: FAIL(现在 `useOverview(initialWindow: number)` 根本没有 draft 参数)。
+Expected: FAIL。vitest 不做类型检查,所以是**行为**变红:现在的 `useOverview(initialWindow = 60)` 把传进来的 `Ref<FilterDraft>` 当成窗口数字,首个请求是 `?windowMinutes=[object Object]`,既没有 `from=`/`to=`("asks for the absolute bracket" 红),也照样发了请求("refuses a bad bracket" 期望 0 次,实到 1 次)。`bun run type-check` 在同一处报签名不匹配——两边都红才算这条用例真的钉住了新签名。
 
 - [ ] **Step 3: 改 composable**
+
+两处口径先说清,review 时不必再猜:
+
+1. **不复制 `buildQuery`。** `useFailureList.ts:18-22` 有一个私有 `buildQuery`,但这里只需要一行 `new URLSearchParams(...)`;把它抄进第二个文件才是评审会点的重复。直接用标准库,`toRequestQuery` 的返回值就是它要的 `Record<string, string>`。
+2. **`invalid` 与 `error` 分成两个 ref,和 `useFailureList` 的单一 `error` 不一样,是有意为之**:`useFailureList` 只把消息原样贴进一行提示;看板要把"你给的区间不合法"和"OpenObserve 挂了"分开来讲——后者的文案是"展示的是上次成功数据",而拒绝路径下数据已被清空,套同一句就是假话。`ApiError` 类型的 `error` 保持原样(视图按 `status` 组织文案),所以拒绝必须有另一个出口。
 
 ```ts
 import { onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
@@ -1158,12 +1284,6 @@ import {
 
 const POLL_INTERVAL_MS = 15_000
 
-function buildQuery(params: Record<string, string>): string {
-  const search = new URLSearchParams()
-  for (const [key, value] of Object.entries(params)) search.set(key, value)
-  return search.toString()
-}
-
 export function useOverview(draft: Ref<FilterDraft>) {
   const data = ref<Overview | null>(null)
   const error = ref<ApiError | null>(null)
@@ -1174,6 +1294,8 @@ export function useOverview(draft: Ref<FilterDraft>) {
   let seq = 0
 
   async function refresh() {
+    // Bump before looking at the draft: an answer still in flight describes the
+    // bracket that was just replaced (or just refused), so it must not land.
     const requestSeq = ++seq
     const now = Date.now()
     const refusal = validateDraft(draft.value) ?? validateBracket(resolveBracket(draft.value, now), now)
@@ -1187,7 +1309,8 @@ export function useOverview(draft: Ref<FilterDraft>) {
     invalid.value = null
     loading.value = true
     try {
-      const fetched = await apiGet<Overview>(`/api/overview?${buildQuery(toRequestQuery(draft.value))}`)
+      const query = new URLSearchParams(toRequestQuery(draft.value)).toString()
+      const fetched = await apiGet<Overview>(`/api/overview?${query}`)
       if (requestSeq !== seq) return
       data.value = fetched
       error.value = null
@@ -1205,6 +1328,8 @@ export function useOverview(draft: Ref<FilterDraft>) {
       clearInterval(timer)
       timer = null
     }
+    // An absolute bracket is a fixed question; refreshing it on a timer only
+    // moves the answer under the operator's feet.
     if (!isAbsolute(draft.value)) timer = setInterval(() => void refresh(), POLL_INTERVAL_MS)
   }
 
@@ -1226,24 +1351,53 @@ export function useOverview(draft: Ref<FilterDraft>) {
 
 - [ ] **Step 4: 改视图**
 
-`OverviewView.vue`:
+`OverviewView.vue`(:14 的 `useOverview(60)` 与 :15 的 `draft = computed(() => relativeDraft(windowMinutes.value))` 是这个文件唯一的时间来源,一起换掉):
 
-1. 删 `windows` 数组与胶囊组,header 改成 `<TimeRangeControl :model-value="draft" @update:model-value="setDraft" />`(与刷新按钮并排);`useOverview(60)` → `useOverview(draft)`。
-2. draft 由路由读写,`/failures` 页同款:
+1. 删 `windows` 数组(:28-32)与 header 里的胶囊组(:51-62),换成 `<TimeRangeControl :model-value="draft" @update:model-value="setDraft" />`,刷新按钮留在它旁边;`useOverview(60)` → `useOverview(draft)`,解构去掉 `windowMinutes`/`setWindow`,加上 `invalid`。
+2. draft 由路由读写:
 
 ```ts
 const route = useRoute()
 const router = useRouter()
-const draft = computed(() => parseFilterQuery(route.query))
+// `route.query` 是 `LocationQuery`,数组成员可能为 null;`parseFilterQuery` 只取
+// 第一个字符串,所以两边运行时对得上,只需要一处不加宽度的转换。
+type FilterQuery = Parameters<typeof parseFilterQuery>[0]
+
+// URL 是唯一状态来源(§6.5):draft 是派生的,写入只回到路由,所以这里不需要
+// `FailuresView.vue:38-84` 那套"序列化后双向比对"的防乒乓守卫——那套是给
+// 本地可编辑的 `ref<FilterDraft>` 用的,派生 computed 没有可以偏离 URL 的本地态。
+const draft = computed(() => {
+  const parsed = parseFilterQuery(route.query as FilterQuery)
+  // 一条时间参数都没有时不是"无窗口",而是"服务端默认那一小时";在这里补上,
+  // `TimeRangeControl` 的 `aria-pressed` 才有归属,而 URL 保持干净。
+  // 不去 `onMounted` 里 `router.replace` 补 URL:那会让首屏发两个请求
+  // (一次无参、一次带 windowMinutes),深链测试里"只发一次"就永远测不出来。
+  if (parsed.fromMs === null && parsed.toMs === null && parsed.windowMinutes === null) {
+    return relativeDraft(DEFAULT_WINDOW_MINUTES)
+  }
+  return parsed
+})
 
 function setDraft(next: FilterDraft) {
   void router.replace({ query: toRouteQuery(next) })
 }
 ```
 
-初始化:URL 无参数时 `parseFilterQuery` 给的是全 `null` draft,请求会落到服务端默认 60——但为了 `aria-pressed` 有归属,`onMounted` 时若 `route.query` 里没有 `from`/`to`/`windowMinutes`,用 `router.replace({ query: toRouteQuery(relativeDraft(DEFAULT_WINDOW_MINUTES)) })` 补上(与 Task 3 的默认值同源于 `DEFAULT_WINDOW_MINUTES`,不写死 60)。
-3. 区间标签进 header:`<p class="mt-1 text-sm text-muted">{{ rangeLabel(draft, Date.now()) }}</p>`(绝对区间显示 `起 ~ 止`,相对显示"近 N 小时"),`Queries` 卡片的 `hint="selected window"` 改成 `:hint="rangeLabel(draft, Date.now())"`。
-4. p95 卡片改口径文案(D16 的代价必须写在脸上):
+被 `parseStrictInt` 判废的负 `windowMinutes` 也落进这条默认分支(`parsed` 全 null),与服务端默认同源,和 `failureFilter.spec.ts:154` 的"降级到默认一小时"是同一句话。
+
+3. 区间标签进 header,并且必须有 testid(Step 6 用它断言绝对深链):
+
+```html
+<p data-testid="range-label" class="mt-1 text-sm text-muted">
+  {{ rangeLabel(draft, Date.now()) }}
+</p>
+```
+
+替换 :48 那句固定的 "Live DNS health across your fleet."——一个可以选到 7 天前的看板不再"live",留着它就是 §6.4 说的"描述与进程真做的事不一致"。`Queries` 卡片的 `hint="selected window"` 改成 `:hint="rangeLabel(draft, Date.now())"`。
+
+import 一行补全:`DEFAULT_WINDOW_MINUTES`、`parseFilterQuery`、`rangeLabel`、`relativeDraft`(已有)、`toRouteQuery`(已有)、`type FilterDraft`,加上 Task 5 的 `TimeRangeControl`。`vue` 的 `computed` 已在。
+
+4. p95 卡片只改口径文案(D16 的代价必须写在脸上),`label`/`:value`/`format` 三个属性一字不动:
 
 ```html
 <KpiCard
@@ -1266,9 +1420,13 @@ const errorMessage = computed(() => {
 ```
 模板 `<ErrorBanner v-if="error || invalid" …>`。
 
+`useFailureList(draft, 5)`(:16)与 `onSelect`/`see-all-to`(:24、:106)不用改签名——它们本来就吃 `Ref<FilterDraft>`,现在吃到的是带区间和绝对起停的 draft,这正是本次要的效果:卡片上点开的抽屉与"查看全部"跟着看板选中的区间走。
+
+(`rangeLabel` 的第二个参数在模块里是**故意空着**的时钟形参(:190-191 的注释),模板里 `Date.now()` 只是和 `FailuresView.vue:134` 保持同一种调用形状,不参与渲染结果。别把它换成响应式 ref:那会让一个绝对区间的标签每 15 s 重算一次而什么都不变。)
+
 - [ ] **Step 5: 趋势轴按跨度出标签**
 
-Create `doggy-dns-ui/src/lib/chartLabels.ts`:
+Create `doggy-dns-ui/src/lib/chartLabels.ts`(注意 `tsconfig` 打开了按下标非空检查——spec 里 `events[events.length - 1]!` 就是这么写的,所以下面这条必须带 `!`,否则 `bun run type-check` 红):
 
 ```ts
 /**
@@ -1278,45 +1436,129 @@ Create `doggy-dns-ui/src/lib/chartLabels.ts`:
  */
 export function seriesTick(ts: number, spanMs: number): string {
   const date = new Date(ts)
-  if (spanMs <= 24 * 60 * 60 * 1000) {
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  }
-  return `${date.toLocaleDateString([], { month: '2-digit', day: '2-digit' })} ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+  const hour = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  if (spanMs <= 24 * 60 * 60 * 1000) return hour
+  return `${date.toLocaleDateString([], { month: '2-digit', day: '2-digit' })} ${hour}`
 }
 
-/// The span the points cover, in milliseconds; one point or none is a day so
-/// the short label wins.
+/**
+ * The span the points cover, in milliseconds. Fewer than two points is `0`,
+ * which the one-day threshold above reads as "short", so a single point keeps
+ * the hour-only label instead of growing a date it cannot contrast with.
+ */
 export function seriesSpanMs(points: { ts: number }[]): number {
   if (points.length < 2) return 0
-  return points[points.length - 1].ts - points[0].ts
+  return points[points.length - 1]!.ts - points[0]!.ts
 }
 ```
 
-(上面第二条注释写成 `/** */`,不是 `///`。)
-
-`TrendChart.vue` 的 `xAxis.data` 改成:
+`TrendChart.vue` 不要在对象字面量里塞 IIFE:把标签算成一个自己的 computed,再让 `option` 用它。:30-32 那段 `props.series.map(...)` 换成:
 
 ```ts
-data: (() => {
+const tickLabels = computed(() => {
   const spanMs = seriesSpanMs(props.series)
   return props.series.map((point) => seriesTick(point.ts, spanMs))
-})(),
+})
 ```
 
-`tests`:`bun x vitest run src/lib/__tests__/chartLabels.spec.ts` 新建两条用例——`seriesTick(ts, 60 * 60 * 1000)` 不含日期、`seriesTick(ts, 7 * 24 * 3600 * 1000)` 含 `month/day`(用 `vi.setSystemTime` + `TZ` 固定,或直接用本地时区构造 `new Date(2026, 0, 1, 3, 0)` 避免时区漂移)。
+```ts
+  xAxis: {
+    type: 'category',
+    boundaryGap: false,
+    data: tickLabels.value,
+    ...
+  },
+```
+
+Create `doggy-dns-ui/src/lib/__tests__/chartLabels.spec.ts`。**不要**把时刻断言成 `"03:00"` 字面量:jsdom 默认 en-US,`hour: '2-digit', minute: '2-digit'` 给出的是 12 小时制带 `AM/PM` 的串,换 CI 语言就翻。断言写成"由同一个 `toLocale*` 调用算出来"的形式,只钉住"有没有日期段"这件事:
+
+```ts
+import { describe, expect, it } from 'vitest'
+
+import { seriesSpanMs, seriesTick } from '@/lib/chartLabels'
+
+const DAY = 24 * 60 * 60 * 1000
+const HOUR = 60 * 60 * 1000
+// 本地时区构造,避开 `Date.parse` 的时区/夏令时归一化。
+const TS = new Date(2026, 0, 1, 3, 0).getTime()
+const hourOnly = new Date(TS).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+const dated = new Date(TS).toLocaleDateString([], { month: '2-digit', day: '2-digit' })
+
+describe('seriesTick', () => {
+  it('keeps the hour-only label inside a day', () => {
+    expect(seriesTick(TS, HOUR)).toBe(hourOnly)
+    expect(seriesTick(TS, DAY)).toBe(hourOnly)
+  })
+
+  it('prefixes the date once the span passes a day', () => {
+    expect(seriesTick(TS, DAY + 1)).toBe(`${dated} ${hourOnly}`)
+    expect(seriesTick(TS, 7 * DAY)).toBe(`${dated} ${hourOnly}`)
+  })
+
+  it('has no span for fewer than two points', () => {
+    expect(seriesSpanMs([])).toBe(0)
+    expect(seriesSpanMs([{ ts: TS }])).toBe(0)
+    expect(seriesSpanMs([{ ts: TS }, { ts: TS + 1000 }])).toBe(1000)
+  })
+})
+```
+
+边界钉子是 `DAY` 与 `DAY + 1`:一个恰好跨天的区间仍读小时,因为分桶最细到 1 分钟,一天 1440 列靠小时标签分得开。
 
 - [ ] **Step 6: 更新 OverviewView 的既有用例**
 
-`src/views/__tests__/OverviewView.spec.ts`:原来点 `6h` 胶囊的地方改为点 `[data-testid="quick-6h"]`;新增两条:
-- `/?windowMinutes=10080` 深链 → fetch 出去的 URL 含 `windowMinutes=10080`,且不发第二个请求(轮询停)。
-- `?from&to` 深链 → header 出现 `起 ~ 止` 形态的区间标签。
+`src/views/__tests__/OverviewView.spec.ts` 现在按**英文标签文本**找胶囊(:91-96 的 `chipByText`),Task 5 之后按钮文案变成中文且带 testid,所以:
+
+- 删掉 `chipByText`(:91-96)整个 helper —— 留着不引用会被 `bun run lint` 的未用变量规则点掉。
+- :178 `chipByText(wrapper, '24h')` → `wrapper.get('[data-testid="quick-24h"]')`;:199、:205、:206 的 `'6h'`/`'1h'` 同理换成 `quick-6h`/`quick-1h`。断言的值(`windowMinutes=1440`、`/failures?windowMinutes=360`、`aria-pressed`)一字不改——点击到路由再回灌的路径和 `FailuresView.spec.ts:146-150` 一样是 `trigger('click')` 后 `await flushPromises()`,现有写法已经够。
+- `mountOverview()`(:78-89)加一个入口路径参数:`async function mountOverview(path = '/')`,把 `await router.push('/')` 换成 `await router.push(path)`。现有 6 条用例都不传参,行为不变。
+- `stubApi`(:59-69)加请求记录:`const fetches: string[] = []`(模块级,`afterEach` 里清空),stub 内 `fetches.push(String(input))`。没有它,新增的"只发一次请求"断言无从读起。该文件目前没有 `HOUR`,顶部补 `const HOUR = 3_600_000`。
+
+新增两条:
+
+```ts
+it('takes a week from the URL and does not poll it', async () => {
+  // The overview used to poll unconditionally; a 7-day bracket refreshed every
+  // 15 s is a load test against OpenObserve, not a live view.
+  vi.useFakeTimers()
+  stubApi(() => json(overview))
+  const { wrapper } = await mountOverview('/?windowMinutes=10080')
+
+  const overviewCalls = fetches.filter((url) => url.includes('/api/overview'))
+  expect(overviewCalls).toHaveLength(1)
+  expect(overviewCalls[0]).toContain('windowMinutes=10080')
+
+  await vi.advanceTimersByTimeAsync(45_000)
+  expect(fetches.filter((url) => url.includes('/api/overview'))).toHaveLength(1)
+  vi.useRealTimers()
+  wrapper.unmount()
+})
+
+it('labels the header with the bracket a deep link describes', async () => {
+  const to = Date.now()
+  stubApi(() => json(overview))
+  const { wrapper } = await mountOverview(`/?from=${to - 3 * HOUR}&to=${to}`)
+
+  // `rangeLabel` renders an absolute pair as `起 ~ 止`; a relative draft never
+  // contains the tilde, so the copy itself proves the bracket came from the URL.
+  expect(wrapper.get('[data-testid="range-label"]').text()).toContain('~')
+  expect(fetches.some((url) => url.includes(`from=${to - 3 * HOUR}`))).toBe(true)
+  wrapper.unmount()
+})
+```
+
+> 第一条用例把 fake timers 装在 `mountOverview` 之前:`router.push` 在 memory history 下只走微任务,不会被假时钟冻住;`await flushPromises()` 已经封在 helper 里。若某条断言因为路由还没落地而红,补一次 `await flushPromises()`,不要改成 `setTimeout` 等待。
 
 Run: `bun x vitest run src/views/__tests__/OverviewView.spec.ts src/composables/__tests__/useOverview.spec.ts src/lib/__tests__/chartLabels.spec.ts`
 Expected: PASS。
 
 - [ ] **Step 7: 红/绿自查 + gate + 提交**
 
-把 `restartTimer` 的 `isAbsolute` 判断去掉,确认"stops polling"用例变红;改回。
+两处钉子都要能被推翻,否则用例是空的:
+
+1. 把 `restartTimer` 的 `isAbsolute` 判断去掉 → `asks for the absolute bracket and stops polling it` 变红(45 s 后多出 3 次请求)。改回。
+2. 把 `refresh()` 开头的 `const requestSeq = ++seq` 改成 `const requestSeq = seq`(不再递增序列)→ `retires an in-flight answer when the bracket that asked for it is refused` 变红:迟到的回答过了 `requestSeq !== seq` 检查,把已被拒绝的区间重新画上图表。改回。
+
 Run: `bun run type-check && bun run lint && bun run test:unit -- --run`
 
 ```bash
@@ -1346,43 +1588,155 @@ EOF
 
 - [ ] **Step 1: 写失败的测试**
 
+`src/views/__tests__/InstancesView.spec.ts` 现在**不带 router** 挂载(:21、:78 只有 `createPinia()`)。Task 7 之后 `InstancesView.vue` 要 `useRoute()` 读区间,`useRoute()` 在没有 router 的挂载里返回 `undefined`,`route.query` 直接抛 —— 所以这个文件必须先补一个带 memory router 的 `mountView`,照 `OverviewView.spec.ts:78-89` 的形状(用**应用自己的 `routes`**,不要手抄路由表)。**没有 `mountDrawer` 这个东西**,抽屉是本地 `selected` 状态 + 一次 `wrapper.find('button.panel').trigger('click')`(:80),新 helper 把它包起来。
+
+helper 与三条用例(替换该文件现有的两次 `vi.stubGlobal`,共用一份 detail 夹具):
+
 ```ts
-it('re-requests the detail when the bracket changes', async () => {
-  // The drawer's number is the one thing on this page that follows the range.
-  const draft = ref(relativeDraft(60))
-  const { refresh } = useInstanceDetail(ref('dns-node-1'), draft)
-  await refresh()
-  expect(fetchUrl(0)).toContain('/api/instances/dns-node-1?windowMinutes=60')
-  draft.value = { ...emptyDraft(), fromMs: 1_760_000_000_000, toMs: 1_760_600_000_000 }
-  await refresh()
-  expect(fetchUrl(1)).toContain('from=1760000000000')
-  expect(fetchUrl(1)).toContain('to=1760600000000')
-  expect(fetchUrl(1)).not.toContain('windowMinutes')
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { createPinia } from 'pinia'
+import { createMemoryHistory, createRouter, type Router } from 'vue-router'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import InstancesView from '@/views/InstancesView.vue'
+import { routes } from '@/router'
+
+const HOUR = 3_600_000
+const NOW = 1_761_436_800_000
+
+const listed = [
+  { id: 'n1', host: 'dns-node-1', version: '0.1.0', online: true, lastSeen: 1, mcpReachable: true },
+]
+
+function detailBody(overrides: Record<string, unknown> = {}) {
+  return {
+    instance: listed[0]!,
+    pid: 4242,
+    status: 'running',
+    uptimeSeconds: 3600,
+    listenAddr: '0.0.0.0:15353',
+    protocols: ['udp'],
+    plugins: [],
+    configToml: '',
+    redactedKeys: [],
+    runtime: { signals: {} },
+    // 旧字段 `recentFailures` 到这一步已经不存在:Task 4 把 `InstanceDetail`
+    // 换成 `failureCount: Option<u64>`,序列化就是 `failureCount: number | null`。
+    failureCount: 0,
+    ...overrides,
+  }
+}
+
+const wrappers: VueWrapper[] = []
+let fetches: string[] = []
+
+async function mountView(
+  path: string,
+  detail: () => unknown = () => detailBody(),
+): Promise<{ router: Router; wrapper: VueWrapper }> {
+  fetches = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      fetches.push(url)
+      const body = url.includes('/api/instances/') ? detail() : listed
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }),
+  )
+  const router = createRouter({ history: createMemoryHistory(), routes })
+  await router.push(path)
+  await router.isReady()
+  const wrapper = mount(InstancesView, { global: { plugins: [router, createPinia()] } })
+  wrappers.push(wrapper)
+  await flushPromises()
+  await wrapper.find('button.panel').trigger('click')
+  await flushPromises()
+  return { router, wrapper }
+}
+
+afterEach(() => {
+  for (const wrapper of wrappers.splice(0)) wrapper.unmount()
+  vi.unstubAllGlobals()
 })
 
-it('renders an em dash when telemetry could not count', async () => {
-  const wrapper = await mountDrawer({ failureCount: null })
-  expect(wrapper.text()).toContain('—')
-  expect(wrapper.text()).not.toMatch(/区间内失败\s*0/)
+describe('InstancesView range', () => {
+  it('asks the detail for the bracket the URL carries', async () => {
+    const { wrapper } = await mountView('/instances?windowMinutes=10080')
+    const detail = fetches.find((url) => url.includes('/api/instances/'))!
+    expect(detail).toContain('windowMinutes=10080')
+    wrapper.unmount()
+  })
+
+  it('re-requests the detail when the operator picks another window', async () => {
+    const { wrapper } = await mountView('/instances?windowMinutes=60')
+    const before = fetches.filter((url) => url.includes('/api/instances/')).length
+
+    await wrapper.get('[data-testid="quick-7d"]').trigger('click')
+    await flushPromises()
+
+    const list = fetches.filter((url) => url.includes('/api/instances/'))
+    expect(list.length).toBe(before + 1)
+    expect(list.at(-1)).toContain('windowMinutes=10080')
+    wrapper.unmount()
+  })
+
+  it('sends no time parameter to the list itself', async () => {
+    // `/api/instances` is the one endpoint with no bracket: its rows are
+    // identity and reachability. A `?windowMinutes=` here would be a lie the
+    // server ignores — the hint line is what says so out loud.
+    const { wrapper } = await mountView('/instances?windowMinutes=10080')
+    expect(fetches.filter((url) => url === '/api/instances')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('renders an em dash instead of a fabricated zero', async () => {
+    const { wrapper } = await mountView('/instances?windowMinutes=60', () =>
+      detailBody({ failureCount: null }),
+    )
+    expect(wrapper.get('[data-testid="failure-count"]').text()).toBe('—')
+    wrapper.unmount()
+  })
+
+  it('renders a counted zero as a zero', async () => {
+    // `??`, not `||`: `0` is an answer ("this node was healthy that week"),
+    // `null` is the absence of one. A reviewer-proof pin for that difference.
+    const { wrapper } = await mountView('/instances?windowMinutes=60')
+    expect(wrapper.get('[data-testid="failure-count"]').text()).toBe('0')
+    wrapper.unmount()
+  })
 })
 ```
 
-(具体 spy / mount helper 照 `src/views/__tests__/InstancesView.spec.ts` 现有写法,那里已经有 stub 详情对象的先例,`recentFailures: 0` 就在第 58 行——改成 `failureCount: 0`,并另加一条 `failureCount: null` 的用例。)
+(`data-testid="failure-count"` 在**数字那一段** `<p>` 上,不在卡片 `<div>` 上:卡片文本还含标签和跳转链接,`toBe('—')` 才可能成立,e2e 也才能直接 `toHaveText('12')`。)
+
+(`url === '/api/instances'` 要求列表请求**一字不带**参数。`useInstances()` 本来就是这样(:13),这条用例是防止有人"顺手"给它加区间。)
 
 - [ ] **Step 2: 跑测试确认失败**
 
 Run: `bun x vitest run src/views/__tests__/InstancesView.spec.ts`
-Expected: FAIL。
+Expected: FAIL,而且是三种红法都出现:不带 router 的两条旧用例在 `useRoute()` 处抛(证明 router 是真需要,不是重写好玩);`wrapper.get('[data-testid="quick-7d"]')` 找不到控件;`failure-count` 卡片不存在。旧用例里 :58 的 `recentFailures: 0` 与 :21/:78 的挂载写法一起被 `mountView` 取代。
 
 - [ ] **Step 3: 实现**
 
-`useInstances.ts`:
+`src/api/types.ts`:`recentFailures: number` → `failureCount: number | null`(与 Task 4 的 `Option<u64>` + `#[serde(rename_all = "camelCase")]` 一字对应;`null` 是"数不出来",不是 0)。
+
+`useInstances.ts` 的 `useInstanceDetail` 加第二个参数(import `toRequestQuery`、`type FilterDraft`、`type Ref` 已在):
 
 ```ts
 export function useInstanceDetail(id: Ref<string | null>, draft: Ref<FilterDraft>) {
-  ...
+  const detail = ref<InstanceDetail | null>(null)
+  const error = ref<string | null>(null)
+  const loading = ref(false)
+
   async function refresh() {
-    if (!id.value) { detail.value = null; return }
+    if (!id.value) {
+      detail.value = null
+      return
+    }
     loading.value = true
     try {
       // The bracket travels with the request: the failure number is a range
@@ -1391,50 +1745,79 @@ export function useInstanceDetail(id: Ref<string | null>, draft: Ref<FilterDraft
       detail.value = await apiGet<InstanceDetail>(
         `/api/instances/${encodeURIComponent(id.value)}?${query}`,
       )
-      ...
+      error.value = null
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : String(cause)
+    } finally {
+      loading.value = false
+    }
   }
+
+  // `immediate` rather than `onMounted`: this composable owns no timer, so it
+  // needs no lifecycle hook — and that is also why its spec can call it without
+  // a host component, unlike `useOverview`.
   watch([id, draft], () => void refresh(), { immediate: true })
+  return { detail, error, loading, refresh }
 }
 ```
 
-`InstancesView.vue`:页面级 draft(`parseFilterQuery(route.query)` + `setDraft` → `router.replace`,与 Task 6 Step 4 完全同款);`<TimeRangeControl>` 挂在 header 里(与 Refresh 并排);详情抽屉的指标组加一张卡:
+`useInstances()`(列表)一字不改:它仍然请求裸的 `/api/instances`,这正是 Step 1 第三条用例钉住的语义。
+
+`InstancesView.vue`:页面级 draft 与 Task 6 Step 4 **完全同款**(派生 + 无参数时补 `relativeDraft(DEFAULT_WINDOW_MINUTES)`,这样抽屉永远带一个显式窗口,`TimeRangeControl` 的 `aria-pressed` 也才有归属);`useInstanceDetail(selectedId, draft)`;`<TimeRangeControl :model-value="draft" @update:model-value="setDraft" />` 挂进 header(:41-50)与 Refresh 并排。本地 `selected` 保持本地——抽屉开合不是区间语义,别把它塞进 URL。
+
+详情指标组(:93-110)加第五张卡,放在 `uptime` 之前(它是这一组里唯一跟着区间走的数字,排第一才说得清"其它都是 live"):
 
 ```html
 <div class="panel p-3">
   <p class="text-[10px] uppercase tracking-wide text-muted">区间内失败</p>
-  <p class="mt-1 text-sm">{{ dash(detail.failureCount) }}</p>
+  <p class="mono mt-1 text-sm" data-testid="failure-count">{{ detail.failureCount ?? '—' }}</p>
   <RouterLink
     class="mono mt-1 inline-block text-[10px] text-accent"
-    :to="{ name: 'failures-list', query: { ...toRouteQuery(draft), instance: detail.instance.host } }"
-  >在失败列表里看这台主机</RouterLink>
+    :to="{
+      name: 'failures-list',
+      query: { ...toRouteQuery(draft), instance: detail.instance.host },
+    }"
+    >在失败列表里看这台主机</RouterLink
+  >
 </div>
 ```
 
-`dash(...)` 若该组件没有就用 `detail.failureCount ?? '—'`。列表请求保持 `apiGet<Instance[]>('/api/instances')` 不变。
+`?? '—'` 而不是 `dash(...)`:该组件没有 `dash` helper,现有四张卡各自内联 `?? '—'`(:100、:104、:108),第五张跟着同一种写法就是最一致的写法;为一张卡抽 helper 属于评审会点的过度设计。
 
 - [ ] **Step 4: e2e 钉住"详情真的按区间取数"**
 
-`doggy-dns-ui/e2e/console.spec.ts` 追加(demo 模式,fixture 的分组铺到 8 天前):
+`doggy-dns-ui/e2e/console.spec.ts` 追加(demo 模式,fixture 的分组铺到 8 天前;`InstanceCard.vue:30` 把 host 放在按钮文本第一位,所以锚定 `^dns-node-1` 就够区分三台,不需要 `.first()` 猜):
 
 ```ts
 test('the instance drawer counts failures over the chosen bracket', async ({ page }) => {
+  const card = page.getByRole('button', { name: /^dns-node-1\b/ })
+
   await page.goto('/instances?windowMinutes=10080')
-  await page.getByRole('button', { name: /dns-node-1/ }).first().click()
-  const drawer = page.getByRole('dialog', { name: 'Instance detail' })
-  await expect(drawer.getByText('区间内失败')).toBeVisible()
-  const week = await drawer.locator('section').first().innerText()
+  await card.click()
+  const count = page.getByTestId('failure-count')
+  // A counted week is a number, never the em dash that means "the telemetry
+  // source could not count at all".
+  await expect(count).not.toHaveText('—')
+  const week = Number(await count.innerText())
+
   await page.goto('/instances?windowMinutes=60')
-  await page.getByRole('button', { name: /dns-node-1/ }).first().click()
-  const hour = await page.getByRole('dialog', { name: 'Instance detail' }).locator('section').first().innerText()
-  expect(week).not.toEqual(hour)
+  await card.click()
+  const hour = Number(await page.getByTestId('failure-count').innerText())
+
+  // The fixture spreads its groups from 10 minutes to 8 days, so a week counts
+  // rows an hour cannot see. Asserting the number itself moves is the point:
+  // a drawer that only *sends* the bracket and shows a constant would pass a
+  // request-only assertion.
+  expect(Number.isNaN(week)).toBe(false)
+  expect(week).toBeGreaterThan(hour)
 })
 ```
 
-(e2e 里定位数字的选择器请按实现后的 DOM 收窄,别用 `.first()` 猜——目标是"两次文本不同",不是"抓到某个 number"。)
+两条既有 e2e 用例不受影响:它们没访问 `/instances`,而 `console.spec.ts:61/66` 的 `range-chip` 属于失败抽屉(`FailureDrawer.vue`),与本任务的实例抽屉是两处 UI —— Task 7 **不许**顺手把 `range-chip` 换成 `TimeRangeControl`,那是第 13 条用例存在的理由。
 
 - [ ] **Step 5: 红/绿自查 + gate + 提交**
 
-把 `useInstanceDetail` 的请求 URL 改回不带 query,确认 Step 1 的用例变红;改回。
+把 `useInstanceDetail` 的请求 URL 改回不带 query(删掉 `?${query}`),确认 `asks the detail for the bracket the URL carries` 与 `re-requests the detail when the operator picks another window` 同时变红;改回。再把 `?? '—'` 换成 `|| '—'`,确认 `renders a counted zero as a zero` 变红;改回。
 Run: `bun run type-check && bun run lint && bun run test:unit -- --run && bun run test:e2e`
 
 ```bash
@@ -1452,32 +1835,77 @@ EOF
 ### Task 8: 文档、端到端复核与全量 gate
 
 **Files:**
-- Modify: `README.md`(`:102-107` 的时间段、`:134` 的错误段、`:273` 的深链段)
+- Modify: `README.md`(`:101-109` 的区间段、`:132-137` 的错误段、`:273-281` 的深链段;`### Failure list API`(:73)附近补 `GET /api/overview` 的签名——README 现在**根本没有**这一行,全文 grep 不到 `/api/overview`)
 - Modify: `docs/superpowers/plans/2026-11-03-absolute-range-failure-list.md`(在该计划末尾加一行"看板/实例区间由 2026-11-04 计划接管")
 - Modify: `doggy-dns-ui/e2e/console.spec.ts`(看板 7 天用例)
 
 - [ ] **Step 1: README 改口径**
 
-`/api/overview` 一行写成 `GET /api/overview?from=&to=&windowMinutes=`,并把第 102–107 行那段"the live class … clamped to 5–1440"整段替换:所有取区间的端点(overview、instances/{id}、failures 全家)共用 5–10080 与同一套 400 文案,`/api/instances` 列表不取时间窗。新增两句:p95 是"区间内最差分桶"(桶宽 = `ceil(span/168)` 分钟,夹在 1–60,默认 1 小时就是 5 分钟 rate 窗口 ×60s 步长),趋势线在 7 天区间是每小时一个点。实例详情补 `failureCount` 的语义:`COUNT(*)` 不封顶,`null` 表示遥测算不出来(不是 0)。
+三处假话先定位,再逐句替换(不要整段重写,README 的其余部分是刚评审过的):
+
+1. `:106-109` —— "The overview view is the live class and still takes a relative window clamped to 5–1440 minutes; `/api/instances` takes no window, and the instance detail's recent-failure number is a fixed 60 minutes." 三小句现在全是假的。换成:取时间窗的端点(overview、`/api/instances/{id}`、failures 全家)共用同一条 5–10080 与同一套 `400 invalid_request` 文案,`/api/instances` 列表仍是唯一不取区间的端点(它的行是身份与可达性)。
+2. `:132-137` —— "the investigation chain rejects an out-of-range bracket instead of clamping it" 的适用范围要从 chain 扩到"every endpoint that takes a bracket";`limit` 那句(:80-83)"夹而不拒"保留,它是唯一剩下的 clamp。
+3. `:273-281` —— 深链段只写了 `/failures`。补一句:`/`(看板)与 `/instances`(实例抽屉的数字)同样以 URL 为唯一状态来源,三处共用同一个时间控件;顺带保留"a relative window re-anchors when it is reopened"那半句,它对看板依然成立(相对窗口每次刷新重算),但绝对区间不重算——这正是停止轮询的理由。
+
+新增的两句口径(p95 与 failureCount)写在 Overview 那一段,数字全部来自代码而不是记忆:
+
+- p95 是"区间内最差分桶":桶宽 `bucket_minutes = clamp(ceil(span_minutes / 168), 1, 60)`(`src/domain.rs` 的 `bucket_minutes`),rate 窗口 `max(bucket, 5)` 分钟。默认一小时因此仍是 60s 步长 × 5min rate 窗口,和改版前逐字节相同;一周是 60 分钟一个点。**一句话写明代价:区间越宽,读到的 p95 越高**,所以卡片 hint 是 `worst bucket in range`(D16 的账要写在脸上)。
+- 实例详情的 `failureCount`:`SELECT COUNT(*)`,不封顶(失败列表按组聚合、上限 200 组,一周的数会被静默截断);`null` 表示遥测算不出来,前端渲染 `—`。"`null` 不是 0"这句必须留在 README 里 —— 它是 D17 唯一能在文档里被复查的断言。
 
 Run: `grep -n "1440\|clamp" README.md`
-Expected: 仅剩真正与 clamp 无关的历史描述(应当为空或只剩 `Window` 内部用途那一句)。
+Expected(当前 HEAD 的实测基线,4 处):`:80` 是 `limit` 的 clamp(唯一真正保留的 clamp)、`:105` 与 `:136` 是"never clamps / instead of clamping"的**否定句**、`:107` 是本次要替换掉的假话。改完后 `1440` 必须为 **0 处**,`clamp` 只剩上述三类(否定句 + `limit`)。把改前改后两次 grep 的原样输出都贴进报告,不许只写"已清理"。
 
-- [ ] **Step 2: 看板 7 天 e2e**
+- [ ] **Step 2: 看板 7 天 e2e(D8 的账要数请求,不是等请求)**
+
+`doggy-dns-ui/e2e/console.spec.ts` 追加两条。**不要**用 `page.waitForResponse(...)`:注册在 `goto` 之后就是 race(第一条请求可能已经走完),注册在之前又只能证明"至少有一次"——而 D8 要的恰恰是"绝对区间**只有**一次"。两条都用 `page.on('response')` 先挂计数器,再 `goto`,再 `expect.poll` 等首个请求落地。
 
 ```ts
-test('the overview takes a week and stops refreshing', async ({ page }) => {
+// D8 splits the two directions of the same rule, so each case gets its own
+// 20s window (and its own timeout budget): a relative bracket must keep
+// re-anchoring every 15s, an absolute one must stop asking entirely.
+function countOverview(page: Page): string[] {
+  const urls: string[] = []
+  page.on('response', (response) => {
+    if (new URL(response.url()).pathname === '/api/overview') urls.push(response.url())
+  })
+  return urls
+}
+
+test('a relative week refreshes the overview', async ({ page }) => {
+  test.setTimeout(60_000)
+  const urls = countOverview(page)
+
   await page.goto('/?windowMinutes=10080')
-  const request = page.waitForResponse(/\/api\/overview\?windowMinutes=10080$/)
-  await request
-  // D8: the absolute/relative distinction is about the preset, so a relative
-  // week still refreshes; assert the refusal path instead for the fixed case.
-  await page.goto('/?from=1760000000000&to=1760600000000')
-  await expect(page.getByTestId('range-hint')).toBeVisible()
+  await expect.poll(() => urls.length).toBeGreaterThan(0)
+  expect(urls[0]).toContain('windowMinutes=10080')
+
+  await page.waitForTimeout(20_000)
+  // 15s polling means two samples inside 20s. Asserting ">1" rather than "==2"
+  // keeps the case about the timer existing, not about wall-clock luck.
+  expect(urls.length).toBeGreaterThan(1)
+})
+
+test('an absolute bracket is asked for once and never polled', async ({ page }) => {
+  test.setTimeout(60_000)
+  const to = Date.now()
+  const from = to - 60 * 60 * 1000
+  const urls = countOverview(page)
+
+  await page.goto(`/?from=${from}&to=${to}`)
+  await expect.poll(() => urls.length).toBeGreaterThan(0)
+  expect(urls[0]).toContain(`from=${from}`)
+  expect(urls[0]).toContain(`to=${to}`)
+
+  await page.waitForTimeout(20_000)
+  expect(urls).toHaveLength(1)
 })
 ```
 
-(第二条要真正钉"绝对区间不再每 15s 请求":数 20s 内 `/api/overview` 响应次数 == 1。用 `page.on('response')` 计数,别用 `waitForResponse` 猜。)
+两条都是**现在就会红**的用例,别指望它们只是回归网(红色原因各不同,写报告时按实际输出贴):
+- 第一条今天红在 `urls[0]` 是 `...?windowMinutes=60` —— 现存的 `useOverview(60)` 完全不读 URL(`OverviewView.vue:14`),`?windowMinutes=10080` 只是被忽略;Task 6 Step 4 让看板以 URL 为唯一来源后,这一条才转绿。
+- 第二条在 Task 6 之前红在 `urls` 一直是 2 条以上:`useOverview.ts:29` 的 `setInterval(refresh, 15_000)` 没有绝对区间分支,Task 6 Step 3 的 `isAbsolute` 才停表。
+- 绝对区间的 `from`/`to` 用 `Date.now()` 现算,不要写死 2025 年的毫秒常量:`Range::resolve` 只拒"未来 60s 之后",写死的旧区间虽然合法,但 demo fixture 的数据是按现在铺开 8 天的,卡片全空会让"数字看得见"的其它用例失去意义。
+- `import type { Page } from '@playwright/test'`(计数器签名需要),`expect`/`test` 沿用文件第 1 行的导入。
 
 - [ ] **Step 3: 浏览器实测(不是"看起来对")**
 
@@ -1512,6 +1940,6 @@ EOF
 
 ## Self-Review 记录
 
-- **Spec 覆盖**:D2 → Task 3/4;D8 → Task 6(轮询)+ Task 2(总量单点);D9 → Task 3/4(`get_overview`/`get_instance_detail` 参数与描述);D15 → Task 1/2;D16 → Task 2(worst bucket)+ Task 6(卡片 hint)+ Task 8(README);D17 → Task 4(不封顶 `COUNT(*)`、`Option`)+ Task 7(可见数字、跳列表、URL 同步);§6.5/6.6 → Task 5/6;§7 全部新钉子分布在 Task 1–8。
+- **Spec 覆盖**:D2 → Task 3/4;D8 → Task 6(停表)+ Task 8(两条 e2e 各数 20s 的请求次数)+ Task 2(总量单点);D9 → Task 3/4(`get_overview`/`get_instance_detail` 参数与描述);D15 → Task 1/2;D16 → Task 2(worst bucket)+ Task 6(卡片 hint)+ Task 8(README);D17 → Task 4(不封顶 `COUNT(*)`、`Option`)+ Task 7(可见数字、跳列表、URL 同步);§6.5/6.6 → Task 5/6;§7 全部新钉子分布在 Task 1–8。
 - **占位符扫描**:无 TBD;"按现有 helper 形状改写"的三处(`tests/overview_test.rs` 的响应体与 telemetry 构造、`tests/api_test.rs` 的 get helper、e2e 的抽屉定位器)都指明了参照文件与行号,属于对既有形状的显式引用,不是未定义内容。
 - **类型一致性**:`Range::bucket_minutes/rate_window_minutes/step_seconds/whole_step_seconds/span_minutes`(Task 1 定义,Task 2/4 消费)、`RangeQuery::range(now_ms)`(Task 3 定义,Task 4 消费)、`failureCount: number | null`(Task 4 后端 `Option<u64>` ↔ Task 7 TS)、`useOverview(draft: Ref<FilterDraft>)`(Task 6 定义,同任务消费)已逐处对齐。
