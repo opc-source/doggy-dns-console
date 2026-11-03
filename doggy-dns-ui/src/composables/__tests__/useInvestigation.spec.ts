@@ -2,7 +2,7 @@ import { effectScope, ref } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError, apiGet, apiPostWithStatus } from '@/api/http'
-import type { AnalysisResult, AnalysisSnapshot, EvidenceBundle } from '@/api/types'
+import type { AnalysisResult, AnalysisSnapshot, EvidenceBundle, InvestigationFilter } from '@/api/types'
 import { ANALYSIS_POLL_INTERVAL_MS, useInvestigation } from '@/composables/useInvestigation'
 
 vi.mock('@/api/http', async (importOriginal) => {
@@ -99,14 +99,23 @@ function deferred<T>(): Deferred<T> {
 
 const scopes: Array<{ stop: () => void }> = []
 
-function setup(trace: string | null = TRACE) {
+/** A one-hour absolute bracket the tests pin the request URLs to. */
+const EVIDENCE_FILTER: InvestigationFilter = {
+  from: 1_761_433_200_000,
+  to: 1_761_436_800_000,
+  domain: null,
+  responseCode: null,
+  instance: null,
+}
+
+function setup(trace: string | null = TRACE, filter: InvestigationFilter = EVIDENCE_FILTER) {
   const traceId = ref<string | null>(trace)
-  const windowMinutes = ref(60)
+  const investigationFilter = ref<InvestigationFilter>(filter)
   const scope = effectScope()
-  const item = scope.run(() => useInvestigation(traceId, windowMinutes))
+  const item = scope.run(() => useInvestigation(traceId, investigationFilter))
   if (!item) throw new Error('composable did not run')
   scopes.push(scope)
-  return { traceId, windowMinutes, scope, item }
+  return { traceId, investigationFilter, scope, item }
 }
 
 function getPaths(): string[] {
@@ -142,10 +151,35 @@ describe('useInvestigation', () => {
 
     const path = getPaths()[0]
     expect(path).toContain(`/api/failures/${TRACE_SEGMENT}/evidence`)
-    expect(path).toContain('windowMinutes=60')
+    expect(path).toContain('from=1761433200000')
+    expect(path).toContain('to=1761436800000')
     expect(item.state.value).toBe('evidenceReady')
     expect(item.evidence.value?.fingerprint).toBe('sha256:a')
     expect(item.error.value).toBeNull()
+  })
+
+  it('builds_the_evidence_url_for_the_absolute_bracket_and_no_window', async () => {
+    const { item } = setup()
+    getMock().mockResolvedValueOnce(bundle())
+    await item.loadEvidence()
+
+    const path = getPaths()[0]
+    expect(path).toContain(`from=${EVIDENCE_FILTER.from}`)
+    expect(path).toContain(`to=${EVIDENCE_FILTER.to}`)
+    expect(path).not.toContain('windowMinutes=')
+  })
+
+  it('builds_the_analysis_url_for_the_same_bracket', async () => {
+    const { item } = setup()
+    getMock().mockResolvedValueOnce(bundle())
+    await item.loadEvidence()
+    postMock().mockResolvedValueOnce({ status: 200, body: snapshot() })
+    await item.startAnalysis()
+
+    const path = postPaths()[0]
+    expect(path).toContain(`from=${EVIDENCE_FILTER.from}`)
+    expect(path).toContain(`to=${EVIDENCE_FILTER.to}`)
+    expect(path).not.toContain('windowMinutes=')
   })
 
   it('starts_a_job_and_reaches_analysis_done', async () => {

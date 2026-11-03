@@ -84,7 +84,8 @@ describe('AiPanel', () => {
       traceId: 't1',
       verdict: 'upstream_timeout',
       summary: '上游转发超时导致 SERVFAIL',
-      windowMinutes: 30,
+      fromMs: 1_761_433_200_000,
+      toMs: 1_761_436_800_000,
     })
     await wrapper.vm.$nextTick()
 
@@ -96,7 +97,7 @@ describe('AiPanel', () => {
     expect(push).toHaveBeenCalledWith({
       name: 'failure',
       params: { traceId: 't1' },
-      query: { windowMinutes: '30' },
+      query: { from: '1761433200000', to: '1761436800000' },
     })
 
     await bar.get('[data-test="clear-handoff"]').trigger('click')

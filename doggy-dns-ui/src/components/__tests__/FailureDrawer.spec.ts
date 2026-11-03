@@ -1,11 +1,17 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
-import { ref, type Ref } from 'vue'
+import { isRef, ref, type Ref } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 
-import type { AnalysisResult, AnalysisSnapshot, EvidenceBundle } from '@/api/types'
+import type {
+  AnalysisResult,
+  AnalysisSnapshot,
+  EvidenceBundle,
+  InvestigationFilter,
+} from '@/api/types'
 import FailureDrawer from '@/components/FailureDrawer.vue'
 import type { InvestigationState } from '@/composables/useInvestigation'
+import { msToDatetime } from '@/lib/failureFilter'
 import { useChatStore } from '@/stores/chat'
 import { useUiStore } from '@/stores/ui'
 
@@ -49,15 +55,29 @@ function createInvestigation(overrides: InvestigationOverrides = {}): Investigat
 }
 
 // `vi.mock` factories are hoisted above the imports; the factory only reads
-// `current` when the component calls `useInvestigation()` during setup.
+// `current` when the component calls `useInvestigation()` during setup. The
+// same lazy closure lets each call record the refs the drawer hands in.
 let current: Investigation
+let investigationArgs: unknown[][] = []
 
 vi.mock('@/composables/useInvestigation', () => ({
-  useInvestigation: () => current,
+  useInvestigation: (...args: unknown[]) => {
+    investigationArgs.push(args)
+    return current
+  },
   ANALYSIS_POLL_INTERVAL_MS: 1000,
 }))
 
 const AT = Date.UTC(2026, 0, 1, 12, 0, 0)
+
+// A fixed one-hour absolute bracket the drawer renders, requests and hands off.
+const FILTER: InvestigationFilter = {
+  from: 1_761_433_200_000,
+  to: 1_761_436_800_000,
+  domain: null,
+  responseCode: null,
+  instance: null,
+}
 
 function bundle(overrides: Partial<EvidenceBundle> = {}): EvidenceBundle {
   return {
@@ -211,7 +231,7 @@ function mountDrawer(
 ): VueWrapper {
   setActivePinia(pinia)
   const wrapper = mount(FailureDrawer, {
-    props: { traceId: 't1', windowMinutes: 60, ...props },
+    props: { traceId: 't1', filter: FILTER, ...props },
     global: { plugins: [pinia] },
     attachTo: document.body,
   })
@@ -229,6 +249,7 @@ function refButton(wrapper: VueWrapper, evidenceId: string) {
 
 beforeEach(() => {
   current = createInvestigation()
+  investigationArgs = []
   // jsdom never matches media queries; the handoff picks the panel mode from this.
   vi.stubGlobal('matchMedia', (query: string) => ({
     matches: query.includes('1280px'),
@@ -676,8 +697,13 @@ describe('FailureDrawer investigation panel', () => {
       traceId: 't1',
       verdict: 'upstream_timeout',
       summary: '上游转发超时导致 SERVFAIL',
-      windowMinutes: 60,
+      fromMs: 1_761_433_200_000,
+      toMs: 1_761_436_800_000,
     })
+    expect(ui.handoff).not.toHaveProperty('windowMinutes')
+    expect(send.mock.calls[0]?.[0]).toContain(
+      `${msToDatetime(1_761_433_200_000)} ~ ${msToDatetime(1_761_436_800_000)}`,
+    )
 
     resolveSend(true)
     await flushPromises()
@@ -879,5 +905,47 @@ describe('FailureDrawer investigation panel', () => {
     await reanalyze[0]!.trigger('click')
 
     expect(investigation.startAnalysis).toHaveBeenCalledWith(true)
+  })
+
+  it('hands the investigation a ref to the bracket filter', async () => {
+    mountDrawer()
+    await flushPromises()
+
+    const handed = investigationArgs[0]?.[1]
+    expect(isRef(handed)).toBe(true)
+    expect((handed as Ref<InvestigationFilter>).value).toMatchObject({
+      from: 1_761_433_200_000,
+      to: 1_761_436_800_000,
+      domain: null,
+      responseCode: null,
+      instance: null,
+    })
+  })
+
+  it('shows the bracket chip before any evidence loads', async () => {
+    // The default investigation starts empty, so the chip must render from the
+    // prop alone — it names the range even while the drawer is still idle.
+    const wrapper = mountDrawer()
+    await flushPromises()
+
+    const chip = wrapper.find('[data-testid="range-chip"]')
+    expect(chip.exists()).toBe(true)
+    expect(chip.text()).toBe(
+      `${msToDatetime(1_761_433_200_000)} ~ ${msToDatetime(1_761_436_800_000)}`,
+    )
+  })
+
+  it('re-runs the investigation when only the bracket changes', async () => {
+    const investigation = createInvestigation({ state: 'idle' })
+    current = investigation
+
+    const wrapper = mountDrawer()
+    await flushPromises()
+    expect(investigation.loadEvidence).toHaveBeenCalledTimes(1)
+
+    await wrapper.setProps({ filter: { ...FILTER, from: 1_761_429_600_000 } })
+    await flushPromises()
+
+    expect(investigation.loadEvidence).toHaveBeenCalledTimes(2)
   })
 })

@@ -52,11 +52,12 @@ function toggleFullscreen() {
 function reopenFailure() {
   const handoff = ui.handoff
   if (!handoff) return
-  void router.push({
-    name: 'failure',
-    params: { traceId: handoff.traceId },
-    query: handoff.windowMinutes ? { windowMinutes: String(handoff.windowMinutes) } : {},
-  })
+  const query: Record<string, string> = {}
+  if (handoff.fromMs !== undefined && handoff.toMs !== undefined) {
+    query.from = String(handoff.fromMs)
+    query.to = String(handoff.toMs)
+  }
+  void router.push({ name: 'failure', params: { traceId: handoff.traceId }, query })
 }
 
 // A run grows one segment's text in place, so the message and segment counts alone

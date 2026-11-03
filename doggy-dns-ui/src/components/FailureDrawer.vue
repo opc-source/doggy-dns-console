@@ -2,23 +2,28 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, toRef, watch } from 'vue'
 import { Copy, Send, TriangleAlert, X } from '@lucide/vue'
 
-import type { MissingEvidence } from '@/api/types'
+import type { InvestigationFilter, MissingEvidence } from '@/api/types'
 import { useMediaQuery } from '@/composables/useMediaQuery'
 import { useInvestigation } from '@/composables/useInvestigation'
+import { msToDatetime } from '@/lib/failureFilter'
 import { useChatStore } from '@/stores/chat'
 import { useUiStore } from '@/stores/ui'
 
-const props = defineProps<{ traceId: string; windowMinutes: number; analysisId?: string }>()
+const props = defineProps<{
+  traceId: string
+  filter: InvestigationFilter
+  analysisId?: string
+}>()
 const emit = defineEmits<{ close: [] }>()
 const chat = useChatStore()
 const ui = useUiStore()
 const isWide = useMediaQuery('(min-width: 1280px)')
 
 const trace = toRef(props, 'traceId')
-const windowMinutes = toRef(props, 'windowMinutes')
+const filter = toRef(props, 'filter')
 const analysisId = toRef(props, 'analysisId')
 const { state, evidence, analysis, error, stale, loadEvidence, startAnalysis, loadAnalysis } =
-  useInvestigation(trace, windowMinutes)
+  useInvestigation(trace, filter)
 
 type TabKey = 'logs' | 'spans' | 'instance' | 'metrics'
 
@@ -49,6 +54,12 @@ const metrics = computed(() => evidence.value?.metrics ?? null)
 const host = computed(() => metrics.value?.host ?? null)
 const config = computed(() => instance.value?.config ?? null)
 const result = computed(() => analysis.value?.result ?? null)
+
+// Renders from the prop alone, so the header names the bracket even before any
+// evidence has loaded.
+const bracketLabel = computed(
+  () => `${msToDatetime(props.filter.from)} ~ ${msToDatetime(props.filter.to)}`,
+)
 
 const stateLabel = computed(() => {
   switch (state.value) {
@@ -137,6 +148,7 @@ const MISSING_LABELS: Record<MissingEvidence, string> = {
 
 const handoffPrompt = computed(() => {
   const lines = [`请继续调查这组 DNS 失败：trace_id=${props.traceId}`]
+  lines.push(`区间=${msToDatetime(props.filter.from)} ~ ${msToDatetime(props.filter.to)}`)
   if (evidence.value) lines.push(`fingerprint=${evidence.value.fingerprint}`)
   if (result.value) {
     lines.push(`结论=${result.value.verdict.category}`, `摘要=${result.value.verdict.summary}`)
@@ -176,7 +188,7 @@ async function investigate() {
   const seq = ++loadSeq
   evidenceFailed.value = false
   const ok = await loadEvidence()
-  // A stale invocation (trace/window changed or a reload started meanwhile) must
+  // A stale invocation (trace/bracket changed or a reload started meanwhile) must
   // not paint its own outcome over the newest one.
   if (seq !== loadSeq) return
   evidenceFailed.value = !ok
@@ -202,7 +214,7 @@ onMounted(() => {
   void investigate()
 })
 
-watch([trace, windowMinutes, analysisId], () => {
+watch([trace, () => JSON.stringify(props.filter), () => props.analysisId], () => {
   void investigate()
 })
 
@@ -227,7 +239,8 @@ function handoff() {
     traceId: props.traceId,
     verdict: result.value?.verdict.category ?? '未定结论',
     summary: result.value?.verdict.summary ?? '',
-    windowMinutes: props.windowMinutes,
+    fromMs: props.filter.from,
+    toMs: props.filter.to,
   })
   ui.openAiPanel(isWide.value)
   emit('close')
@@ -322,6 +335,11 @@ function revealEvidence(id: string) {
           </div>
         </div>
         <div class="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-muted">
+          <span
+            data-testid="range-chip"
+            class="rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-300"
+            >{{ bracketLabel }}</span
+          >
           <span v-if="group" class="rounded-md bg-error/15 px-1.5 py-0.5 text-error">{{ group.responseCode }}</span>
           <span v-if="group" class="tabular-nums">×{{ group.count }}</span>
           <span v-if="group?.instance" class="mono">{{ group.instance }}</span>

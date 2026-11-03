@@ -1,9 +1,10 @@
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia } from 'pinia'
-import { defineComponent } from 'vue'
+import { defineComponent, type PropType } from 'vue'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { InvestigationFilter } from '@/api/types'
 import { routes } from '@/router'
 import FailureView from '@/views/FailureView.vue'
 
@@ -11,12 +12,18 @@ const DrawerStub = defineComponent({
   name: 'FailureDrawer',
   props: {
     traceId: { type: String, required: true },
-    windowMinutes: { type: Number, required: true },
+    filter: { type: Object as PropType<InvestigationFilter>, required: true },
     analysisId: { type: String, default: undefined },
   },
   emits: ['close'],
   template: '<div data-testid="drawer-stub" />',
 })
+
+/** The bracket's width in whole minutes, which is what the old window prop was. */
+function bracketMinutes(filter: unknown): number {
+  const { from, to } = filter as InvestigationFilter
+  return Math.round((to - from) / 60_000)
+}
 
 const wrappers: VueWrapper[] = []
 
@@ -46,7 +53,7 @@ describe('FailureView', () => {
     const drawer = wrapper.findComponent(DrawerStub)
     expect(drawer.exists()).toBe(true)
     expect(drawer.props('traceId')).toBe('t1')
-    expect(drawer.props('windowMinutes')).toBe(360)
+    expect(bracketMinutes(drawer.props('filter'))).toBe(360)
     expect(drawer.props('analysisId')).toBe('a1')
     expect(wrapper.find('[aria-label="Failure investigation"]').exists()).toBe(true)
     // AppShell already owns the page's <main> landmark.
@@ -58,7 +65,7 @@ describe('FailureView', () => {
 
     const drawer = wrapper.findComponent(DrawerStub)
     expect(drawer.props('traceId')).toBe('t2')
-    expect(drawer.props('windowMinutes')).toBe(60)
+    expect(bracketMinutes(drawer.props('filter'))).toBe(60)
     expect(drawer.props('analysisId')).toBeUndefined()
   })
 
@@ -70,7 +77,7 @@ describe('FailureView', () => {
   ])('falls back to 60 for %s', async (_label, path) => {
     const { wrapper } = await mountView(path)
 
-    expect(wrapper.findComponent(DrawerStub).props('windowMinutes')).toBe(60)
+    expect(bracketMinutes(wrapper.findComponent(DrawerStub).props('filter'))).toBe(60)
   })
 
   it.each([
@@ -81,13 +88,13 @@ describe('FailureView', () => {
   ])('clamps a window %s to the backend range', async (_label, path, expected) => {
     const { wrapper } = await mountView(path)
 
-    expect(wrapper.findComponent(DrawerStub).props('windowMinutes')).toBe(expected)
+    expect(bracketMinutes(wrapper.findComponent(DrawerStub).props('filter'))).toBe(expected)
   })
 
   it('trims whitespace around a positive integer window', async () => {
     const { wrapper } = await mountView('/failures/t4?windowMinutes=%20360%20')
 
-    expect(wrapper.findComponent(DrawerStub).props('windowMinutes')).toBe(360)
+    expect(bracketMinutes(wrapper.findComponent(DrawerStub).props('filter'))).toBe(360)
   })
 
   it.each([

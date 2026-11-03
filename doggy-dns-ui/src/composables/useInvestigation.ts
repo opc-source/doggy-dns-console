@@ -1,7 +1,12 @@
 import { computed, getCurrentScope, onScopeDispose, ref, watch, type Ref } from 'vue'
 
 import { ApiError, apiGet, apiPostWithStatus } from '@/api/http'
-import type { AnalysisAccepted, AnalysisSnapshot, EvidenceBundle } from '@/api/types'
+import type {
+  AnalysisAccepted,
+  AnalysisSnapshot,
+  EvidenceBundle,
+  InvestigationFilter,
+} from '@/api/types'
 
 export type InvestigationState =
   | 'idle'
@@ -38,6 +43,21 @@ function isSettled(state: InvestigationState): boolean {
 }
 
 /**
+ * The query both evidence and analysis endpoints read: the absolute bracket
+ * plus the optional scope fields. No `windowMinutes` — the bracket owns the
+ * range now (the server parses the same `FailureQuery`).
+ */
+function filterQuery(filter: InvestigationFilter): string {
+  const params = new URLSearchParams()
+  params.set('from', String(filter.from))
+  params.set('to', String(filter.to))
+  if (filter.domain) params.set('domain', filter.domain)
+  if (filter.responseCode) params.set('responseCode', filter.responseCode)
+  if (filter.instance) params.set('instance', filter.instance)
+  return params.toString()
+}
+
+/**
  * One failure investigation: evidence first, then an asynchronous analysis
  * attempt with polling, deep-link restore and stale-fingerprint detection.
  *
@@ -45,7 +65,10 @@ function isSettled(state: InvestigationState): boolean {
  * `startAnalysis`. The scope owns the poll loop, so a disposed drawer cannot
  * keep fetching.
  */
-export function useInvestigation(traceId: Ref<string | null>, windowMinutes: Ref<number>) {
+export function useInvestigation(
+  traceId: Ref<string | null>,
+  filter: Ref<InvestigationFilter>,
+) {
   const state = ref<InvestigationState>('idle')
   const evidence = ref<EvidenceBundle | null>(null)
   const analysis = ref<AnalysisSnapshot | null>(null)
@@ -114,7 +137,7 @@ export function useInvestigation(traceId: Ref<string | null>, windowMinutes: Ref
     state.value = 'evidenceLoading'
     try {
       const bundle = await apiGet<EvidenceBundle>(
-        `/api/failures/${encodeURIComponent(trace)}/evidence?windowMinutes=${windowMinutes.value}`,
+        `/api/failures/${encodeURIComponent(trace)}/evidence?${filterQuery(filter.value)}`,
       )
       if (gen !== generation) return false
       evidence.value = bundle
@@ -169,7 +192,7 @@ export function useInvestigation(traceId: Ref<string | null>, windowMinutes: Ref
 
     state.value = 'analysisQueued'
     error.value = null
-    const params = new URLSearchParams({ windowMinutes: String(windowMinutes.value) })
+    const params = new URLSearchParams(filterQuery(filter.value))
     if (force) params.set('force', 'true')
 
     try {

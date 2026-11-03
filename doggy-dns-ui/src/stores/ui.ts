@@ -9,7 +9,9 @@ export interface HandoffContext {
   traceId: string
   verdict: string
   summary: string
-  windowMinutes?: number
+  /** Set together when the investigation was framed absolutely. */
+  fromMs?: number
+  toMs?: number
 }
 
 function restoredMode(): AiPanelMode {
