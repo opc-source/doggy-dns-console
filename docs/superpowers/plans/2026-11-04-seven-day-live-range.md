@@ -429,7 +429,7 @@ EOF
 **Files:**
 - Create/Modify: `src/api/mod.rs`(新增共用 `RangeQuery`)
 - Modify: `src/api/overview.rs`、`src/agent/tools.rs`(`OverviewArgs` + `get_overview` + 工具 description)
-- Modify: `tests/api_test.rs`、`tests/tools_test.rs`
+- Modify: `tests/api_test.rs`、`tests/tools_test.rs`(`:29` 的 `OverviewArgs { window_minutes: Some(60) }` 是**完备字面量**,加字段后必须补 `..OverviewArgs::default()` 才编译;`:100-105` 那条 `!overview.description().contains("10080")` 是 D2 改写前的旧口径,见 Step 5)
 
 **Interfaces:**
 - Consumes: Task 2 的 `overview(Range)`;既有 `Range::resolve`、`DataError::Invalid`、`ApiError` 映射。
@@ -437,57 +437,127 @@ EOF
 
 - [ ] **Step 1: 写失败的测试(HTTP)**
 
-在 `tests/api_test.rs` 追加(照该文件现有的 router 构造 helper 写;`ApiState` / `build_router` 用法照抄现有 overview 用例):
+`tests/api_test.rs` **没有** `get(url)` 这种 helper:它的形状是 `app_with(...) -> Router` + `Request::get(uri).body(Body::empty())` + `tower::ServiceExt::oneshot` + `json_body(response)`,时钟固定 `FixedClock(1_761_436_800_000)`(`tests/api_test.rs:85-122`)。照那个形状写,并把时钟写成同一个常量:
 
 ```rust
+const FIXED_NOW_MS: i64 = 1_761_436_800_000;
+
 #[tokio::test]
-async fn overview_takes_an_absolute_bracket() {
-    // Demo mode + a fixed clock: the request that carries `from`/`to` must
-    // reach the datasource with that bracket, not with a clamped window.
-    let (response, _) = get(&format!(
-        "/api/overview?from={}&to={}",
-        10_080 * 60_000_i64 * 1_000,
-        11_080 * 60_000_i64 * 1_000
-    ))
-    .await;
+async fn overview_takes_an_absolute_bracket_without_clamping_it() {
+    let app = app_with(fixture() as Arc<dyn TelemetrySource>);
+    let response = app
+        .oneshot(
+            Request::get(&format!(
+                "/api/overview?from={}&to={}",
+                FIXED_NOW_MS - 1_000 * 60_000,
+                FIXED_NOW_MS
+            ))
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    // 1000 分钟在 10080 上限之内,却远在旧的 5-1440 clamp 之外:
+    // 桥接实现(Task 2 留的)会在这里答 60,断言 `windowMinutes` 才抓得住它。
+    assert_eq!(body["windowMinutes"], 1_000);
+}
+
+#[tokio::test]
+async fn overview_takes_a_week_from_the_relative_shortcut() {
+    let app = app_with(fixture() as Arc<dyn TelemetrySource>);
+    let response = app
+        .oneshot(
+            Request::get("/api/overview?windowMinutes=10080")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_body(response).await["windowMinutes"], 10_080);
 }
 
 #[tokio::test]
 async fn overview_refuses_a_bracket_the_investigation_chain_refuses() {
-    // Same four rules, same 400, and above all: no clamp. `windowMinutes`
-    // 20000 used to quietly become 1440 here.
-    for url in [
+    // 四条规则、同一个 400,而且最重要的是:不 clamp。
+    // `windowMinutes=20000` 过去会悄悄变成 1440。
+    for uri in [
         "/api/overview?windowMinutes=20000",
         "/api/overview?from=1000&to=2000",
         "/api/overview?from=2000&to=1000",
-        "/api/overview?windowMinutes=-1",
+        &format!("/api/overview?to={}", FIXED_NOW_MS + 61_000),
     ] {
-        let (response, body) = get(url).await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{url}: {body}");
-        assert!(body.contains("invalid_request"), "{url}: {body}");
+        let app = app_with(fixture() as Arc<dyn TelemetrySource>);
+        let response = app
+            .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = json_body(response).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+        assert_eq!(body["error"]["code"], "invalid_request", "{uri}: {body}");
     }
+}
+
+#[tokio::test]
+async fn a_negative_window_minutes_is_refused_at_the_parameter_layer() {
+    let app = app_with(fixture() as Arc<dyn TelemetrySource>);
+    let response = app
+        .oneshot(
+            Request::get("/api/overview?windowMinutes=-1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // `window_minutes` 是 `u32`,负数在 axum 的反序列化层就 400,压根进不到
+    // `Range::resolve`;因此只钉状态码,不钉 `{error:{code,message}}` 信封。
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 ```
 
-`windowMinutes=-1` 必须是 400 且来自参数层(`u32` 解不出来),不是 clamp 后放行。文案断言用 `body.contains(...)` 而不是逐字节,逐字节的钉子放在 `overview_refuses_with_the_same_message_as_the_failure_list`(见 Step 3)。
+最后一条**先跑一次,把真实响应体贴进报告**:如果你看到它其实走的是 `{error:{code:"invalid_request"}}` 信封(axum 装了自定义 rejection 的话),就把断言升级为信封断言并在报告里说明——不要凭猜写注释。
 
 - [ ] **Step 2: 写失败的测试(两端同文案)**
 
 ```rust
 #[tokio::test]
 async fn the_overview_and_the_failure_list_refuse_identically() {
-    let (_, overview) = get("/api/overview?windowMinutes=20000").await;
-    let (_, failures) = get("/api/failures?windowMinutes=20000").await;
+    let overview_app = app_with(fixture() as Arc<dyn TelemetrySource>);
+    let overview = json_body(
+        overview_app
+            .oneshot(
+                Request::get("/api/overview?windowMinutes=20000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let failures_app = app_with(fixture() as Arc<dyn TelemetrySource>);
+    let failures = json_body(
+        failures_app
+            .oneshot(
+                Request::get("/api/failures?windowMinutes=20000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&overview)?["error"]["message"].as_str(),
-        Some("invalid request: range is longer than the 10080-minute ceiling"),
+        overview["error"]["message"],
+        "invalid request: range is longer than the 10080-minute ceiling"
     );
     assert_eq!(overview, failures);
 }
 ```
 
-(按 `tests/api_test.rs` 现有的 response→body helper 形状改写这两条;若该文件的 helper 只返回 `String`,就断言两个 `String` 相等 + `contains("10080-minute ceiling")`。)
+(`app_with` 返回的 `Router` 被 `oneshot` 按值吃掉,所以两端各建一个 app。)
 
 - [ ] **Step 3: 实现 `RangeQuery`**
 
@@ -500,8 +570,10 @@ use serde::Deserialize;
 
 /// The bracket grammar every time-ranged endpoint reads: `from`/`to` in epoch
 /// milliseconds win over `windowMinutes`, a lone bound still participates, and
-/// an illegal span is a `400` — never a clamp (spec D2). `FailureQuery` keeps
-/// its own copy of these three fields because it also carries filters.
+/// an illegal span is a `400` — never a clamp (spec D2). `FailureQuery` and
+/// `StartQuery` keep their own copies of these three fields because they also
+/// carry domain/responseCode/instance; reusing them here would advertise
+/// filters the overview does not have.
 #[derive(Debug, Deserialize)]
 pub struct RangeQuery {
     #[serde(rename = "windowMinutes")]
@@ -518,7 +590,9 @@ impl RangeQuery {
 }
 ```
 
-`src/api/overview.rs` 整体换成:
+`src/api/overview.rs` 整体换成下面这份(`WindowQuery` 是它的私有类型,删掉前先
+`grep -rn "WindowQuery" src tests doggy-dns-ui/src` 确认只有这一处引用;`Window`/
+`Range::from_window` 的 import 随之消失,但 `Window` 本身还有内部用途,别动 `src/domain.rs`):
 
 ```rust
 use axum::Json;
@@ -540,12 +614,14 @@ pub async fn overview(
 
 - [ ] **Step 4: 实现 copilot 工具**
 
-`src/agent/tools.rs`:`OverviewArgs` 加两个字段并改 `get_overview`;参数结构上的字段顺序保持 `window_minutes`/`from`/`to` 与 `FailureArgs` 一致:
+`src/agent/tools.rs`:`OverviewArgs`(`:13-17`)加两个字段并改 `get_overview`(`:61-74`)。**保持现有的 derive 与 `#[serde(rename_all = "camelCase")]` 不动**——`build_tools` 用 `.with_parameters_schema::<OverviewArgs>()`,少了 `JsonSchema` 直接编译不过;`Default` 被 `..OverviewArgs::default()` 的测试用法依赖。字段顺序与 `FailureArgs` 一致:
 
 ```rust
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct OverviewArgs {
-    #[serde(rename = "windowMinutes")]
+    /// Relative shortcut; expanded to `[to - n, to]`. Used to derive the start
+    /// when from is absent; ignored when from is given.
     pub window_minutes: Option<u32>,
     /// Absolute bracket start in epoch milliseconds. Wins over `windowMinutes`
     /// when `to` is present too.
@@ -561,47 +637,79 @@ pub async fn get_overview(
 ) -> Result<Value, DataError> {
     let range = Range::resolve(args.from, args.to, args.window_minutes, service.now_ms())
         .map_err(DataError::Invalid)?;
-    serde_json::to_value(service.overview(range).await?)
-        .map_err(|error| DataError::Internal(format!("serialise overview: {error}")))
+    let overview = service.overview(range).await?;
+    serde_json::to_value(overview).map_err(|error| DataError::Invalid(error.to_string()))
 }
 ```
 
-工具 description 里 `get_overview` 那句必须与进程真做的事一致——加上手,并写明口径变化(spec §6.4:描述里承诺的能力就是代码提供的能力):
+最后一行的 `DataError::Invalid` 是**这个文件里 5 个工具共同的写法**(`get_failure_detail` 在 `:120` 同样用 `Invalid`):本期只动区间契约,不改串行化失败的状态码归类。别把它"顺手"换成 `Internal`。
+
+工具 description 现在写着"only accepts the relative `windowMinutes` … clamps it to 5-1440 minutes"——Task 3 之后这句话就是假的(§6.4:描述里承诺的能力必须是代码真提供的能力)。整段换成:
 
 ```
-Get fleet-wide DNS health for a time bracket: instance counts, query and
-failure totals, success rate, the worst-bucket p95 latency and a trend series.
-Pass `from`/`to` (epoch milliseconds) for an absolute bracket of 5 minutes to
-7 days, or `windowMinutes` for a relative one. P95 is the worst bucket inside
-the bracket, so wider brackets read higher.
+Get fleet-wide DNS health for a time bracket: instances online/total, query volume, failure count, success rate, p95 latency and the trend series. Use this before quoting any KPI. Frame the window with from/to in epoch milliseconds (a span of 5 minutes up to 7 days, i.e. 10080 minutes) or with the windowMinutes shortcut; a bracket shorter than 5 minutes, longer than 10080 minutes, with a start at or after its end, or ending more than 60 seconds in the future is rejected, never clamped. P95 is the worst bucket inside the bracket, so a wider bracket reads higher.
 ```
 
 - [ ] **Step 5: 钉住工具描述与参数**
 
-在 `tests/tools_test.rs` 追加(照 #8 的做法,把描述文本钉住):
+先在 `tests/tools_test.rs` **删掉一条已经过期的钉子**:`:100-105` 现在断言 `!overview.description().contains("10080")`,注释写着"The live class keeps its 1440-minute ceiling and must not promise a week"。那是 D2 改写之前的口径,Task 3 之后看板确实能取一周——把它换成反向的钉子(见下面第一条),而不是留着它逼自己把描述里的 `10080` 抹掉。
+
+再追加(照 `failure_tool_descriptions_state_the_absolute_range_and_the_real_ceilings` 的写法,`tools::build_tools(Arc::new(service.clone()))`、`tool.name()`、`tool.description()`;`fixture_service()` 返回 `ConsoleService` 本体,不是 `Arc`):
 
 ```rust
-#[test]
-fn the_overview_tool_promises_the_bracket_it_actually_takes() {
-    let tools = build_tools(Arc::new(fixture_service()));
+#[tokio::test]
+async fn the_overview_tool_promises_the_bracket_it_actually_takes() {
+    let service = fixture_service();
+    let tools = tools::build_tools(Arc::new(service.clone()));
     let overview = tools
         .iter()
         .find(|tool| tool.name() == "get_overview")
         .expect("get_overview is registered");
-    let description = overview.description().to_string();
-    for needle in ["from", "to", "epoch milliseconds", "7 days", "worst bucket"] {
-        assert!(
-            description.contains(needle),
-            "get_overview description lost `{needle}`: {description}"
-        );
+    let text = overview.description();
+    for needle in [
+        "from",
+        "to",
+        "windowMinutes",
+        "epoch milliseconds",
+        "7 days",
+        "10080",
+        "worst bucket",
+        "rejected",
+    ] {
+        assert!(text.contains(needle), "get_overview description lost `{needle}`: {text}");
     }
+    // 反向钉子:描述不许再承诺 clamp,也不许再提 1440(那是看板不再有
+    // 的旧 live 类上限)。
+    assert!(!text.contains("1440"), "{text}");
+    assert!(!text.contains("clamps"), "{text}");
 }
 
 #[tokio::test]
-async fn get_overview_refuses_a_week_plus_a_day() {
+async fn get_overview_tool_takes_a_week_without_clamping_it() {
+    let service = fixture_service();
+    let value = tools::get_overview(
+        &service,
+        OverviewArgs {
+            window_minutes: Some(10_080),
+            ..OverviewArgs::default()
+        },
+    )
+    .await
+    .expect("a week is inside the ceiling");
+    // 桥接实现会在这里报 1440。
+    assert_eq!(value["windowMinutes"], 10_080);
+}
+
+#[tokio::test]
+async fn get_overview_tool_refuses_a_week_plus_a_day() {
+    let service = fixture_service();
     let error = tools::get_overview(
-        &fixture_service(),
-        OverviewArgs { window_minutes: None, from: Some(0), to: Some(11_080 * 60_000 * 1_000) },
+        &service,
+        OverviewArgs {
+            from: Some(1_761_436_800_000 - 11_000 * 60_000),
+            to: Some(1_761_436_800_000),
+            ..OverviewArgs::default()
+        },
     )
     .await
     .expect_err("a bracket over the ceiling must not be clamped");
@@ -616,7 +724,14 @@ Expected: PASS。
 
 - [ ] **Step 7: 红/绿自查**
 
-把 `RangeQuery::range` 临时换成 `Ok(Range::from_window(Window::new(query.window_minutes.unwrap_or(60)), now_ms))`,确认 `overview_takes_an_absolute_bracket` 与 `the_overview_and_the_failure_list_refuse_identically` 都变红,然后改回。
+把 `RangeQuery::range` 临时换成 `Ok(Range::from_window(Window::new(query.window_minutes.unwrap_or(60)), now_ms))`(也就是把 Task 2 留下的桥接塞回来),确认这三条**全部**变红:
+`overview_takes_an_absolute_bracket_without_clamping_it`(答 60 而不是 1000)、
+`overview_takes_a_week_from_the_relative_shortcut`(clamp 成 1440 而不是 10080)、
+`overview_refuses_a_bracket_the_investigation_chain_refuses`(`windowMinutes=20000` 变 200)。
+再把 `get_overview` 的 `Range::resolve` 换回 `Range::from_window(Window::new(...))`,确认
+`get_overview_tool_takes_a_week_without_clamping_it`(1440 ≠ 10080)与
+`get_overview_tool_refuses_a_week_plus_a_day` 变红。然后全部改回。
+只断言 `StatusCode::OK` 的第一条在桥接下也是 200,所以断言 `windowMinutes` 才是它的红点——别把它改回只查状态码。
 
 - [ ] **Step 8: 全量 Rust gate + 提交**
 
