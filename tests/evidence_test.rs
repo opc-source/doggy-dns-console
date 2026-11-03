@@ -1429,6 +1429,18 @@ fn assemble_filter() -> FailureFilter {
     }
 }
 
+/// A bracket of `minutes` ending at `GENERATED_AT` (`1_793_443_200_000`), the
+/// clock the D11 assemble tests pass to [`run_assemble`], with every other
+/// field from [`assemble_filter`]. This is deliberately *not* the fixture clock
+/// (`FixedClock(1_761_436_800_000)`) that [`assemble_filter`]'s own range above
+/// is anchored on.
+fn bracket(minutes: i64) -> FailureFilter {
+    FailureFilter {
+        range: Range::new(GENERATED_AT - minutes * 60_000, GENERATED_AT),
+        ..assemble_filter()
+    }
+}
+
 fn fake_detail(
     instance: Option<&str>,
     logs: Vec<LogRecord>,
@@ -2448,12 +2460,40 @@ async fn assemble_produces_the_same_fingerprint_for_a_one_hour_and_a_week_bracke
     // window is centred on the trace itself, so widening the requested bracket
     // changes no evidence — and must not invalidate the cached analysis.
     let calls = Calls::new();
-    let telemetry = FakeTelemetry::new(
-        fake_detail(Some("dns-node-1"), vec![], vec![]),
-        false,
-        Some(window_metrics()),
-        calls.clone(),
+    // Real evidence rows: the supporting assertions below only prove
+    // evidence-equivalence if the bundles actually carry evidence.
+    let detail = fake_detail(
+        Some("dns-node-1"),
+        vec![
+            log_record(
+                LOG_TS,
+                "ERROR",
+                "upstream timeout",
+                Some("span-1"),
+                json!({
+                    "query": "a.example.",
+                    "qtype": "A",
+                    "response_code": "SERVFAIL",
+                    "error": "timeout"
+                }),
+            ),
+            log_record(
+                LOG_TS + 1_000,
+                "INFO",
+                "retry",
+                Some("span-2"),
+                json!({
+                    "query_name": "a.example.",
+                    "query_type": "A"
+                }),
+            ),
+        ],
+        vec![
+            span_record("span-1", "dns.query", 12.5),
+            span_record("span-2", "forward.lookup", 8.0),
+        ],
     );
+    let telemetry = FakeTelemetry::new(detail, false, Some(window_metrics()), calls.clone());
     let instances = FakeInstances::new(
         resolve_match(matched_instance_for(
             "dns-node-1",
@@ -2486,14 +2526,15 @@ async fn assemble_produces_the_same_fingerprint_for_a_one_hour_and_a_week_bracke
     assert_eq!(one_hour.fingerprint, one_week.fingerprint);
     assert_eq!(one_hour.logs.items, one_week.logs.items);
     assert_eq!(one_hour.metrics, one_week.metrics);
-}
 
-/// A bracket of `minutes` ending at the fixture clock.
-fn bracket(minutes: i64) -> FailureFilter {
-    FailureFilter {
-        range: Range::new(GENERATED_AT - minutes * 60_000, GENERATED_AT),
-        ..assemble_filter()
-    }
+    // The two supporting assertions above are only evidence-equivalence if the
+    // evidence is there to compare.
+    assert_eq!(
+        one_hour.logs.items.len(),
+        2,
+        "the pin must compare real log rows, not two empty vectors"
+    );
+    assert!(one_hour.metrics.is_some(), "the metric evidence is missing");
 }
 
 #[tokio::test]
@@ -2550,11 +2591,10 @@ async fn evidence_filter_still_echoes_domain_response_code_and_instance() {
     );
 
     let filter = FailureFilter {
-        range: Range::new(GENERATED_AT - 60 * 60_000, GENERATED_AT),
         domain: Some("api.internal".to_owned()),
         response_code: Some("REFUSED".to_owned()),
         instance: Some("dns-node-2".to_owned()),
-        limit: 1,
+        ..bracket(60)
     };
 
     let bundle = run_assemble(
