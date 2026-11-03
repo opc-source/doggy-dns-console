@@ -73,6 +73,13 @@ describe('FailureView', () => {
     expect(bracketMinutes(passed)).toBe(10080)
   })
 
+  it('names an over-ceiling relative link instead of clamping it', async () => {
+    const { wrapper } = await mountView('/failures/t1?windowMinutes=99999999999999999999')
+
+    expect(wrapper.find('[data-testid="invalid-range"]').exists()).toBe(true)
+    expect(wrapper.findComponent(DrawerStub).exists()).toBe(false)
+  })
+
   it('keeps a seven-day bracket instead of folding it back to a day', async () => {
     const from = NOW - 7 * 24 * HOUR
     const { wrapper } = await mountView(`/failures/t1?from=${from}&to=${NOW}`)
@@ -107,6 +114,12 @@ describe('FailureView', () => {
     )
 
     expect(wrapper.findComponent(DrawerStub).props('analysisId')).toBe('inv-9')
+  })
+
+  it('omits a whitespace-only analysis id instead of passing it through', async () => {
+    const { wrapper } = await mountView('/failures/t1?windowMinutes=60&analysis=%20')
+
+    expect(wrapper.findComponent(DrawerStub).props('analysisId')).toBeUndefined()
   })
 
   it('navigates back to the overview when the drawer closes', async () => {
