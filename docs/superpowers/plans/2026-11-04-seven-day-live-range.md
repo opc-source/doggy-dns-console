@@ -1860,7 +1860,7 @@ EOF
 ### Task 8: 文档、端到端复核与全量 gate
 
 **Files:**
-- Modify: `README.md`(`:101-109` 的区间段、`:132-137` 的错误段、`:273-281` 的深链段;`### Failure list API`(:73)附近补 `GET /api/overview` 的签名——README 现在**根本没有**这一行,全文 grep 不到 `/api/overview`)
+- Modify: `README.md`(`:101-109` 的区间段、`:132-139` 的错误段、`:273-281` 的深链段;并补一段 `GET /api/overview?from=&to=&windowMinutes=` / `GET /api/instances/{id}?from=&to=&windowMinutes=` 的签名 —— 全文 grep 证实 README 现在**一个看板端点都没写**(`:76/77/94/144/145/146` 只有 failures 家族),这一段插在 `### Failure list API`(:73)之前,标题就叫 `### Overview and instance APIs`)
 - Modify: `docs/superpowers/plans/2026-11-03-absolute-range-failure-list.md`(在该计划末尾加一行"看板/实例区间由 2026-11-04 计划接管")
 - Modify: `doggy-dns-ui/e2e/console.spec.ts`(看板 7 天用例)
 
