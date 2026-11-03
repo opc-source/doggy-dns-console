@@ -756,10 +756,10 @@ EOF
 - Modify: `src/datasource/openobserve/failures.rs`(新 `instance_failure_count_query`)
 - Modify: `src/datasource/mod.rs`(`TelemetrySource::instance_failure_count` 默认实现)
 - Modify: `src/datasource/openobserve/telemetry.rs`、`src/datasource/fixture.rs`
-- Modify: `src/datasource/mcp.rs:307`、`src/datasource/instances.rs:397`、`src/datasource/fixture.rs:391`(构造点)
-- Modify: `src/service.rs`(`instance_detail(id, range)`)
+- Modify: `src/datasource/mcp.rs:307`、`src/datasource/instances.rs:397`、`src/datasource/fixture.rs:398`(三处 `recent_failures: 0` 构造点;用 `grep -rn "recent_failures" src tests` 定位,别信行号)
+- Modify: `src/service.rs`(`instance_detail(id, range)`;改完 `Window` 在该文件只剩 import,删掉它,否则 `clippy -D warnings` 红)
 - Modify: `src/api/instances.rs`、`src/agent/tools.rs`(`InstanceArgs` + `get_instance_detail` + 描述)
-- Modify: `tests/fixture_test.rs`、`tests/instances_test.rs`、`tests/tools_test.rs`、`tests/api_test.rs`、`tests/evidence_test.rs:461`
+- Modify: `tests/fixture_test.rs:97`、`tests/instances_test.rs`、`tests/tools_test.rs:41`、`tests/api_test.rs:125`、`tests/evidence_test.rs:461`(`fn instance_detail()` helper,字段在 `:494`)
 
 **Interfaces:**
 - Consumes: Task 3 的 `crate::api::RangeQuery`。
@@ -767,7 +767,7 @@ EOF
 
 - [ ] **Step 1: 写失败的测试(SQL 文本)**
 
-在 `tests/failures_test.rs` 追加(该文件已有直接调查询构造函数的先例):
+在 `tests/failures_test.rs` 追加(该文件 `:5-7` 已经 `use doggy_dns_console::datasource::openobserve::failures::{failure_group_query, …, unlabeled_failures_query};`,把 `instance_failure_count_query` 加进那个列表;`:14` 已经 import `FailureFilter` 与 `Range`):
 
 ```rust
 #[test]
@@ -834,18 +834,13 @@ pub fn instance_failure_count_query(
     }
 ```
 
-`src/datasource/openobserve/telemetry.rs` 实现它,照 `unlabeled_failures`(:150)的形状——同一条 `search_logs`、同一句"查不到整数就 warn 并记 0"的兜底,以及同样的 `max(0)`。区别只在 SQL 与 `1` 行:
+`src/datasource/openobserve/telemetry.rs` 实现它,照 `unlabeled_failures`(:158-175)的形状——同一条 `search_logs(&sql, start, end, 1)`、同一个 `rows.iter().find_map(|row| row.get("count").and_then(Value::as_i64))`。取值成功就 `Ok(count.max(0) as u64)`。**取不到整数那一支不照抄**:那里是 `warn + Ok(0)`,本期不能沿用(见下)。
 
-```rust
-    async fn instance_failure_count(&self, filter: FailureFilter) -> Result<u64, DataError> {
-        let (start, end) = (filter.range.start_ms, filter.range.end_ms);
-        let sql = instance_failure_count_query(&self.client.config().log_stream, &filter, start, end);
-        let rows = self.client.search_logs(&sql, start, end, 1).await?;
-        // (与 unlabeled_failures 同款取值 + warn)
-    }
-```
+`src/datasource/fixture.rs` 实现:`self.groups()` 里 `self.matches(group, &filter)` 为真的 `count` 之和(`matches` 已含区间、domain、responseCode 与 host 等值:`src/datasource/fixture.rs:141-169`)。
 
-`src/datasource/fixture.rs` 实现:`self.groups()` 里 `self.matches(group, &filter)` 为真的 `count` 之和(它本来就按区间/主机/host 过滤,`matches` 已含 host 等值)。
+两条口径决定(照做,别自己再判一遍):
+- **COUNT 查不到整数那一支返回 `Err`,不是 `Ok(0)`。** `unlabeled_failures` 报 0 是对的——"没有未标记行"本身是答案;而这里 0 会被抽屉读成"这周这台节点很健康",正是 D17 禁止的发明。写法:`tracing::warn!` 后 `Err(DataError::Internal("instance failure count query returned no integer count"))`,让 service 那一侧落到 `None`。
+- **不要为省事把 `instance_failure_count_query` 与 `unlabeled_failures_query` 合成一个带开关的函数。** 两者各是一行 `format!`,差别在谓词(host 等值 vs host 为空)而不是在形状;两个具名函数在调用点可读,`unlabeled_failures_query` 的 doc comment 已经写明"dropping the host equality is the point",混成一个就没人再读得到这句。
 
 - [ ] **Step 4: 改 service 与字段**
 
@@ -867,8 +862,17 @@ pub fn instance_failure_count_query(
         range: Range,
     ) -> Result<InstanceDetail, DataError> {
         let mut detail = self.instances.detail(id).await?;
+        // 这个数是一条 host 等值查询,所以只有"这台实例真有 host 标签"才有意义。
+        // host 为空时 filter 会退化成"不加实例条件",把整支队的失败算到一台头上。
+        let Some(host) = host_filter(Some(detail.instance.host.clone())) else {
+            tracing::warn!(
+                instance = %detail.instance.id,
+                "instance has no host label; a host-equality count would be fleet-wide, reporting no number"
+            );
+            return Ok(detail);
+        };
         let filter = FailureFilter {
-            instance: host_filter(Some(detail.instance.host.clone())),
+            instance: Some(host),
             ..FailureFilter::new(range)
         };
         // A count the telemetry cannot produce stays `None`: the drawer renders
@@ -885,6 +889,8 @@ pub fn instance_failure_count_query(
     }
 ```
 
+`src/service.rs` 的 import 要跟着动:`host_filter` 现在**不在**该文件的 `use crate::domain::{...}` 里(`src/service.rs:4-6`),加进去;`Window` 在第 89 行那处 `Range::from_window(Window::new(60), …)` 被删掉后只剩 import,一并删——`clippy -D warnings` 会替你把这两条都抓出来。
+
 `Err` 分支**不许**写 `detail.failure_count = Some(0)`;`instances.detail(id)` 返回的构造点一律已经是 `None`,不动它就是在报"没有数"。构造点(`mcp.rs:307`、`instances.rs:397`、`fixture.rs:391`)把 `recent_failures: 0` 换成 `failure_count: None`。
 
 `src/api/instances.rs`:
@@ -900,14 +906,20 @@ pub async fn instance_detail(
 }
 ```
 
-`src/agent/tools.rs`:`InstanceArgs` 加 `window_minutes`/`from`/`to`(与 `OverviewArgs` 同款三字段),`get_instance_detail` 用 `Range::resolve` 解析后传给 service,并把该工具的 description 补一句 `Pass the same from/to or windowMinutes the operator is looking at.`
+`src/agent/tools.rs`:`InstanceArgs`(`:59-62`,derive 是 `Debug, Clone, Serialize, Deserialize, JsonSchema` + `rename_all = "camelCase"`,**没有 `Default`**)加 `window_minutes`/`from`/`to` 三字段(doc comment 照 `OverviewArgs` 那三句抄),derive 列表保持不动——不要为了让测试少写两行而给它加 `Default`:`instance_id: String` 默认成空串是个没意义的值。`get_instance_detail` 用 `Range::resolve` 解析后传给 service,并把该工具的 description 补一句 `Pass the same from/to or windowMinutes the operator is looking at.`
+
+`tests/tools_test.rs:41-48` 那条既有用例用的是**完备字面量** `InstanceArgs { instance_id: ... }`,补三个 `None` 字段而不是 `..Default::default()`。
 
 - [ ] **Step 5: 更新既有测试**
 
 - `tests/fixture_test.rs:62` `fixture_instance_detail_counts_recent_failures` 改名 `fixture_instance_detail_counts_failures_in_the_bracket`,断言:1 小时区间(`bracket(60)` 现成 helper)下 `failure_count == Some(n)` 且 7 天区间(`bracket(10_080)`)下 `7d > 1h` —— 这条钉子证明 fixture 真的按区间取数,而不是抄一个常量。
 - `tests/evidence_test.rs:461` `instance_detail()` 构造体加 `failure_count: None`。
 - `tests/instances_test.rs`、`tests/tools_test.rs:42`、`tests/api_test.rs` 里所有 `instance_detail(` 调用补区间参数。
-- `tests/instances_test.rs` 加一条:数据源返回 `Err` 时 `failure_count` 是 `None`(用 `SeenOnly` 那个 stub 的同族写法),钉住"不发明 0"。
+- `tests/instances_test.rs` 加一条:数据源返回 `Err` 时 `failure_count` 是 `None`(用 `SeenOnly` 那个 stub 的同族写法),钉住"不发明 0"。再加一条:host 为空的实例走 `instance_detail` 时同样是 `None`,并且**不许**发出一次没有 host 条件的 count 查询(用一个记录 filter 的 stub 断言它压根没被调用,或断言收到的 filter 里 `instance` 不是 `None`)。
+- `tests/api_test.rs` 加两条:
+  `/api/instances/dns-node-1?from={}&to={}`(1 小时,`FIXED_NOW_MS` 同款固定时钟)返回 200 且 body 有 `failureCount`;
+  `/api/instances/dns-node-1?windowMinutes=20000` 返回 400 且 `error.code == "invalid_request"`——与 `/api/overview`、`/api/failures` 同一句文案(直接用 Step 2 那条"两端同文案"的写法扩成三端)。
+- `tests/api_test.rs` 再加一条钉住"列表端点不取区间"这个口径:`/api/instances?from=1&to=2` 仍然 200(多余参数被忽略)。`/api/instances` 是本期唯一没有区间语义的端点,这条钉子防止后来者"顺手"给它加 `Query<RangeQuery>`。
 
 - [ ] **Step 6: 跑测试确认通过**
 
