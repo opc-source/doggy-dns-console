@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::error::ApiError;
 use crate::api::state::ApiState;
-use crate::domain::{FailureDetail, FailureFilter, FailureGroup, Range};
+use crate::domain::{FailureDetail, FailureFilter, FailureGroup, Range, host_filter};
 use crate::error::DataError;
 
 #[derive(Debug, Deserialize)]
@@ -80,7 +80,7 @@ pub(crate) fn investigation_filter(
         range,
         domain: query.domain,
         response_code: query.response_code,
-        instance: query.instance,
+        instance: host_filter(query.instance),
         limit: query.limit.unwrap_or(default_limit).clamp(1, 200),
     })
 }

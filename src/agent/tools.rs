@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::domain::{FailureFilter, Range, Window};
+use crate::domain::{FailureFilter, Range, Window, host_filter};
 use crate::error::DataError;
 use crate::service::ConsoleService;
 
@@ -19,8 +19,8 @@ pub struct OverviewArgs {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FailureArgs {
-    /// Relative shortcut; expanded to `[to - n, to]`. Ignored when both `from`
-    /// and `to` are given.
+    /// Relative shortcut; expanded to `[to - n, to]`. Used to derive the start
+    /// when from is absent; ignored when from is given.
     pub window_minutes: Option<u32>,
     /// Absolute bracket start in epoch milliseconds.
     pub from: Option<i64>,
@@ -78,7 +78,7 @@ pub async fn list_failures(
         range,
         domain: args.domain,
         response_code: args.response_code,
-        instance: args.instance,
+        instance: host_filter(args.instance),
         limit: args.limit.unwrap_or(50).clamp(1, 200),
     };
     let groups = service.failures(filter).await?;
@@ -95,7 +95,7 @@ pub async fn get_failure_detail(
         range,
         domain: args.domain,
         response_code: args.response_code,
-        instance: args.instance,
+        instance: host_filter(args.instance),
         limit: 1,
     };
     let detail = service.failure_detail(&args.trace_id, filter).await?;
@@ -143,7 +143,7 @@ pub fn build_tools(service: Arc<ConsoleService>) -> Vec<Arc<dyn Tool>> {
         Arc::new(
             StatefulTool::new(
                 "get_failure_detail",
-                "Return the failure group, logs and spans for one trace_id so the analysis can cite real evidence. Pass the same from/to/domain/responseCode/instance used by list_failures so the detail cannot drift from the row the operator clicked; from/to are epoch milliseconds and the span is capped at 7 days (10080 minutes), with a 5-minute floor.",
+                "Return the failure group, logs and spans for one trace_id so the analysis can cite real evidence. Pass the same from/to/domain/responseCode/instance used by list_failures — or the same windowMinutes — so the detail cannot drift from the row the operator clicked. from/to are epoch milliseconds; a bracket shorter than 5 minutes or longer than 7 days (10080 minutes), with a start at or after its end, or ending more than 60 seconds in the future is rejected, never clamped.",
                 state.clone(),
                 tool_failure_detail,
             )

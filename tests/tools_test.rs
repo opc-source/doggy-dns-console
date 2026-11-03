@@ -88,6 +88,15 @@ async fn failure_tool_descriptions_state_the_absolute_range_and_the_real_ceiling
         detail_text.contains("same from/to/domain/responseCode/instance"),
         "the detail tool no longer tells the model to match the list call: {detail_text}"
     );
+    assert!(
+        detail_text.contains("rejected"),
+        "the detail tool still promises a clamp: {detail_text}"
+    );
+    assert!(!detail_text.contains("capped"), "{detail_text}");
+    assert!(
+        detail_text.contains("windowMinutes"),
+        "the detail tool omits the relative shortcut the model actually has: {detail_text}"
+    );
     // The live class keeps its 1440-minute ceiling and must not promise a week.
     assert!(
         !overview.description().contains("10080"),
@@ -187,6 +196,48 @@ fn recording_service() -> (ConsoleService, Arc<Mutex<Option<FailureFilter>>>) {
     let instances = Arc::new(FixtureSource::new(clock.clone())) as Arc<dyn InstanceSource>;
     let service = ConsoleService::new(recorder as Arc<dyn TelemetrySource>, instances, clock);
     (service, recorded)
+}
+
+#[tokio::test]
+async fn failure_tools_treat_a_blank_instance_as_no_filter() {
+    let (service, recorded) = recording_service();
+
+    for args in [
+        FailureArgs {
+            instance: Some("  ".to_owned()),
+            ..FailureArgs::default()
+        },
+        FailureArgs::default(),
+    ] {
+        tools::list_failures(&service, args).await.unwrap();
+        let filter = recorded
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("list_failures handed the service a filter");
+        assert_eq!(filter.instance, None);
+    }
+
+    tools::get_failure_detail(
+        &service,
+        TraceArgs {
+            trace_id: "trace-1".to_owned(),
+            window_minutes: None,
+            from: None,
+            to: None,
+            domain: None,
+            response_code: None,
+            instance: Some("  ".to_owned()),
+        },
+    )
+    .await
+    .unwrap();
+    let filter = recorded
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("get_failure_detail handed the service a filter");
+    assert_eq!(filter.instance, None);
 }
 
 #[tokio::test]

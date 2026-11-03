@@ -196,19 +196,17 @@ async fn failures_limit_is_clamped_and_returns_list() {
 }
 
 #[tokio::test]
-async fn failures_limit_is_forwarded_as_200() {
+async fn failures_limit_defaults_to_50() {
     let (app, recorder) = app_with_recorder().await;
     let response = app
-        .oneshot(
-            Request::get("/api/failures?limit=9999")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::get("/api/failures").body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let filter = recorder.last_filter.lock().unwrap().clone().unwrap();
-    assert_eq!(filter.limit, 200);
+    assert_eq!(
+        recorder.last_filter.lock().unwrap().clone().unwrap().limit,
+        50
+    );
 }
 
 #[tokio::test]
@@ -290,8 +288,6 @@ async fn failures_reject_the_four_bracket_rules_with_400() {
         .leak() as &str,
         // `to` beyond the 60-second future tolerance
         format!("/api/failures?from={}&to={}", now_ms, now_ms + 60_001).leak() as &str,
-        // a non-numeric bracket bound
-        "/api/failures?from=abc&to=1",
     ];
 
     for uri in cases {
@@ -305,7 +301,71 @@ async fn failures_reject_the_four_bracket_rules_with_400() {
             StatusCode::BAD_REQUEST,
             "expected 400 for {uri}"
         );
+        let body = json_body(response).await;
+        assert_eq!(
+            body["error"]["code"], "invalid_request",
+            "expected the JSON envelope for {uri}"
+        );
     }
+}
+
+#[tokio::test]
+async fn failures_reject_a_non_numeric_bound_with_400() {
+    // This one never reaches the handler: the `Query` extractor rejects the
+    // string, so the body is axum's plain text, not our JSON envelope.
+    let (app, _recorder) = app_with_recorder().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/failures?from=abc&to=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn failures_reject_extreme_bounds_without_panicking() {
+    for uri in [
+        "/api/failures?from=-9223372036854775808&to=0",
+        "/api/failures?to=-9223372036854775808",
+    ] {
+        let (app, _recorder) = app_with_recorder().await;
+        let response = app
+            .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+        let body = json_body(response).await;
+        assert_eq!(body["error"]["code"], "invalid_request", "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn failures_treat_a_blank_instance_as_no_filter() {
+    let (app, recorder) = app_with_recorder().await;
+    let response = app
+        .oneshot(
+            Request::get("/api/failures?instance=%20%20")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    // The service sees no host filter, so labelled rows are not hidden.
+    assert_eq!(
+        recorder
+            .last_filter
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap()
+            .instance,
+        None
+    );
 }
 
 #[tokio::test]
@@ -381,10 +441,10 @@ async fn uncovered_reports_the_count_for_the_requested_bracket() {
             .unwrap(),
     )
     .unwrap();
-    // The fixture's one host-less row (`b1f9…`, 20 minutes old) sits inside a
-    // 120-minute bracket, so the demo path reports it instead of the trait
-    // default answering zero.
-    assert_eq!(body["unlabeled"], 1);
+    // The fixture's one host-less group (`b1f9…`, 20 minutes old) carries
+    // `count: 5`; `uncovered` counts rows like the production `COUNT(*)`, so the
+    // demo path answers 5 instead of the trait default's zero.
+    assert_eq!(body["unlabeled"], 5);
 
     let filter = recorder.last_filter.lock().unwrap().clone().unwrap();
     assert_eq!(filter.instance.as_deref(), Some("dns-node-2"));

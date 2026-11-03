@@ -146,7 +146,10 @@ impl FixtureSource {
             return false;
         }
         if let Some(domain) = &filter.domain
-            && !group.query.contains(domain.as_str())
+            && !group
+                .query
+                .to_ascii_lowercase()
+                .contains(&domain.to_ascii_lowercase())
         {
             return false;
         }
@@ -218,10 +221,10 @@ impl TelemetrySource for FixtureSource {
             })
             .ok_or_else(|| DataError::NotFound(format!("failure trace {trace_id}")))?;
         let logs = vec![LogRecord {
-            // Inside the group's own window: the drawer's log row must not sit
-            // in the future relative to `first_seen`, and it must move with
-            // rows that spread across days.
-            ts: group.last_seen + 5 * 60_000,
+            // Inside the group's own `[first_seen, last_seen]` window: the
+            // drawer's log row must not sit in the future relative to
+            // `last_seen`, and it must move with rows that spread across days.
+            ts: group.first_seen + 5 * 60_000,
             severity: "ERROR".to_string(),
             message: group
                 .error
@@ -270,8 +273,9 @@ impl TelemetrySource for FixtureSource {
                 scope.instance = None;
                 self.matches(group, &scope)
             })
-            .count();
-        Ok(unlabeled as u64)
+            .map(|group| group.count)
+            .sum::<u64>();
+        Ok(unlabeled)
     }
 
     async fn seen_instances(&self, _window: Window) -> Result<Vec<SeenInstance>, DataError> {

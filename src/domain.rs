@@ -64,7 +64,9 @@ impl Range {
     ) -> Result<Self, String> {
         let end_ms = to.unwrap_or(now_ms);
         let minutes = i64::from(window_minutes.unwrap_or(DEFAULT_WINDOW_MINUTES));
-        let start_ms = from.unwrap_or(end_ms - minutes * 60_000);
+        // `saturating_sub` keeps a hostile `to = i64::MIN` inside `checked`'s
+        // rejection path instead of panicking in a debug build.
+        let start_ms = from.unwrap_or(end_ms.saturating_sub(minutes * 60_000));
         Self::checked(start_ms, end_ms, now_ms)
     }
 
@@ -73,10 +75,10 @@ impl Range {
         if start_ms >= end_ms {
             return Err("range start must be before range end".to_owned());
         }
-        if end_ms > now_ms + FUTURE_TOLERANCE_MS {
+        if end_ms > now_ms.saturating_add(FUTURE_TOLERANCE_MS) {
             return Err("range end is too far in the future".to_owned());
         }
-        let span_ms = end_ms - start_ms;
+        let span_ms = end_ms.saturating_sub(start_ms);
         if span_ms < i64::from(MIN_RANGE_MINUTES) * 60_000 {
             return Err(format!(
                 "range is shorter than the {MIN_RANGE_MINUTES}-minute floor"
@@ -284,6 +286,15 @@ pub struct InstanceDetail {
     /// the instance's MCP build predates the tool or the call failed.
     pub runtime: Option<Value>,
     pub recent_failures: u64,
+}
+
+/// The `instance` filter as the telemetry layer means it: a trimmed host label,
+/// or none. `?instance=` and `?instance=%20` must mean "no host filter", never
+/// "only the rows that have no host".
+pub fn host_filter(value: Option<String>) -> Option<String> {
+    value
+        .map(|host| host.trim().to_owned())
+        .filter(|host| !host.is_empty())
 }
 
 impl FailureFilter {

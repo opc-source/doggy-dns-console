@@ -1,4 +1,4 @@
-use doggy_dns_console::domain::{FailureFilter, Overview, Range, Window};
+use doggy_dns_console::domain::{FailureFilter, Overview, Range, Window, host_filter};
 
 #[test]
 fn success_rate_is_none_without_queries() {
@@ -69,6 +69,39 @@ fn range_checked_rejects_the_four_documented_rules() {
     // `to` beyond the future tolerance
     assert!(Range::checked(now - ten_minutes, now + 60_001, now).is_err());
     assert!(Range::checked(now - ten_minutes, now + 60_000, now).is_ok());
+}
+
+#[test]
+fn range_rejects_extreme_bounds_instead_of_overflowing() {
+    let now = 1_761_436_800_000;
+    // Both directions overflow `end - start`; each must be an Err, not a panic.
+    assert!(Range::resolve(Some(i64::MIN), Some(0), None, now).is_err());
+    assert!(Range::resolve(None, Some(i64::MIN), None, now).is_err());
+    assert!(Range::checked(i64::MIN, 1_000, now).is_err());
+}
+
+#[test]
+fn range_resolve_honours_a_lone_from() {
+    // `windowMinutes` must not move a start the caller stated, and the resolved
+    // end stays the server clock. The span has to stay inside the 7-day ceiling
+    // for `checked` to accept it, so `now` is one hour past `from`; the window
+    // is half that hour, so a resolver that ignored `from` would produce a
+    // different start.
+    let now = 1_000 + 60 * 60_000;
+    let range = Range::resolve(Some(1_000), None, Some(30), now).unwrap();
+    assert_eq!(range.end_ms, now);
+    assert_eq!(range.start_ms, 1_000);
+}
+
+#[test]
+fn host_filter_trims_and_drops_an_empty_label() {
+    assert_eq!(host_filter(None), None);
+    assert_eq!(host_filter(Some(String::new())), None);
+    assert_eq!(host_filter(Some("   ".to_owned())), None);
+    assert_eq!(
+        host_filter(Some(" dns-node-2 ".to_owned())).as_deref(),
+        Some("dns-node-2")
+    );
 }
 
 #[test]

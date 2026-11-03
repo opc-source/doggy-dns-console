@@ -45,6 +45,17 @@ async fn fixture_failure_detail_contains_trace_evidence() {
     assert!(!detail.logs.is_empty());
     assert!(!detail.spans.is_empty());
     assert!(!detail.spans_unavailable);
+    // The demo log must sit inside the group's own window, exactly like a real
+    // row in the bracket the drawer was opened with.
+    for log in &detail.logs {
+        assert!(
+            log.ts >= detail.group.first_seen && log.ts <= detail.group.last_seen,
+            "log {} outside [{}, {}]",
+            log.ts,
+            detail.group.first_seen,
+            detail.group.last_seen
+        );
+    }
 }
 
 #[tokio::test]
@@ -112,6 +123,25 @@ async fn failures_narrow_to_the_instance_case_insensitively() {
 }
 
 #[tokio::test]
+async fn domain_filter_is_case_insensitive_like_the_sql() {
+    let service = service();
+    let filter = FailureFilter {
+        domain: Some("NACOS.LOCAL".to_owned()),
+        ..bracket(7 * 1440)
+    };
+    let groups = service.failures(filter).await.unwrap();
+    assert!(
+        !groups.is_empty(),
+        "the fixture dropped a case-insensitive domain match"
+    );
+    assert!(
+        groups
+            .iter()
+            .all(|group| group.query.contains("nacos.local"))
+    );
+}
+
+#[tokio::test]
 async fn failures_report_unlabeled_rows_the_instance_filter_cannot_reach() {
     let service = service();
 
@@ -119,7 +149,9 @@ async fn failures_report_unlabeled_rows_the_instance_filter_cannot_reach() {
         instance: Some("dns-node-2".to_owned()),
         ..bracket(7 * 1440)
     };
-    assert_eq!(service.unlabeled_failures(filter).await.unwrap(), 1);
+    // The fixture's one unlabeled group carries `count: 5`; production counts
+    // ROWS (`COUNT(*)`), so the demo total is 5, not the number of groups.
+    assert_eq!(service.unlabeled_failures(filter).await.unwrap(), 5);
 
     // Out of the bracket, out of the count.
     let narrow = FailureFilter {

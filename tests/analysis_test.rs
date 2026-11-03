@@ -8,7 +8,7 @@ use doggy_dns_console::analysis::{
 };
 use doggy_dns_console::datasource::fixture::FixtureSource;
 use doggy_dns_console::datasource::{FixedClock, InstanceSource, TelemetrySource};
-use doggy_dns_console::domain::FailureFilter;
+use doggy_dns_console::domain::{FailureFilter, Range};
 use doggy_dns_console::evidence::assemble::assemble;
 use doggy_dns_console::evidence::model::EvidenceBundle;
 use serde_json::json;
@@ -1408,7 +1408,6 @@ use doggy_dns_console::analysis::store::{
     CacheKey, InvestigationMarker, InvestigationOutcome, InvestigationRecord, InvestigationStatus,
     InvestigationStore, NewInvestigation, SqliteInvestigationStore,
 };
-use doggy_dns_console::domain::Range;
 use sqlx::Row;
 
 const EVIDENCE_FINGERPRINT: &str = "sha256:evidence-fingerprint";
@@ -2039,6 +2038,37 @@ async fn service_returns_a_cache_hit_without_calling_the_model() {
     assert!(matches!(second, AnalysisStart::Cached(_)));
     assert_eq!(second.analysis_id(), first_id);
     assert_eq!(llm.requests().len(), calls);
+}
+
+#[tokio::test]
+async fn service_reuses_the_analysis_across_two_brackets_of_the_same_evidence() {
+    let bundle = fixture_bundle().await;
+    let store: Arc<dyn InvestigationStore> = memory_store().await;
+    let llm = Arc::new(ScriptedLlm::new(
+        "test",
+        vec![submit(&valid_result(&first_log_id(&bundle)))],
+    ));
+    let service = Arc::new(AnalysisService::new(
+        store,
+        analysis_config(10),
+        Some(llm.clone()),
+        None,
+    ));
+
+    let narrow = FailureFilter::new(Range::new(1_761_436_800_000 - 3_600_000, 1_761_436_800_000));
+    let first = service.start(&bundle, &narrow, false).await.unwrap();
+    let first_id = first.analysis_id().to_string();
+    wait_terminal(&service, &bundle.trace_id, &first_id).await;
+
+    // D11: the fingerprint covers the evidence, not the requested bracket.
+    let wide = FailureFilter::new(Range::new(
+        1_761_436_800_000 - 7 * 86_400_000,
+        1_761_436_800_000,
+    ));
+    let second = service.start(&bundle, &wide, false).await.unwrap();
+    assert!(matches!(second, AnalysisStart::Cached(_)));
+    assert_eq!(second.analysis_id(), first_id);
+    assert_eq!(llm.requests().len(), 1);
 }
 
 #[tokio::test]

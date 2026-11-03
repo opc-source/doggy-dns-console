@@ -151,10 +151,18 @@ impl TelemetrySource for OpenObserveTelemetry {
         let (start, end) = (filter.range.start_ms, filter.range.end_ms);
         let sql = unlabeled_failures_query(&self.client.config().log_stream, &filter, start, end);
         let rows = self.client.search_logs(&sql, start, end, 1).await?;
-        let unlabeled = rows
+        let Some(unlabeled) = rows
             .iter()
             .find_map(|row| row.get("count").and_then(serde_json::Value::as_i64))
-            .unwrap_or_default();
+        else {
+            tracing::warn!(
+                start_ms = filter.range.start_ms,
+                end_ms = filter.range.end_ms,
+                rows = rows.len(),
+                "unlabeled failure count query returned no integer `count`; reporting 0"
+            );
+            return Ok(0);
+        };
         Ok(unlabeled.max(0) as u64)
     }
 
