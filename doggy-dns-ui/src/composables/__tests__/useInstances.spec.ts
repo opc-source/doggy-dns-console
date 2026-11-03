@@ -199,4 +199,26 @@ describe('useInstanceDetail ordering', () => {
     expect(detail.detail.value).toBeNull()
     expect(detail.error.value).toBeNull()
   })
+
+  it('releases the spinner when the drawer closes mid-flight', async () => {
+    // The `++seq` guard makes a superseded answer's own `finally` a no-op, so
+    // closing the drawer while its `COUNT(*)` is still running used to leave
+    // `loading` true with nothing left to clear it.
+    const id = ref<string | null>('n1')
+    const draft = ref<FilterDraft>({ ...emptyDraft(), fromMs: NOW - HOUR, toMs: NOW })
+    const inFlight = deferred<Response>()
+    const { detail } = mountDetail(id, draft, () => inFlight.promise)
+    await flushPromises()
+    expect(detail.loading.value).toBe(true)
+
+    id.value = null
+    await flushPromises()
+    expect(detail.loading.value).toBe(false)
+
+    // The late answer still must not resurrect the closed drawer.
+    inFlight.resolve(json(detailBody({ failureCount: 42 })))
+    await flushPromises()
+    expect(detail.loading.value).toBe(false)
+    expect(detail.detail.value).toBeNull()
+  })
 })

@@ -224,15 +224,24 @@ impl TelemetrySource for OpenObserveTelemetry {
         let end_ms = end_ms as i64;
         let minutes = ((end_ms - start_ms + 59_999) / 60_000).max(1) as u32;
         let step = u64::from(minutes) * 60;
+        // `minutes` rounds the span UP and `query_range` steps FORWARD from `start`,
+        // so a span that is not a whole number of minutes produces one evaluation —
+        // at `start` — whose `increase[Nm]` window describes the period BEFORE the
+        // requested one. Anchoring the start on `end` costs nothing when the span is
+        // already whole (it equals `start_ms` exactly, as for the only production
+        // caller at `evidence/assemble.rs:113-114`) and keeps the sample at `end`
+        // for every other span. Same alignment as `Range::whole_window_start_ms`,
+        // spelled out here because this entry point takes bare bounds.
+        let totals_start_ms = (end_ms - i64::from(minutes) * 60_000).max(0);
         let metric = &self.client.config().metric_queries;
 
         let global_queries_query = scoped_total_query(metric, minutes, None);
         let global_failures_query = scoped_failure_query(metric, minutes, None);
         let (global_queries, global_failures) = tokio::try_join!(
             self.client
-                .query_promql(&global_queries_query, start_ms, end_ms, step),
+                .query_promql(&global_queries_query, totals_start_ms, end_ms, step),
             self.client
-                .query_promql(&global_failures_query, start_ms, end_ms, step),
+                .query_promql(&global_failures_query, totals_start_ms, end_ms, step),
         )?;
         if global_queries.is_empty() {
             // No series for the unfiltered total means the metric itself is
@@ -249,9 +258,9 @@ impl TelemetrySource for OpenObserveTelemetry {
                 let host_failures_query = scoped_failure_query(metric, minutes, Some(host));
                 let (host_queries, host_failures) = tokio::try_join!(
                     self.client
-                        .query_promql(&host_queries_query, start_ms, end_ms, step),
+                        .query_promql(&host_queries_query, totals_start_ms, end_ms, step),
                     self.client
-                        .query_promql(&host_failures_query, start_ms, end_ms, step),
+                        .query_promql(&host_failures_query, totals_start_ms, end_ms, step),
                 )?;
                 if host_queries.is_empty() {
                     // An absent host total cannot be told apart from a host

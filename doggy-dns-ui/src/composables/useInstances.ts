@@ -54,6 +54,10 @@ export function useInstanceDetail(id: Ref<string | null>, draft: Ref<FilterDraft
       detail.value = null
       error.value = null
       invalid.value = null
+      // The in-flight answer's own `finally` is skipped by the `++seq` guard, so
+      // the spinner has to be released here: leaving it set would make the next
+      // open start from a state the panel already stopped rendering.
+      loading.value = false
       return
     }
     // Refuse a hand-edited URL that names a bracket the request cannot honour

@@ -25,8 +25,10 @@ function lastDraft(wrapper: VueWrapper): FilterDraft {
 }
 
 // Drive a `datetime-local` input the way the operator does: set its DOM value and
-// fire the real `change` event the component listens for. `setValue` would only
-// emit `input`, which the `@change` handler here ignores.
+// fire the `change` event these inputs actually bind (`@change` in
+// `TimeRangeControl.vue:118,128`, no `v-model`). `setValue` would reach the same
+// handler — Vue Test Utils dispatches `change` after `input` — but naming the
+// bound event keeps the contract visible in the helper.
 async function typeDatetime(wrapper: VueWrapper, testId: string, value: string) {
   const input = wrapper.get(`[data-testid="${testId}"]`)
   ;(input.element as HTMLInputElement).value = value

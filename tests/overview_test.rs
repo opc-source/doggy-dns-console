@@ -655,6 +655,58 @@ async fn failure_metrics_without_a_host_queries_global_scope_only() {
 }
 
 #[tokio::test]
+async fn failure_metrics_on_a_sub_minute_span_reads_the_sample_at_the_end() {
+    let server = MockServer::start().await;
+    // 59.5 minutes: `minutes` rounds up to 60, so the step is wider than the span
+    // and `query_range` — stepping FORWARD from `start` — yields exactly one
+    // evaluation, at `start`. The two samples differ on purpose: reading the
+    // evidence counts from `start` instead of `end` answers 7777/77, and a request
+    // anchored anywhere other than the aligned start matches no mock at all.
+    let end = 1_761_436_800_000_i64;
+    let start = end - 3_570_000;
+    let aligned_start = end - 3_600_000;
+    assert_ne!(aligned_start, start);
+
+    mount_at_step(
+        &server,
+        &scoped_total_query("dns_queries", 60, None),
+        3_600,
+        aligned_start,
+        end,
+        matrix(
+            serde_json::json!([[ts(aligned_start), "7777"], [ts(end), "120"]]),
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    mount_at_step(
+        &server,
+        &scoped_failure_query("dns_queries", 60, None),
+        3_600,
+        aligned_start,
+        end,
+        matrix(
+            serde_json::json!([[ts(aligned_start), "77"], [ts(end), "7"]]),
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+
+    let metrics = telemetry(&server)
+        .failure_metrics(None, start as u64, end as u64)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        metrics.global,
+        MetricCounts {
+            queries: 120,
+            failures: 7
+        }
+    );
+}
+
+#[tokio::test]
 async fn failure_metrics_propagates_promql_failures() {
     let server = MockServer::start().await;
     let start = 1_761_436_800_000_i64;

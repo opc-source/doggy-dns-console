@@ -91,8 +91,9 @@ bucket width, `ceil(span_minutes / 168)` held to `1..=60` minutes, and the rate
 window is `max(bucket, 5)` minutes — so the default one hour keeps the 60-second
 step and five-minute rate window it always had, and a week is one point per hour.
 Each point is a rate window that ENDS at its own timestamp, so the first bucket of
-a bracket reaches up to `bucket` minutes before the bracket's start: five minutes
-in the default one-hour view, as it always was, up to sixty in a seven-day view.
+a bracket reaches up to its rate window — `max(bucket, 5)` minutes — before the
+bracket's start: five minutes in the default one-hour view, as it always was, up to
+sixty in a seven-day view.
 State the cost plainly: a wider bracket can only read a higher p95, which is why
 the card hint says `worst bucket in range`.
 
