@@ -21,19 +21,10 @@ function restoredMode(): AiPanelMode {
 }
 
 export const useUiStore = defineStore('ui', () => {
-  const drawerTraceId = ref<string | null>(null)
   const aiPanelMode = ref<AiPanelMode>(restoredMode())
   const handoff = ref<HandoffContext | null>(null)
   // Hiding the panel unmounts it, so an unsent question has to live outside it.
   const composerDraft = ref('')
-
-  function openFailure(traceId: string | null) {
-    drawerTraceId.value = traceId
-  }
-
-  function closeFailure() {
-    drawerTraceId.value = null
-  }
 
   function persist(mode: AiPanelMode) {
     if (mode === 'fullscreen') return
@@ -62,12 +53,9 @@ export const useUiStore = defineStore('ui', () => {
   }
 
   return {
-    drawerTraceId,
     aiPanelMode,
     handoff,
     composerDraft,
-    openFailure,
-    closeFailure,
     setAiPanelMode,
     openAiPanel,
     rememberHandoff,

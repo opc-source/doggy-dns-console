@@ -1,8 +1,11 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia } from 'pinia'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createMemoryHistory, createRouter, type Router } from 'vue-router'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ErrorBanner from '@/components/ErrorBanner.vue'
+import FailureDrawer from '@/components/FailureDrawer.vue'
+import { routes } from '@/router'
 import OverviewView from '@/views/OverviewView.vue'
 
 const overview = {
@@ -67,13 +70,55 @@ function stubApi(overviewResponse: () => Response) {
 
 const wrappers: VueWrapper[] = []
 
-function mountOverview() {
+/**
+ * The card's `see-all` is a RouterLink and a row click is a navigation, so the
+ * view is mounted with the app's own route table: a hand-copied one would keep
+ * passing after somebody renamed a route.
+ */
+async function mountOverview(): Promise<{ router: Router; wrapper: VueWrapper }> {
+  const router = createRouter({ history: createMemoryHistory(), routes })
+  await router.push('/')
+  await router.isReady()
+
   const wrapper = mount(OverviewView, {
-    global: { plugins: [createPinia()], stubs: { TrendChart: true } },
+    global: { plugins: [router, createPinia()], stubs: { TrendChart: true } },
   })
   wrappers.push(wrapper)
-  return wrapper
+  await flushPromises()
+  return { router, wrapper }
 }
+
+/** The window chips are plain buttons labelled `1h`/`6h`/`24h` with no test id. */
+function chipByText(wrapper: VueWrapper, label: string) {
+  const [chip] = wrapper.findAll('button').filter((button) => button.text() === label)
+  if (!chip) throw new Error(`no ${label} window chip`)
+  return chip
+}
+
+/**
+ * The detail route is lazily imported, so the row click's navigation settles a
+ * tick later than a plain flush; waiting on the route keeps the assertions below
+ * about the query rather than about when the chunk happens to arrive. The wait is
+ * shorter than vitest's own 5 s test timeout so a route that never arrives fails
+ * with the route name in the message instead of a bare timeout.
+ */
+async function clickRow(wrapper: VueWrapper, router: Router) {
+  await wrapper.find('[data-testid="failure-row"]').trigger('click')
+  await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('failure-detail'), {
+    timeout: 3000,
+  })
+}
+
+// jsdom never matches media queries, and the drawer reads one on mount: without
+// this stub a drawer that leaked back into the overview would crash before the
+// regression assertion could name it.
+beforeEach(() => {
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: query.includes('1280px'),
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  }))
+})
 
 describe('OverviewView', () => {
   afterEach(() => {
@@ -90,8 +135,7 @@ describe('OverviewView', () => {
         : json(overview),
     )
 
-    const wrapper = mountOverview()
-    await flushPromises()
+    const { wrapper } = await mountOverview()
     expect(wrapper.text()).toContain('99.7%')
 
     failOverview = true
@@ -106,8 +150,7 @@ describe('OverviewView', () => {
   it('marks failures that already have an analysis', async () => {
     stubApi(() => json(overview))
 
-    const wrapper = mountOverview()
-    await flushPromises()
+    const { wrapper } = await mountOverview()
 
     const row = wrapper.find('[data-testid="failure-row"]')
     expect(row.exists()).toBe(true)
@@ -115,5 +158,49 @@ describe('OverviewView', () => {
     const badge = row.find('[data-testid="analyzed-badge"]')
     expect(badge.exists()).toBe(true)
     expect(badge.text()).toBe('已有分析')
+  })
+
+  it('routes a row click to the failure list with the window in the URL', async () => {
+    stubApi(() => json(overview))
+    const { router, wrapper } = await mountOverview()
+
+    await clickRow(wrapper, router)
+
+    expect(router.currentRoute.value.name).toBe('failure-detail')
+    expect(router.currentRoute.value.params.traceId).toBeTruthy()
+    expect(router.currentRoute.value.query.windowMinutes).toBe('60')
+  })
+
+  it('sends the window the operator is looking at, not a fixed one', async () => {
+    stubApi(() => json(overview))
+    const { router, wrapper } = await mountOverview()
+
+    await chipByText(wrapper, '24h').trigger('click')
+    await flushPromises()
+    await clickRow(wrapper, router)
+
+    // The card follows the picker, so the deep link investigates the same 24 h
+    // the operator clicked inside; a hard-coded 60 would narrow it to an hour.
+    expect(router.currentRoute.value.name).toBe('failure-detail')
+    expect(router.currentRoute.value.query.windowMinutes).toBe('1440')
+  })
+
+  it('links the card header to the whole list', async () => {
+    stubApi(() => json(overview))
+    const { wrapper } = await mountOverview()
+
+    expect(wrapper.find('[data-testid="see-all"]').exists()).toBe(true)
+  })
+
+  it('never mounts a drawer from the store', async () => {
+    stubApi(() => json(overview))
+    const { wrapper } = await mountOverview()
+
+    await wrapper.find('[data-testid="failure-row"]').trigger('click')
+    await flushPromises()
+
+    // The drawer is `failure-detail`'s alone: a second mount here is what lets a
+    // pasted deep link and the browser's back button disagree with the screen.
+    expect(wrapper.findComponent(FailureDrawer).exists()).toBe(false)
   })
 })

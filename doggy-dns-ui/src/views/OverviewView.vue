@@ -1,30 +1,28 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
+import { useRouter } from 'vue-router'
 
-import type { InvestigationFilter } from '@/api/types'
 import ErrorBanner from '@/components/ErrorBanner.vue'
-import FailureDrawer from '@/components/FailureDrawer.vue'
 import FailureList from '@/components/FailureList.vue'
 import KpiCard from '@/components/KpiCard.vue'
 import TrendChart from '@/components/TrendChart.vue'
 import { useFailureList } from '@/composables/useFailureList'
 import { useOverview } from '@/composables/useOverview'
-import { relativeDraft, toInvestigationFilter } from '@/lib/failureFilter'
-import { useUiStore } from '@/stores/ui'
+import { relativeDraft, toRouteQuery } from '@/lib/failureFilter'
 
-const ui = useUiStore()
+const router = useRouter()
 const { data, error, loading, lastUpdated, windowMinutes, setWindow, refresh } = useOverview(60)
 const draft = computed(() => relativeDraft(windowMinutes.value))
 const { groups: failures, markers } = useFailureList(draft, 5)
 
-// The bracket the 5-row card was fetched under, fixed at the instant the
-// operator clicks a failure so the drawer investigates exactly that range
-// instead of a live window that drifts on the 15s refresh.
-const drawerFilter = ref<InvestigationFilter>(toInvestigationFilter(draft.value, Date.now()))
-
-function openFailure(traceId: string | null) {
-  drawerFilter.value = toInvestigationFilter(draft.value, Date.now())
-  ui.openFailure(traceId)
+function onSelect(traceId: string) {
+  // The card's own window travels with the click, so the drawer investigates the
+  // bracket the operator was looking at instead of a hard-coded one.
+  void router.push({
+    name: 'failure-detail',
+    params: { traceId },
+    query: toRouteQuery(draft.value),
+  })
 }
 
 const windows = [
@@ -102,7 +100,9 @@ const errorMessage = computed(() => {
       <FailureList
         :groups="failures"
         :markers="markers"
-        @select="(group) => openFailure(group.traceId)"
+        :limit="5"
+        see-all
+        @select="(group) => group.traceId && onSelect(group.traceId)"
       />
     </section>
 
@@ -127,12 +127,5 @@ const errorMessage = computed(() => {
         </ul>
       </div>
     </section>
-
-    <FailureDrawer
-      v-if="ui.drawerTraceId"
-      :trace-id="ui.drawerTraceId"
-      :filter="drawerFilter"
-      @close="ui.closeFailure()"
-    />
   </div>
 </template>
