@@ -183,6 +183,43 @@ fn totals_are_sampled_once_over_the_whole_bracket() {
 }
 
 #[test]
+fn the_totals_window_start_lands_its_last_sample_on_the_bracket_end() {
+    // A minute-aligned bracket needs no alignment: the derived start IS its
+    // own start, which is why every pre-existing overview test is unchanged.
+    let aligned = Range::new(1_761_433_200_000, 1_761_436_800_000);
+    assert_eq!(aligned.whole_window_start_ms(), aligned.start_ms);
+
+    // A 59.5-minute bracket rounds its start back to the whole minute the
+    // `increase` step covers, so the last evaluation is exactly `end_ms` —
+    // never the lone sample at the real start, which describes the period
+    // before the bracket.
+    let sub_minute = Range::new(1_761_433_230_000, 1_761_436_800_000);
+    assert_eq!(sub_minute.span_minutes(), 60);
+    assert_eq!(sub_minute.whole_step_seconds(), 3_600);
+    assert_eq!(sub_minute.whole_window_start_ms(), 1_761_433_200_000);
+    assert!(sub_minute.whole_window_start_ms() < sub_minute.start_ms);
+
+    // Sub-second residue survives the ms->s truncation in the client: the
+    // rounded-back start is a whole number of seconds below `end_ms`, so the
+    // request still spans exactly one step after both bounds are truncated.
+    let odd = Range::new(1_000_000_600, 1_003_600_500);
+    assert_eq!(odd.span_minutes(), 60);
+    assert_eq!(odd.whole_window_start_ms(), 1_000_000_500);
+    assert_eq!(
+        odd.end_ms / 1000 - odd.whole_window_start_ms() / 1000,
+        i64::try_from(odd.whole_step_seconds()).expect("a step fits in i64")
+    );
+
+    // Never panics on a bracket that skipped `checked`: saturating throughout,
+    // like the other bucket methods.
+    let hostile = Range::new(i64::MIN, i64::MAX);
+    assert_eq!(
+        hostile.whole_window_start_ms(),
+        i64::MAX - i64::from(u32::MAX) * 60_000
+    );
+}
+
+#[test]
 fn bucket_math_survives_a_bracket_that_never_went_through_checked() {
     // The bucket methods are `pub` on a value object a caller can build with
     // `Range::new` straight out of deserialised storage, so they must saturate

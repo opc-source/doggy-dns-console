@@ -17,7 +17,8 @@ pub struct OverviewArgs {
     /// when from is absent; ignored when from is given.
     pub window_minutes: Option<u32>,
     /// Absolute bracket start in epoch milliseconds. Wins over `windowMinutes`
-    /// when `to` is present too.
+    /// on its own: `to` need not be present, and an absent `to` is the server
+    /// clock.
     pub from: Option<i64>,
     /// Absolute bracket end in epoch milliseconds; also anchors `windowMinutes`
     /// when `from` is absent. Defaults to the server clock.
@@ -64,7 +65,8 @@ pub struct InstanceArgs {
     /// when from is absent; ignored when from is given.
     pub window_minutes: Option<u32>,
     /// Absolute bracket start in epoch milliseconds. Wins over `windowMinutes`
-    /// when `to` is present too.
+    /// on its own: `to` need not be present, and an absent `to` is the server
+    /// clock.
     pub from: Option<i64>,
     /// Absolute bracket end in epoch milliseconds; also anchors `windowMinutes`
     /// when `from` is absent. Defaults to the server clock.
@@ -184,7 +186,7 @@ pub fn build_tools(service: Arc<ConsoleService>) -> Vec<Arc<dyn Tool>> {
         Arc::new(
             StatefulTool::new(
                 "get_instance_detail",
-                "Return one instance's pid, status, uptime, protocols, plugins, redacted TOML config and live runtime signals (Nacos cache/push freshness, XDP fast path state). Pass the same from/to or windowMinutes the operator is looking at.",
+                "Return one instance's pid, status, uptime, protocols, plugins, redacted TOML config and live runtime signals (Nacos cache/push freshness, XDP fast path state). Pass the same from/to or windowMinutes the operator is looking at. from/to are epoch milliseconds; a bracket shorter than 5 minutes or longer than 7 days (10080 minutes), with a start at or after its end, or ending more than 60 seconds in the future is rejected, never clamped.",
                 state.clone(),
                 tool_instance_detail,
             )

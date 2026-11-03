@@ -125,6 +125,28 @@ async fn the_instance_detail_tool_tells_the_model_which_bracket_to_pass() {
         text.contains("Pass the same from/to or windowMinutes the operator is looking at."),
         "the detail tool no longer tells the model to match the operator's range: {text}"
     );
+    // Spec D9: the model must LEARN the band from the description instead of
+    // discovering it by eating a 400, so the instance detail spells out the
+    // same three rejection rules and the future tolerance the failure tools do.
+    for needle in [
+        "from",
+        "to",
+        "windowMinutes",
+        "epoch milliseconds",
+        "5 minutes",
+        "7 days",
+        "10080",
+        "at or after its end",
+        "60 seconds in the future",
+        "rejected",
+    ] {
+        assert!(
+            text.contains(needle),
+            "get_instance_detail description lost `{needle}`: {text}"
+        );
+    }
+    assert!(!text.contains("1440"), "{text}");
+    assert!(!text.contains("clamps"), "{text}");
 }
 
 #[tokio::test]

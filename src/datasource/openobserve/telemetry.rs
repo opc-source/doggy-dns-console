@@ -51,14 +51,21 @@ impl TelemetrySource for OpenObserveTelemetry {
         // end. A 60-second step over seven days would replay the same
         // `increase` window 10080 times to read its last point (spec D15).
         let whole = range.whole_step_seconds();
+        // The totals start is aligned to that step, never the raw bracket start:
+        // `whole` is rounded UP from the real span, and a `query_range` steps
+        // forward from `start`, so an unaligned start would evaluate a single
+        // sample whose `increase` window ends where the bracket begins — the
+        // period before the operator asked for. Series and p95 keep `start`,
+        // because for them tiling from the start IS the contract.
+        let totals_start = range.whole_window_start_ms();
         let total = total_query(&cfg.metric_queries, range);
         let failure = failure_query(&cfg.metric_queries, range);
         let p95 = p95_query(&cfg.metric_duration, rate_window);
         let volume = series_query(&cfg.metric_queries, rate_window);
         let failure_volume = failure_series_query(&cfg.metric_queries, rate_window);
 
-        let queries = self.client.query_promql(&total, start, end, whole);
-        let failures = self.client.query_promql(&failure, start, end, whole);
+        let queries = self.client.query_promql(&total, totals_start, end, whole);
+        let failures = self.client.query_promql(&failure, totals_start, end, whole);
         let p95 = self.client.query_promql(&p95, start, end, step);
         let volume_series = self.client.query_promql(&volume, start, end, step);
         let failure_series = self.client.query_promql(&failure_volume, start, end, step);

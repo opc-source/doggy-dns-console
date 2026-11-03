@@ -22,8 +22,11 @@ impl Default for Window {
 }
 
 pub const MIN_RANGE_MINUTES: u32 = 5;
-/// The investigation chain may look back a full week; the live class stays at
-/// 1440 minutes and keeps clamping through [`Window::new`].
+/// The investigation chain may look back a full week; a bracket outside
+/// `MIN_RANGE_MINUTES..=MAX_RANGE_MINUTES` is refused, never clamped. The
+/// 1440-minute [`Window::new`] clamp guards no endpoint any more: the only
+/// call site left in the crate is the internal discovery window in
+/// `src/datasource/instances.rs`, which no request parameter can reach.
 pub const MAX_RANGE_MINUTES: u32 = 7 * 1440;
 /// The trend chart stays readable at about this many points; the bucket width
 /// is derived from it, never tuned per query.
@@ -136,6 +139,15 @@ impl Range {
     /// `increase` window ten thousand times.
     pub fn whole_step_seconds(&self) -> u64 {
         u64::from(self.span_minutes()) * 60
+    }
+
+    /// Bracket start that makes the whole-span totals query evaluate its LAST
+    /// sample exactly at `end_ms`. A `query_range` steps forward from `start`, so
+    /// passing the real (possibly sub-minute) start would leave one sample at
+    /// `start` — a window covering the period BEFORE the bracket.
+    pub fn whole_window_start_ms(&self) -> i64 {
+        self.end_ms
+            .saturating_sub(i64::from(self.span_minutes()) * 60_000)
     }
 }
 

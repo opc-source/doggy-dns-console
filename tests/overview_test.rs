@@ -9,7 +9,7 @@ use doggy_dns_console::datasource::openobserve::overview::{
 use doggy_dns_console::datasource::openobserve::seen_query;
 use doggy_dns_console::datasource::openobserve::telemetry::OpenObserveTelemetry;
 use doggy_dns_console::datasource::{FixedClock, TelemetrySource};
-use doggy_dns_console::domain::{MetricCounts, Range, Window};
+use doggy_dns_console::domain::{MetricCounts, Range, SeriesPoint, Window};
 use doggy_dns_console::error::DataError;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -58,17 +58,25 @@ async fn mount(server: &MockServer, query: &str, body: ResponseTemplate) {
 
 /// `query_promql` is a GET with `query`/`start`/`end`/`step`; matching on
 /// `step` too is the only way to pin D15's other half — the same query text
-/// replayed every 60s over a week is still 10080 samples.
+/// replayed every 60s over a week is still 10080 samples. `start`/`end` are
+/// pinned as well, because a totals query whose step is LONGER than the real
+/// span evaluates its single sample at `start`: right query text, right step,
+/// and a bracket nobody asked for. Without the window matchers no test in this
+/// file can see which bracket the console shipped.
 async fn mount_at_step(
     server: &MockServer,
     query: &str,
     step_seconds: u64,
+    start_ms: i64,
+    end_ms: i64,
     body: ResponseTemplate,
 ) {
     Mock::given(method("GET"))
         .and(path("/api/default/prometheus/api/v1/query_range"))
         .and(query_param("query", query))
         .and(query_param("step", step_seconds.to_string()))
+        .and(query_param("start", ts(start_ms).to_string()))
+        .and(query_param("end", ts(end_ms).to_string()))
         .respond_with(body)
         .mount(server)
         .await;
@@ -203,6 +211,8 @@ async fn a_one_hour_bracket_keeps_the_existing_trend_text_and_step() {
         &server,
         &total_query("dns_queries", window),
         3_600,
+        window.start_ms,
+        window.end_ms,
         matrix(
             serde_json::json!([[ts(now), "1000"]]),
             serde_json::json!({}),
@@ -213,6 +223,8 @@ async fn a_one_hour_bracket_keeps_the_existing_trend_text_and_step() {
         &server,
         &failure_query("dns_queries", window),
         3_600,
+        window.start_ms,
+        window.end_ms,
         matrix(serde_json::json!([[ts(now), "12"]]), serde_json::json!({})),
     )
     .await;
@@ -220,6 +232,8 @@ async fn a_one_hour_bracket_keeps_the_existing_trend_text_and_step() {
         &server,
         &p95,
         60,
+        window.start_ms,
+        window.end_ms,
         matrix(
             serde_json::json!([[ts(now), "12.4"]]),
             serde_json::json!({}),
@@ -230,6 +244,8 @@ async fn a_one_hour_bracket_keeps_the_existing_trend_text_and_step() {
         &server,
         &rate,
         60,
+        window.start_ms,
+        window.end_ms,
         matrix(serde_json::json!([[ts(now), "20"]]), serde_json::json!({})),
     )
     .await;
@@ -237,6 +253,8 @@ async fn a_one_hour_bracket_keeps_the_existing_trend_text_and_step() {
         &server,
         &failure_rate,
         60,
+        window.start_ms,
+        window.end_ms,
         matrix(serde_json::json!([[ts(now), "2"]]), serde_json::json!({})),
     )
     .await;
@@ -258,6 +276,8 @@ async fn a_week_bracket_widens_the_rate_window_and_the_step() {
         &server,
         &series_query("dns_queries", 60),
         3_600,
+        window.start_ms,
+        window.end_ms,
         matrix(serde_json::json!([[ts(now), "20"]]), serde_json::json!({})),
     )
     .await;
@@ -265,6 +285,8 @@ async fn a_week_bracket_widens_the_rate_window_and_the_step() {
         &server,
         &failure_series_query("dns_queries", 60),
         3_600,
+        window.start_ms,
+        window.end_ms,
         matrix(serde_json::json!([[ts(now), "2"]]), serde_json::json!({})),
     )
     .await;
@@ -272,6 +294,8 @@ async fn a_week_bracket_widens_the_rate_window_and_the_step() {
         &server,
         &p95_query("dns_query_duration_bucket", 60),
         3_600,
+        window.start_ms,
+        window.end_ms,
         matrix(serde_json::json!([[ts(now), "9"]]), serde_json::json!({})),
     )
     .await;
@@ -279,6 +303,8 @@ async fn a_week_bracket_widens_the_rate_window_and_the_step() {
         &server,
         &total_query("dns_queries", window),
         604_800,
+        window.start_ms,
+        window.end_ms,
         matrix(
             serde_json::json!([[ts(now), "1000"]]),
             serde_json::json!({}),
@@ -289,6 +315,8 @@ async fn a_week_bracket_widens_the_rate_window_and_the_step() {
         &server,
         &failure_query("dns_queries", window),
         604_800,
+        window.start_ms,
+        window.end_ms,
         matrix(serde_json::json!([[ts(now), "12"]]), serde_json::json!({})),
     )
     .await;
@@ -318,6 +346,8 @@ async fn p95_reports_the_worst_finite_bucket_not_the_last_one() {
         &server,
         &series_query("dns_queries", 5),
         60,
+        window.start_ms,
+        window.end_ms,
         matrix(serde_json::json!([[ts(now), "20"]]), serde_json::json!({})),
     )
     .await;
@@ -325,6 +355,8 @@ async fn p95_reports_the_worst_finite_bucket_not_the_last_one() {
         &server,
         &failure_series_query("dns_queries", 5),
         60,
+        window.start_ms,
+        window.end_ms,
         matrix(serde_json::json!([[ts(now), "2"]]), serde_json::json!({})),
     )
     .await;
@@ -332,6 +364,8 @@ async fn p95_reports_the_worst_finite_bucket_not_the_last_one() {
         &server,
         &p95_query("dns_query_duration_bucket", 5),
         60,
+        window.start_ms,
+        window.end_ms,
         matrix(points, serde_json::json!({})),
     )
     .await;
@@ -339,6 +373,8 @@ async fn p95_reports_the_worst_finite_bucket_not_the_last_one() {
         &server,
         &total_query("dns_queries", window),
         3_600,
+        window.start_ms,
+        window.end_ms,
         matrix(
             serde_json::json!([[ts(now), "1000"]]),
             serde_json::json!({}),
@@ -349,12 +385,122 @@ async fn p95_reports_the_worst_finite_bucket_not_the_last_one() {
         &server,
         &failure_query("dns_queries", window),
         3_600,
+        window.start_ms,
+        window.end_ms,
         matrix(serde_json::json!([[ts(now), "12"]]), serde_json::json!({})),
     )
     .await;
 
     let overview = telemetry(&server).overview(window).await.unwrap();
     assert_eq!(overview.p95_latency_ms, Some(42.5));
+}
+
+#[tokio::test]
+async fn totals_on_a_sub_minute_bracket_read_the_sample_at_the_end() {
+    let server = MockServer::start().await;
+    let end = 1_761_436_800_000_i64;
+    // 59.5 minutes — the bracket the drawer gets when it resolves its range
+    // from `Date.now()`. `span_minutes` rounds up to 60, so the whole-bracket
+    // step (3600s) is LONGER than the real span (3570s). A `query_range` steps
+    // forward from `start`, so the real start yields ONE sample, at
+    // 1761433230, whose `increase[60m]` covers 1761429630..1761433230: the
+    // period entirely BEFORE what the operator asked for.
+    let start = end - 3_570_000;
+    let window = Range::new(start, end);
+    assert_eq!(window.span_minutes(), 60);
+    assert_eq!(window.whole_step_seconds(), 3_600);
+
+    // Totals start is aligned to its own step, so the LAST evaluation lands
+    // exactly on `end`. Both samples carry distinct values: reading the KPI
+    // from `end` has to be provable, not lucky.
+    let aligned_start = end - 3_600_000;
+    assert_ne!(aligned_start, start);
+    mount_at_step(
+        &server,
+        &total_query("dns_queries", window),
+        3_600,
+        aligned_start,
+        end,
+        matrix(
+            serde_json::json!([[ts(aligned_start), "7777"], [ts(end), "1000"]]),
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    mount_at_step(
+        &server,
+        &failure_query("dns_queries", window),
+        3_600,
+        aligned_start,
+        end,
+        matrix(
+            serde_json::json!([[ts(aligned_start), "77"], [ts(end), "12"]]),
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    // Trend, failure series and p95 keep tiling from the real start: there the
+    // bracket is the contract, so shifting it would drop the first bucket.
+    mount_at_step(
+        &server,
+        &series_query("dns_queries", 5),
+        60,
+        start,
+        end,
+        matrix(
+            serde_json::json!([[ts(start), "10"], [ts(end), "20"]]),
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    mount_at_step(
+        &server,
+        &failure_series_query("dns_queries", 5),
+        60,
+        start,
+        end,
+        matrix(
+            serde_json::json!([[ts(start), "1"], [ts(end), "2"]]),
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    mount_at_step(
+        &server,
+        &p95_query("dns_query_duration_bucket", 5),
+        60,
+        start,
+        end,
+        matrix(
+            serde_json::json!([[ts(end), "12.4"]]),
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+
+    let overview = telemetry(&server).overview(window).await.unwrap();
+    assert_eq!(overview.window_minutes, 60);
+    // The KPI is the sample at `end` — not the aligned-start sample, and not
+    // the increase window that ended before the bracket opened.
+    assert_eq!(overview.queries, 1000);
+    assert_eq!(overview.failures, 12);
+    assert_eq!(overview.success_rate, Some(0.988));
+    assert_eq!(overview.p95_latency_ms, Some(12.4));
+    assert_eq!(
+        overview.series,
+        vec![
+            SeriesPoint {
+                ts: start,
+                queries: 10,
+                failures: 1
+            },
+            SeriesPoint {
+                ts: end,
+                queries: 20,
+                failures: 2
+            },
+        ]
+    );
 }
 
 #[tokio::test]
