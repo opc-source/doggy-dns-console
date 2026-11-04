@@ -169,3 +169,20 @@ test('the shared time control keeps its labels on one line', async ({ page }) =>
   expect(hint).not.toBeNull()
   expect(hint!.y).toBeGreaterThan(presets!.y)
 })
+
+test('the rail tooltip keeps a CJK label on one line', async ({ page }) => {
+  await page.goto('/failures')
+
+  // The tooltip is `absolute left-12` inside the 40px-wide link it hangs off, so
+  // its shrink-to-fit width is `min(max(min-content, 40 - 48), max-content)`: the
+  // available width goes negative and the box collapses to min-content, which for
+  // Han text is ONE CHARACTER. Measured before the fix: 30x74 — 失/败/列/表 stacked.
+  // Latin labels hid the same bug because an unbreakable word is its own
+  // min-content, so text assertions cannot see it and this case reads geometry.
+  const link = page.locator('nav a[aria-label="失败列表"]')
+  await link.hover()
+  const box = await link.getByTestId('rail-tip').boundingBox()
+  expect(box).not.toBeNull()
+  expect(box!.height, 'one text-xs line plus padding stays under 40px').toBeLessThan(40)
+  expect(box!.width, 'the four-character label needs more than one glyph').toBeGreaterThan(50)
+})
