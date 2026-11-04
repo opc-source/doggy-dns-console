@@ -270,8 +270,17 @@ describe('FailureList', () => {
     ).toHaveLength(8)
   })
 
+  it('shows a header label only when a caller names the window', () => {
+    // `last window` was a stub from the first UI commit: it names no window, and
+    // the overview page already states its bracket in the picker and the KPI hint.
+    expect(mountList().wrapper.find('[data-test="list-subtitle"]').exists()).toBe(false)
+
+    const { wrapper } = mountList({ subtitle: '近 7 天' })
+    expect(wrapper.get('[data-test="list-subtitle"]').text()).toBe('近 7 天')
+  })
+
   it('links to the whole list only when the card is not the list', () => {
-    const card = mountList({ title: 'Top failures', subtitle: 'last window' })
+    const card = mountList({ title: 'Top failures' })
     expect(card.wrapper.find('[data-testid="see-all"]').exists()).toBe(false)
 
     const { wrapper, router } = mountList({ seeAll: true })

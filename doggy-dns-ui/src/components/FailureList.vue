@@ -17,6 +17,7 @@ const props = withDefaults(
     /** Where that link goes; the card passes its own window so the list matches. */
     seeAllTo?: RouteLocationRaw
     title?: string
+    /** Only a caller that knows the bracket passes one; the card shows nothing otherwise. */
     subtitle?: string
     /** One-line rows for the overview card; the page renders every field. */
     dense?: boolean
@@ -27,7 +28,6 @@ const props = withDefaults(
     limit: 5,
     seeAll: false,
     title: 'Top failures',
-    subtitle: 'last window',
     dense: true,
     emptyText: 'No failures in this window.',
   },
@@ -45,7 +45,7 @@ const visibleGroups = computed(() =>
     <header class="flex items-center justify-between border-b border-border px-4 py-3">
       <h2 class="text-sm font-medium">{{ title }}</h2>
       <div class="flex items-center gap-2">
-        <span class="text-xs text-muted">{{ subtitle }}</span>
+        <span v-if="subtitle" data-test="list-subtitle" class="text-xs text-muted">{{ subtitle }}</span>
         <RouterLink
           v-if="seeAll"
           data-testid="see-all"
