@@ -167,7 +167,7 @@ describe('OverviewView', () => {
     expect(row.text()).toContain('a.example.')
     const badge = row.find('[data-testid="analyzed-badge"]')
     expect(badge.exists()).toBe(true)
-    expect(badge.text()).toBe('已有分析')
+    expect(badge.text()).toBe('已有分析 · upstream_timeout')
   })
 
   it('routes a row click to the failure list with the window in the URL', async () => {
@@ -179,6 +179,15 @@ describe('OverviewView', () => {
     expect(router.currentRoute.value.name).toBe('failure-detail')
     expect(router.currentRoute.value.params.traceId).toBeTruthy()
     expect(router.currentRoute.value.query.windowMinutes).toBe('60')
+  })
+
+  it('deep-links a badged row to the analysis its badge names', async () => {
+    stubApi(() => json(overview))
+    const { router, wrapper } = await mountOverview()
+
+    await clickRow(wrapper, router)
+
+    expect(router.currentRoute.value.query.analysis).toBe('m1')
   })
 
   it('sends the window the operator is looking at, not a fixed one', async () => {

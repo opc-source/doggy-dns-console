@@ -254,6 +254,11 @@ export function useInvestigation(
         return false
       }
       error.value = errorMessage(cause)
+      if (cause instanceof ApiError && cause.status === 503) {
+        // A console without an analysis service is unavailable whichever way
+        // the operator found that out — restore or start.
+        state.value = 'analysisUnavailable'
+      }
       return false
     }
   }

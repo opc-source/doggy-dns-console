@@ -23,7 +23,7 @@ function buildQuery(params: Record<string, string>): string {
 
 export function useFailureList(draft: Ref<FilterDraft>, limit = 5) {
   const groups = ref<FailureGroup[]>([])
-  const markers = ref<Set<string>>(new Set())
+  const markers = ref<Map<string, AnalysisMarker>>(new Map())
   const uncovered = ref(0)
   const error = ref<string | null>(null)
   let timer: ReturnType<typeof setInterval> | null = null
@@ -42,7 +42,7 @@ export function useFailureList(draft: Ref<FilterDraft>, limit = 5) {
     ).slice(0, MAX_MARKER_TRACE_IDS)
 
     if (ids.length === 0) {
-      markers.value = new Set()
+      markers.value = new Map()
       return
     }
 
@@ -52,13 +52,15 @@ export function useFailureList(draft: Ref<FilterDraft>, limit = 5) {
       // A newer draft's refresh owns the markers; drop this older answer.
       if (seq !== markerSeq) return
       const requested = new Set(ids)
-      markers.value = new Set(
-        found.map((marker) => marker.traceId).filter((traceId) => requested.has(traceId)),
+      markers.value = new Map(
+        found
+          .filter((marker) => requested.has(marker.traceId))
+          .map((marker) => [marker.traceId, marker] as const),
       )
     } catch {
       // Markers are cosmetic: never surface an error or hide the failure list.
       if (seq !== markerSeq) return
-      markers.value = new Set()
+      markers.value = new Map()
     }
   }
 
@@ -100,7 +102,7 @@ export function useFailureList(draft: Ref<FilterDraft>, limit = 5) {
     if (invalid) {
       error.value = invalid
       groups.value = []
-      markers.value = new Set()
+      markers.value = new Map()
       // Retire both in-flight answers: the bracket those requests describe was
       // just refused, so neither may re-land above the empty table.
       markerSeq += 1
@@ -119,7 +121,7 @@ export function useFailureList(draft: Ref<FilterDraft>, limit = 5) {
     } catch (cause) {
       if (seq !== listSeq) return
       error.value = String(cause)
-      markers.value = new Set()
+      markers.value = new Map()
       uncoveredSeq += 1
       uncovered.value = 0
       return

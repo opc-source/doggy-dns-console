@@ -49,11 +49,15 @@ const { groups: failures, markers } = useFailureList(draft, 5)
 
 function onSelect(traceId: string) {
   // The card's own bracket travels with the click, so the drawer investigates the
-  // range the operator was looking at instead of a hard-coded one.
+  // range the operator was looking at instead of a hard-coded one. A badged row
+  // also names its existing attempt, so opening it restores instead of re-running.
+  const marker = markers.value.get(traceId)
   void router.push({
     name: 'failure-detail',
     params: { traceId },
-    query: toRouteQuery(draft.value),
+    query: marker
+      ? { ...toRouteQuery(draft.value), analysis: marker.id }
+      : toRouteQuery(draft.value),
   })
 }
 

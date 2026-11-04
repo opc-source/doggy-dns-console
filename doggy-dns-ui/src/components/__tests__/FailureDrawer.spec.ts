@@ -266,13 +266,39 @@ afterEach(() => {
 })
 
 describe('FailureDrawer investigation panel', () => {
-  it('auto-loads evidence, then starts analysis, on open', async () => {
+  it('restores the newest saved attempt before spending a new one', async () => {
     const investigation = createInvestigation({ state: 'idle' })
     investigation.loadEvidence.mockImplementation(async () => {
       investigation.evidence.value = bundle()
       investigation.state.value = 'evidenceReady'
       return true
     })
+    investigation.loadAnalysis.mockImplementation(async () => {
+      investigation.analysis.value = snapshot()
+      investigation.state.value = 'analysisDone'
+      return true
+    })
+    current = investigation
+
+    const wrapper = mountDrawer()
+    await flushPromises()
+
+    // A row opened without ?analysis= still has an answer worth showing: the GET
+    // is cheap, a re-run costs a model budget and the operator's wait.
+    expect(investigation.loadAnalysis).toHaveBeenCalledTimes(1)
+    expect(investigation.loadAnalysis.mock.calls[0]?.[0]).toBeUndefined()
+    expect(investigation.startAnalysis).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="verdict-card"]').exists()).toBe(true)
+  })
+
+  it('starts analysis on open when the trace has no saved attempt', async () => {
+    const investigation = createInvestigation({ state: 'idle' })
+    investigation.loadEvidence.mockImplementation(async () => {
+      investigation.evidence.value = bundle()
+      investigation.state.value = 'evidenceReady'
+      return true
+    })
+    investigation.loadAnalysis.mockImplementation(async () => false)
     current = investigation
 
     const wrapper = mountDrawer()
@@ -310,6 +336,7 @@ describe('FailureDrawer investigation panel', () => {
 
   it('resumes the analysis after a successful evidence reload', async () => {
     const investigation = createInvestigation({ state: 'idle' })
+    investigation.loadAnalysis.mockImplementation(async () => false)
     investigation.loadEvidence.mockImplementation(async () => {
       investigation.error.value = 'evidence boom'
       return false
@@ -352,6 +379,7 @@ describe('FailureDrawer investigation panel', () => {
             resolveSecond = resolve
           }),
       )
+    investigation.loadAnalysis.mockImplementation(async () => false)
     current = investigation
 
     const wrapper = mountDrawer()

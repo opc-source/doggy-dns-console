@@ -167,8 +167,27 @@ describe('useFailureList markers', () => {
     expect(url.pathname).toBe('/api/analysis/markers')
     expect(url.searchParams.get('traceIds')).toBe('t1,t2')
     expect(markerCall!.url).not.toContain('null')
-    expect(new Set(list.markers.value)).toEqual(new Set(['t1', 't2']))
+    expect([...list.markers.value.keys()]).toEqual(['t1', 't2'])
     expect(fetches.every((call) => call.method !== 'POST')).toBe(true)
+  })
+
+  it('keeps each marker whole so the row can deep-link to that attempt', async () => {
+    const { list } = mountList(ref(relativeDraft(60)), {
+      markers: () =>
+        json([
+          { ...markerFor('t1', 'm1'), status: 'invalid', verdictCategory: null, attempt: 3 },
+        ]),
+    })
+
+    await flushPromises()
+
+    expect(list.markers.value.get('t1')).toMatchObject({
+      id: 'm1',
+      traceId: 't1',
+      status: 'invalid',
+      verdictCategory: null,
+      attempt: 3,
+    })
   })
 
   it('keeps groups rendered and the error clear when markers fail', async () => {
@@ -188,7 +207,7 @@ describe('useFailureList markers', () => {
     const { draft, list } = mountList(ref(relativeDraft(60)), { failGroups: () => failGroups })
 
     await flushPromises()
-    expect(new Set(list.markers.value)).toEqual(new Set(['t1', 't2']))
+    expect([...list.markers.value.keys()]).toEqual(['t1', 't2'])
     expect(list.error.value).toBeNull()
 
     failGroups = true
@@ -258,7 +277,7 @@ describe('useFailureList filter drafts', () => {
     })
     await flushPromises()
     expect(groups.value.length).toBeGreaterThan(0)
-    expect(new Set(list.markers.value)).toEqual(new Set(['t1', 't2']))
+    expect([...list.markers.value.keys()]).toEqual(['t1', 't2'])
 
     draft.value = relativeDraft(1440)
     await flushPromises()

@@ -56,10 +56,15 @@ const hosts = computed(() =>
 const capped = computed(() => !invalid.value && groups.value.length >= PAGE_LIMIT)
 
 function onSelect(traceId: string) {
+  // A row the badge marks as analysed opens the attempt the badge names, not a
+  // fresh run: the drawer restores a named attempt instead of spending a new one.
+  const marker = markers.value.get(traceId)
   void router.push({
     name: 'failure-detail',
     params: { traceId },
-    query: toRouteQuery(draft.value),
+    query: marker
+      ? { ...toRouteQuery(draft.value), analysis: marker.id }
+      : toRouteQuery(draft.value),
   })
 }
 

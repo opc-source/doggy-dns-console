@@ -1,12 +1,14 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { ChevronRight } from '@lucide/vue'
 
-import type { FailureGroup } from '@/api/types'
+import type { AnalysisMarker, FailureGroup } from '@/api/types'
 import { msToDatetime } from '@/lib/failureFilter'
 
 const props = defineProps<{
   group: FailureGroup
-  analyzed: boolean
+  /** The latest attempt for this trace, when one exists. */
+  marker?: AnalysisMarker
   /**
    * The overview card's one-line row; false is the page's full field set. Required,
    * and `FailureList` always forwards its own default: one knob, one source of truth.
@@ -30,6 +32,23 @@ function shortName(query: string) {
 function dash(value: string | number | null | undefined): string {
   return value === null || value === undefined || value === '' ? '—' : String(value)
 }
+
+// The badge names the attempt the row links to: an in-flight run is not yet an
+// answer, and a failed or illegal one must not read like a finished conclusion.
+const badgeText = computed(() => {
+  const marker = props.marker
+  if (!marker) return ''
+  if (marker.status === 'queued' || marker.status === 'running') return '分析中'
+  if (marker.status === 'failed') return '已有分析 · 失败'
+  if (marker.status === 'invalid') return '已有分析 · 结果非法'
+  return marker.verdictCategory ? `已有分析 · ${marker.verdictCategory}` : '已有分析'
+})
+
+const badgeTitle = computed(() => {
+  const marker = props.marker
+  if (!marker) return ''
+  return `分析 ${marker.id} · 第 ${marker.attempt} 次 · ${msToDatetime(marker.createdAt)}`
+})
 </script>
 
 <template>
@@ -65,11 +84,11 @@ function dash(value: string | number | null | undefined): string {
       >
       <span class="tabular-nums text-xs text-muted">{{ group.count }}</span>
       <span
-        v-if="analyzed"
+        v-if="marker"
         data-testid="analyzed-badge"
         class="rounded-md bg-accent/15 px-1.5 py-0.5 text-[10px] text-accent"
-        title="已有调查分析"
-        >已有分析</span
+        :title="badgeTitle"
+        >{{ badgeText }}</span
       >
       <ChevronRight :size="14" class="text-muted" />
     </span>

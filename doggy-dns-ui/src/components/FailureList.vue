@@ -2,14 +2,14 @@
 import { computed } from 'vue'
 import { RouterLink, type RouteLocationRaw } from 'vue-router'
 
-import type { FailureGroup } from '@/api/types'
+import type { AnalysisMarker, FailureGroup } from '@/api/types'
 
 import FailureRow from './FailureRow.vue'
 
 const props = withDefaults(
   defineProps<{
     groups: FailureGroup[]
-    markers?: Set<string>
+    markers?: Map<string, AnalysisMarker>
     /** Rows to render; 0 means "all of them". */
     limit?: number
     /** Render the "查看全部" link to the failure list page. */
@@ -62,7 +62,7 @@ const visibleGroups = computed(() =>
       v-for="group in visibleGroups"
       :key="group.key"
       :group="group"
-      :analyzed="markers?.has(group.traceId ?? '') ?? false"
+      :marker="markers?.get(group.traceId ?? '')"
       :dense="dense"
       @select="emit('select', $event)"
     />

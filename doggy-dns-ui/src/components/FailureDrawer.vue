@@ -204,7 +204,15 @@ async function investigate() {
     return
   }
 
-  if (state.value === 'evidenceReady') await startAnalysis()
+  if (state.value === 'evidenceReady') {
+    // No named attempt is not no attempt: the newest saved one is the answer
+    // worth showing, and a GET costs far less than the run it replaces.
+    const restored = await loadAnalysis()
+    if (seq !== loadSeq) return
+    if (!restored && error.value === null && state.value === 'evidenceReady') {
+      await startAnalysis()
+    }
+  }
 }
 
 onMounted(() => {
