@@ -90,66 +90,77 @@ const activeQuick = computed(() =>
 </script>
 
 <template>
-  <div class="flex gap-2">
+  <!--
+    One root on purpose. Every root node of a multi-root component becomes a
+    direct flex item of whatever row the page puts it in, and a CJK label's
+    min-content width is one character — so a nowrap row that overflows shrinks
+    "1 小时" into a vertical stack (measured on the dashboard: 900px row, 1646px
+    of content, presets 36x80). Owning the wrap here makes the whole control one
+    flex item and lets the pieces reflow onto extra lines instead of collapsing.
+  -->
+  <div data-testid="range-controls" class="flex flex-wrap items-end gap-2">
+    <div class="flex flex-wrap gap-2">
+      <button
+        v-for="preset in QUICK_WINDOWS"
+        :key="preset.minutes"
+        :data-testid="preset.testId"
+        :aria-pressed="activeQuick === preset.minutes"
+        class="focus-ring shrink-0 rounded-lg px-2.5 py-1 text-xs"
+        :class="
+          activeQuick === preset.minutes
+            ? 'bg-accent/15 text-accent'
+            : 'bg-surface-2 text-muted hover:text-text'
+        "
+        @click="useRelative(preset.minutes)"
+      >
+        {{ preset.label }}
+      </button>
+    </div>
+
+    <label class="flex shrink-0 flex-col gap-1 text-[11px] text-muted">
+      起
+      <input
+        type="datetime-local"
+        data-testid="range-from"
+        :value="fromText"
+        class="focus-ring rounded-lg bg-surface-2 px-2 py-1 text-xs text-text"
+        @change="setFrom(($event.target as HTMLInputElement).value)"
+      />
+    </label>
+    <label class="flex shrink-0 flex-col gap-1 text-[11px] text-muted">
+      止
+      <input
+        type="datetime-local"
+        data-testid="range-to"
+        :value="toText"
+        class="focus-ring rounded-lg bg-surface-2 px-2 py-1 text-xs text-text"
+        @change="setTo(($event.target as HTMLInputElement).value)"
+      />
+    </label>
+
     <button
-      v-for="preset in QUICK_WINDOWS"
-      :key="preset.minutes"
-      :data-testid="preset.testId"
-      :aria-pressed="activeQuick === preset.minutes"
-      class="focus-ring rounded-lg px-2.5 py-1 text-xs"
-      :class="
-        activeQuick === preset.minutes
-          ? 'bg-accent/15 text-accent'
-          : 'bg-surface-2 text-muted hover:text-text'
-      "
-      @click="useRelative(preset.minutes)"
+      data-testid="reset-time"
+      class="focus-ring shrink-0 rounded-lg bg-surface-2 px-2 py-1 text-xs text-muted hover:text-text"
+      @click="resetTime"
     >
-      {{ preset.label }}
+      回到近 1 小时
     </button>
+
+    <p data-testid="range-hint" class="w-full text-[11px] text-muted">
+      <!--
+        One class now: every endpoint that takes a time range rejects outside
+        5–10080 minutes instead of clamping (`Range::resolve` in `src/domain.rs`,
+        reached from `RangeQuery::range`, `FailureQuery` and each copilot tool), so
+        the numbers below are the request contract, not a per-page ceiling. The one
+        remaining `Window::new` clamp lives in internal host discovery
+        (`src/datasource/instances.rs`), which no request parameter reaches.
+        `/api/instances` is the one endpoint with no window at all — its rows are
+        identity and reachability, so the hint has to name it or an operator will
+        read a frozen instance list as a stale one.
+        注释里写死数字、正文插值:模板注释不参与编译,别在这里放 mustache。
+      -->
+      时间区间支持 {{ MIN_RANGE_MINUTES }} 分钟到 {{ MAX_RANGE_MINUTES }} 分钟（7 天），所有端点超限直接拒绝、不再夹回；
+      实例列表（/api/instances）不取时间窗。
+    </p>
   </div>
-
-  <label class="flex flex-col gap-1 text-[11px] text-muted">
-    起
-    <input
-      type="datetime-local"
-      data-testid="range-from"
-      :value="fromText"
-      class="focus-ring rounded-lg bg-surface-2 px-2 py-1 text-xs text-text"
-      @change="setFrom(($event.target as HTMLInputElement).value)"
-    />
-  </label>
-  <label class="flex flex-col gap-1 text-[11px] text-muted">
-    止
-    <input
-      type="datetime-local"
-      data-testid="range-to"
-      :value="toText"
-      class="focus-ring rounded-lg bg-surface-2 px-2 py-1 text-xs text-text"
-      @change="setTo(($event.target as HTMLInputElement).value)"
-    />
-  </label>
-  <button
-    data-testid="reset-time"
-    class="focus-ring rounded-lg bg-surface-2 px-2 py-1 text-xs text-muted hover:text-text"
-    @click="resetTime"
-  >
-    回到近 1 小时
-  </button>
-
-  <p data-testid="range-hint" class="w-full text-[11px] text-muted">
-    <!--
-      One class now: every endpoint that takes a time range rejects outside
-      5–10080 minutes instead of clamping (`Range::resolve` in `src/domain.rs`,
-      reached from `RangeQuery::range`, `FailureQuery` and each copilot tool), so
-      the numbers below are the request contract, not a per-page ceiling. The one
-      remaining `Window::new` clamp lives in internal host discovery
-      (`src/datasource/instances.rs`), which no request parameter reaches.
-      `/api/instances` is the one endpoint with no window at all — its rows are
-      identity and reachability, so the hint has to name it or an operator will
-      read a frozen instance list as a stale one.
-      注释里写死数字、正文插值:模板注释不参与编译,别在这里放 mustache。
-    -->
-    时间区间支持 {{ MIN_RANGE_MINUTES }} 分钟到 {{ MAX_RANGE_MINUTES }} 分钟（7 天），所有端点超限直接拒绝、不再夹回；
-    实例列表（/api/instances）不取时间窗。
-  </p>
 </template>

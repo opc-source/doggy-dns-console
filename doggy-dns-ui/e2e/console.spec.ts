@@ -136,3 +136,24 @@ test('an absolute bracket is asked for once and never polled', async ({ page }) 
   await page.waitForTimeout(20_000)
   expect(urls).toHaveLength(1)
 })
+
+test('the shared time control keeps its labels on one line', async ({ page }) => {
+  await page.goto('/?windowMinutes=10080')
+
+  // The dashboard header is one nowrap flex row, and a CJK label's min-content
+  // width is one character: while the control shipped five root nodes that row
+  // squeezed "1 小时" into a 36x80 vertical stack and the hint into the middle of
+  // it. Text assertions cannot see that, so this case reads geometry — a
+  // single-line `text-xs` button is ~32px tall, a wrapped one is 80+.
+  for (const testId of ['quick-1h', 'quick-6h', 'quick-24h', 'quick-7d', 'reset-time']) {
+    const box = await page.getByTestId(testId).boundingBox()
+    expect(box, testId).not.toBeNull()
+    expect(box!.height, testId).toBeLessThan(40)
+  }
+
+  // The hint owns a line of its own below the controls, not a column beside them.
+  const presets = await page.getByTestId('quick-1h').boundingBox()
+  const hint = await page.getByTestId('range-hint').boundingBox()
+  expect(hint).not.toBeNull()
+  expect(hint!.y).toBeGreaterThan(presets!.y)
+})

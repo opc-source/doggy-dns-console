@@ -1,4 +1,5 @@
 import { mount, type VueWrapper } from '@vue/test-utils'
+import { defineComponent, h } from 'vue'
 import { describe, expect, it } from 'vitest'
 
 import TimeRangeControl from '@/components/TimeRangeControl.vue'
@@ -157,5 +158,30 @@ describe('TimeRangeControl', () => {
     // re-grow a per-endpoint number.
     expect(hint).not.toContain('1440')
     expect(hint).toContain('/api/instances')
+  })
+
+  it('keeps the whole control inside one root node', () => {
+    // A multi-root component hands every root to the parent's flex row, and a CJK
+    // label's min-content width is one character — so an overflowing nowrap row
+    // shrinks "1 小时" into a vertical stack instead of wrapping. Measured on the
+    // dashboard at 1440x900: a 900px row holding 1646px of content, presets 36x80.
+    // Counted through a host row because a page's row is the thing that breaks;
+    // mounting the component bare lets Test Tools fold the fragment and hides it.
+    const Row = defineComponent({
+      setup() {
+        return () =>
+          h('div', { 'data-testid': 'page-row' }, [
+            h(TimeRangeControl, { modelValue: emptyDraft() }),
+          ])
+      },
+    })
+    const wrapper = mount(Row)
+    const row = wrapper.get('[data-testid="page-row"]').element as HTMLElement
+    expect([...row.children].map((child) => child.getAttribute('data-testid'))).toEqual([
+      'range-controls',
+    ])
+    for (const testId of ['quick-1h', 'range-from', 'range-to', 'reset-time', 'range-hint']) {
+      expect(row.querySelector(`[data-testid="${testId}"]`)).not.toBeNull()
+    }
   })
 })
