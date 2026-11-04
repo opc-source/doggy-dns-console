@@ -43,12 +43,14 @@ interface Stubbed {
   rows?: unknown[]
   unlabeled?: number
   hosts?: string[]
+  marks?: unknown[]
 }
 
 function stubFetch({
   rows = [ONE_GROUP],
   unlabeled = 2,
   hosts = ['dns-node-1'],
+  marks = [],
 }: Stubbed = {}): void {
   vi.stubGlobal(
     'fetch',
@@ -63,7 +65,7 @@ function stubFetch({
         fetches.push(url)
         return json({ unlabeled })
       }
-      if (url.startsWith('/api/analysis/markers')) return json([])
+      if (url.startsWith('/api/analysis/markers')) return json(marks)
       if (url.startsWith('/api/failures?')) {
         fetches.push(url)
         return json(rows)
@@ -140,6 +142,30 @@ afterEach(() => {
 })
 
 describe('FailuresView', () => {
+  it('links a badged row to the attempt that badge describes', async () => {
+    stubFetch({
+      marks: [
+        {
+          id: 'a-1',
+          traceId: '4bf92f3577b34da6',
+          status: 'invalid',
+          verdictCategory: null,
+          confidence: null,
+          attempt: 3,
+          createdAt: 1,
+          finishedAt: 2,
+        },
+      ],
+    })
+    const { router, wrapper } = await mountView('/failures?windowMinutes=10080')
+
+    await wrapper.find('[data-testid="failure-row"]').trigger('click')
+    await flushPromises()
+
+    expect(router.currentRoute.value.query.analysis).toBe('a-1')
+    expect(router.currentRoute.value.query.windowMinutes).toBe('10080')
+  })
+
   it('writes the bracket into the URL when the filter changes', async () => {
     const { router, wrapper } = await mountView('/failures')
 

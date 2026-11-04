@@ -1,14 +1,9 @@
 <script setup lang="ts">
 import type { SessionSummary } from '@/api/types'
+import { sessionTitle } from '@/lib/sessionState'
 
 defineProps<{ sessions: SessionSummary[]; selected: string | null }>()
 defineEmits<{ select: [id: string] }>()
-
-function title(session: SessionSummary) {
-  const user = session.events.find((event) => event.author === 'user')
-  const text = user?.content?.parts?.map((part) => part.text).filter(Boolean).join(' ') ?? ''
-  return text.slice(0, 48) || 'Untitled session'
-}
 
 function when(ts: number) {
   return new Date(ts * 1000).toLocaleString()
@@ -28,9 +23,10 @@ function when(ts: number) {
       :key="session.id"
       class="focus-ring border-b border-border/60 px-4 py-3 text-left transition-colors hover:bg-surface-2"
       :class="selected === session.id ? 'bg-surface-2' : ''"
+      :title="sessionTitle(session)"
       @click="$emit('select', session.id)"
     >
-      <p class="truncate text-xs text-text">{{ title(session) }}</p>
+      <p data-test="session-title" class="truncate text-xs text-text">{{ sessionTitle(session) }}</p>
       <p class="mono mt-1 text-[10px] text-muted">{{ when(session.lastUpdateTime) }}</p>
     </button>
   </div>

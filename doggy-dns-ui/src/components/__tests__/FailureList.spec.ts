@@ -4,7 +4,7 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import FailureList from '../FailureList.vue'
-import type { FailureGroup } from '@/api/types'
+import type { AnalysisMarker, FailureGroup } from '@/api/types'
 import { msToDatetime } from '@/lib/failureFilter'
 
 const LONG_QUERY = 'nacos-a.internal.nsvc.svc.cluster.local.test.'
@@ -40,6 +40,24 @@ const UNLABELED: FailureGroup = {
   durationMs: null,
 }
 
+function markerFor(
+  traceId: string,
+  status: AnalysisMarker['status'],
+  overrides: Partial<AnalysisMarker> = {},
+): AnalysisMarker {
+  return {
+    id: `a-${traceId}`,
+    traceId,
+    status,
+    verdictCategory: status === 'succeeded' ? 'upstream_timeout' : null,
+    confidence: status === 'succeeded' ? 'high' : null,
+    attempt: 2,
+    createdAt: 1_761_433_200_000,
+    finishedAt: status === 'succeeded' ? 1_761_433_260_000 : null,
+    ...overrides,
+  }
+}
+
 function makeRouter() {
   return createRouter({
     history: createMemoryHistory(),
@@ -59,7 +77,7 @@ const wrappers: VueWrapper[] = []
 function mountList(
   props: Partial<{
     groups: FailureGroup[]
-    markers: Set<string>
+    markers: Map<string, AnalysisMarker>
     limit: number
     seeAll: boolean
     dense: boolean
@@ -85,7 +103,7 @@ describe('FailureList', () => {
   it('keeps the dense card row down to code, qtype, query, count and badge', () => {
     const { wrapper } = mountList({
       groups: [{ ...GROUP, qtype: 'MX' }],
-      markers: new Set([GROUP.traceId as string]),
+      markers: new Map([[GROUP.traceId as string, markerFor(GROUP.traceId as string, 'succeeded')]]),
     })
 
     const row = wrapper.find('[data-testid="failure-row"]')
@@ -96,11 +114,58 @@ describe('FailureList', () => {
     expect(row.text()).toContain('…')
     expect(row.text()).not.toContain(LONG_QUERY)
     expect(row.text()).toContain(String(GROUP.count))
-    expect(row.find('[data-testid="analyzed-badge"]').text()).toBe('已有分析')
+    expect(row.find('[data-testid="analyzed-badge"]').text()).toContain('已有分析')
     // The overview card has no room for a host column, and its e2e case is the
     // page's, so the dense row must not claim the test id.
     expect(row.find('[data-testid="row-instance"]').exists()).toBe(false)
     expect(row.text()).not.toContain(GROUP.authority as string)
+  })
+
+  it('names the verdict on a finished analysis', () => {
+    const { wrapper } = mountList({
+      markers: new Map([
+        [
+          GROUP.traceId as string,
+          markerFor(GROUP.traceId as string, 'succeeded', { verdictCategory: 'nacos_stale' }),
+        ],
+      ]),
+    })
+
+    expect(wrapper.get('[data-testid="analyzed-badge"]').text()).toBe('已有分析 · nacos_stale')
+  })
+
+  it.each([
+    ['queued', '分析中'],
+    ['running', '分析中'],
+    ['failed', '已有分析 · 失败'],
+    ['invalid', '已有分析 · 结果非法'],
+  ] as const)('labels a %s attempt as %s', (status, expected) => {
+    const { wrapper } = mountList({
+      markers: new Map([[GROUP.traceId as string, markerFor(GROUP.traceId as string, status)]]),
+    })
+
+    expect(wrapper.get('[data-testid="analyzed-badge"]').text()).toBe(expected)
+  })
+
+  it('names the attempt the badge points at', () => {
+    const { wrapper } = mountList({
+      markers: new Map([
+        [
+          GROUP.traceId as string,
+          markerFor(GROUP.traceId as string, 'invalid', { id: 'analysis-77', attempt: 4 }),
+        ],
+      ]),
+    })
+
+    const tooltip = wrapper.get('[data-testid="analyzed-badge"]').attributes('title') ?? ''
+    expect(tooltip).toContain('analysis-77')
+    expect(tooltip).toContain('第 4 次')
+  })
+
+  it('shows no badge for a trace the marker answer left out', () => {
+    const { wrapper } = mountList({ markers: new Map([['other', markerFor('other', 'succeeded')]]) })
+
+    expect(wrapper.find('[data-testid="analyzed-badge"]').exists()).toBe(false)
   })
 
   it('adds the host, authority and timestamps in full mode', () => {
@@ -205,8 +270,17 @@ describe('FailureList', () => {
     ).toHaveLength(8)
   })
 
+  it('shows a header label only when a caller names the window', () => {
+    // `last window` was a stub from the first UI commit: it names no window, and
+    // the overview page already states its bracket in the picker and the KPI hint.
+    expect(mountList().wrapper.find('[data-test="list-subtitle"]').exists()).toBe(false)
+
+    const { wrapper } = mountList({ subtitle: '近 7 天' })
+    expect(wrapper.get('[data-test="list-subtitle"]').text()).toBe('近 7 天')
+  })
+
   it('links to the whole list only when the card is not the list', () => {
-    const card = mountList({ title: 'Top failures', subtitle: 'last window' })
+    const card = mountList({ title: 'Top failures' })
     expect(card.wrapper.find('[data-testid="see-all"]').exists()).toBe(false)
 
     const { wrapper, router } = mountList({ seeAll: true })

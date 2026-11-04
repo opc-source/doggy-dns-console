@@ -440,6 +440,21 @@ describe('useInvestigation', () => {
     expect(item.stale.value).toBe(false)
   })
 
+  it('maps_a_503_lookup_to_analysis_unavailable', async () => {
+    const { item } = setup()
+    getMock().mockResolvedValueOnce(bundle())
+    await item.loadEvidence()
+
+    // Opening a trace on a console without an analysis service must land on the
+    // same degraded state as starting one, not on a bare 证据就绪.
+    getMock().mockRejectedValueOnce(new ApiError(503, 'not_configured', 'analysis is disabled'))
+    const restored = await item.loadAnalysis()
+
+    expect(restored).toBe(false)
+    expect(item.state.value).toBe('analysisUnavailable')
+    expect(item.error.value).toBe('analysis is disabled')
+  })
+
   it('restores_a_queued_attempt_and_resumes_polling', async () => {
     const { item } = setup()
     getMock().mockResolvedValueOnce(runningSnapshot()).mockResolvedValueOnce(snapshot())
