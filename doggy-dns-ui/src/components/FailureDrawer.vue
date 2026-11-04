@@ -6,7 +6,7 @@ import type { InvestigationFilter, MissingEvidence } from '@/api/types'
 import { useMediaQuery } from '@/composables/useMediaQuery'
 import { useInvestigation } from '@/composables/useInvestigation'
 import { msToDatetime } from '@/lib/failureFilter'
-import { useChatStore } from '@/stores/chat'
+import { useChatStore, type SessionLabel } from '@/stores/chat'
 import { useUiStore } from '@/stores/ui'
 
 const props = defineProps<{
@@ -160,6 +160,20 @@ const handoffPrompt = computed(() => {
   return lines.join('\n')
 })
 
+const handoffLabel = computed<SessionLabel>(() => {
+  const verdict = result.value?.verdict.category
+  const snapshotId = analysis.value?.analysisId
+  return {
+    title: `追问 ${group.value?.query ?? props.traceId}${verdict ? ` · ${verdict}` : ''}`,
+    traceId: props.traceId,
+    ...(snapshotId ? { analysisId: snapshotId } : {}),
+    // The jump back has to land on the bracket this session was asked about,
+    // not on whatever the list happens to be showing when it is clicked.
+    from: props.filter.from,
+    to: props.filter.to,
+  }
+})
+
 function onKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
     emit('close')
@@ -243,6 +257,7 @@ async function copyTrace() {
 }
 
 function handoff() {
+  const label = handoffLabel.value
   ui.rememberHandoff({
     traceId: props.traceId,
     verdict: result.value?.verdict.category ?? '未定结论',
@@ -254,7 +269,7 @@ function handoff() {
   emit('close')
   // A run can take a minute and can fail; the panel shows the outcome, the
   // drawer must not stay open holding the user hostage to it.
-  void chat.send(handoffPrompt.value)
+  void chat.send(handoffPrompt.value, label)
 }
 
 function when(ts: number | null | undefined) {

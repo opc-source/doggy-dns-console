@@ -257,6 +257,49 @@ describe('chat store', () => {
     )
   })
 
+  it('creates the session with the labels it was handed', async () => {
+    const bodies: unknown[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (path: string, init?: { body?: string }) => {
+        if (path.endsWith('/sessions')) {
+          bodies.push(JSON.parse(init?.body ?? '{}'))
+          return jsonFetch({ id: 's1' })
+        }
+        return streamingResponse([sse({ type: 'RUN_FINISHED' })])
+      }),
+    )
+    const chat = useChatStore()
+
+    await chat.send('查一下', { title: '追问 a.example. · upstream_timeout', traceId: 't1' })
+    await chat.send('再查一次')
+
+    // The label belongs to the session, so it is written once, at creation.
+    expect(bodies).toEqual([
+      { state: { title: '追问 a.example. · upstream_timeout', traceId: 't1' } },
+    ])
+  })
+
+  it('titles a plain chat after the question that opened it', async () => {
+    let created: unknown
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (path: string, init?: { body?: string }) => {
+        if (path.endsWith('/sessions')) {
+          created = JSON.parse(init?.body ?? '{}')
+          return jsonFetch({ id: 's1' })
+        }
+        return streamingResponse([sse({ type: 'RUN_FINISHED' })])
+      }),
+    )
+    const chat = useChatStore()
+
+    const question = `这周的 ${'x'.repeat(60)} 成功率为什么掉了`
+    await chat.send(question)
+
+    expect(created).toEqual({ state: { title: question.slice(0, 48) } })
+  })
+
   it('replays a stored session into ordered segments instead of flattened text', async () => {
     const events: SessionEvent[] = [
       { author: 'user', content: { role: 'user', parts: [{ text: '整体健康度如何' }] }, id: 'e0' },

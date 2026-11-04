@@ -12,7 +12,9 @@ export const routes = [
     component: () => import('@/views/InstancesView.vue'),
   },
   {
-    path: '/sessions',
+    // The selected session belongs in the address: Refresh and Back have to come
+    // back to the same transcript, and a handoff is worth being able to share.
+    path: '/sessions/:sessionId?',
     name: 'sessions',
     component: () => import('@/views/SessionsView.vue'),
   },

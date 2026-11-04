@@ -742,6 +742,16 @@ describe('FailureDrawer investigation panel', () => {
     expect(message).toContain('upstream_timeout')
     expect(message).toContain('上游转发超时导致 SERVFAIL')
     expect(message).toContain('an-1')
+    // The session itself carries the label and the way back: the sessions list
+    // never receives events, so only state can say what a session is about, and
+    // the jump needs the bracket the analysis was actually run on.
+    expect(send.mock.calls[0]?.[1]).toEqual({
+      title: '追问 a.example. · upstream_timeout',
+      traceId: 't1',
+      analysisId: 'an-1',
+      from: 1_761_433_200_000,
+      to: 1_761_436_800_000,
+    })
   })
 
   it('still hands over when the analysis has no conclusion yet', async () => {
@@ -765,6 +775,14 @@ describe('FailureDrawer investigation panel', () => {
     expect(send).toHaveBeenCalledTimes(1)
     expect(wrapper.emitted('close')).toBeTruthy()
     expect(ui.handoff?.verdict).toBe('未定结论')
+    // The jump target does not depend on having a conclusion: every handoff
+    // started from a failure row, so its trace and bracket always name the way back.
+    expect(send.mock.calls[0]?.[1]).toEqual({
+      title: '追问 a.example.',
+      traceId: 't1',
+      from: 1_761_433_200_000,
+      to: 1_761_436_800_000,
+    })
   })
 
   it('opens the panel as an overlay when there is no room to dock', async () => {

@@ -14,6 +14,18 @@ import {
 
 export type { ChatMessage, Segment } from '@/lib/chatModel'
 
+/** What a session is about, written into its state when it is created. */
+export type SessionLabel = {
+  title?: string
+  traceId?: string
+  analysisId?: string
+  from?: number
+  to?: number
+}
+
+/** The 300px session column truncates long text, so a derived title is capped. */
+const TITLE_LENGTH = 48
+
 function userMessage(content: string): ChatMessage {
   const segment: TextSegment = { kind: 'text', messageId: '', text: content }
   return { role: 'user', segments: [segment] }
@@ -28,21 +40,24 @@ export const useChatStore = defineStore('chat', () => {
   const stream = useAgUiStream()
   const running = computed(() => stream.running.value)
 
-  async function ensureSession(): Promise<string> {
+  async function ensureSession(label: SessionLabel): Promise<string> {
     if (sessionId.value) return sessionId.value
+    // The state is written once, here: the list endpoint never replays events,
+    // so a session can only be recognised by what it was created with.
     const created = await apiPost<{ id: string }>(
       `/api/apps/${appName}/users/${userId}/sessions`,
-      {},
+      { state: label },
     )
     sessionId.value = created.id
     return created.id
   }
 
-  async function send(content: string): Promise<boolean> {
+  async function send(content: string, label?: SessionLabel): Promise<boolean> {
     error.value = null
     let id: string
     try {
-      id = await ensureSession()
+      // A handoff names itself; a chat that grew out of a question is titled after it.
+      id = await ensureSession({ title: content.slice(0, TITLE_LENGTH), ...label })
     } catch (cause) {
       error.value = cause instanceof Error ? cause.message : String(cause)
       return false
@@ -102,6 +117,5 @@ export const useChatStore = defineStore('chat', () => {
     stop,
     load,
     reset,
-    ensureSession,
   }
 })
