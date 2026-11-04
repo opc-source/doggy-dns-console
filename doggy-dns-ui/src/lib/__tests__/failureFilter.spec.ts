@@ -8,6 +8,7 @@ import {
   isAbsolute,
   msToDatetime,
   parseFilterQuery,
+  pickRangeQuery,
   rangeLabel,
   relativeDraft,
   resolveBracket,
@@ -215,6 +216,33 @@ describe('query round-trip', () => {
 
   it('drops a lone absolute end instead of freezing a relative window on it', () => {
     expect(toRequestQuery({ ...emptyDraft(), toMs: NOW })).toEqual({})
+  })
+})
+
+describe('pickRangeQuery', () => {
+  it('copies the time keys, first value of a repeated one, nothing else', () => {
+    expect(
+      pickRangeQuery({
+        from: '100',
+        to: '200',
+        windowMinutes: ['360', '60'],
+        instance: 'dns-node-2',
+      }),
+    ).toEqual({ from: '100', to: '200', windowMinutes: '360' })
+  })
+
+  it('copies the text it is given instead of re-deriving a bracket', () => {
+    // A lone bound has to survive the copy: `validateDraft` is what refuses it on
+    // the page the link lands on, and re-deriving a draft here would hand that page
+    // an empty query answering for the default hour instead.
+    expect(pickRangeQuery({ from: '100' })).toEqual({ from: '100' })
+    // The copy is verbatim, so text the parser cannot read travels unchanged and
+    // the destination degrades it exactly the way it degrades it today.
+    expect(pickRangeQuery({ from: 'abc', windowMinutes: '-5' })).toEqual({
+      from: 'abc',
+      windowMinutes: '-5',
+    })
+    expect(pickRangeQuery({ domain: 'nacos.local' })).toEqual({})
   })
 })
 

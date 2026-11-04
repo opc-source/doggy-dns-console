@@ -93,6 +93,23 @@ export function parseFilterQuery(query: RawQuery): FilterDraft {
 }
 
 /**
+ * The time keys copied out of a URL, untouched. Cross-page links carry the
+ * bracket and nothing else: `domain`/`responseCode`/`instance` have no control
+ * on the dashboard, so passing them on would hide a filter the operator cannot
+ * see or clear. Nothing is re-derived from a draft either — a lone numeric bound
+ * has to survive the copy, because `validateDraft` is what refuses it on the page
+ * the link lands on, and an empty draft there would answer for the default hour.
+ */
+export function pickRangeQuery(query: RawQuery): Record<string, string> {
+  const range: Record<string, string> = {}
+  for (const key of ['from', 'to', 'windowMinutes'] as const) {
+    const value = firstSingle(query[key])
+    if (value !== null) range[key] = value
+  }
+  return range
+}
+
+/**
  * The URL is the only state source, so the shape it writes matters: relative
  * drafts travel as `windowMinutes` (the server owns "now"), absolute drafts as
  * `from`/`to`. Mixing both would make the URL drift on every refresh.
