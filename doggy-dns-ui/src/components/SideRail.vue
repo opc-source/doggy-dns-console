@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { LayoutDashboard, Server, History, PawPrint } from '@lucide/vue'
+import { LayoutDashboard, Server, History, PawPrint, TriangleAlert } from '@lucide/vue'
 import { RouterLink } from 'vue-router'
 
 const links = [
   { to: '/', label: 'Overview', icon: LayoutDashboard },
   { to: '/instances', label: 'Instances', icon: Server },
   { to: '/sessions', label: 'Sessions', icon: History },
+  { to: '/failures', label: '失败列表', icon: TriangleAlert },
 ]
 </script>
 

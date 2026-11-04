@@ -7,8 +7,8 @@ use doggy_dns_console::datasource::fixture::FixtureSource;
 use doggy_dns_console::datasource::{Clock, FixedClock, InstanceSource, TelemetrySource};
 use doggy_dns_console::domain::{
     FailureDetail, FailureFilter, FailureGroup, Instance, InstanceDetail, InstanceIdentity,
-    LogRecord, MatchQuality, MatchedInstance, MetricCounts, Overview, PluginInfo, SeenInstance,
-    SpanRecord, Window, WindowMetrics,
+    LogRecord, MatchQuality, MatchedInstance, MetricCounts, Overview, PluginInfo, Range,
+    SeenInstance, SpanRecord, Window, WindowMetrics,
 };
 use doggy_dns_console::error::DataError;
 use doggy_dns_console::evidence::assemble::assemble;
@@ -491,7 +491,7 @@ fn instance_detail() -> InstanceDetail {
         config_toml: Some("[server]\nlisten_addr = \"127.0.0.1\"\n".to_string()),
         redacted_keys: vec!["observability.basic_auth.password".to_string()],
         runtime: Some(json!({ "signals": { "xdp": { "attached": true } } })),
-        recent_failures: 0,
+        failure_count: None,
     }
 }
 
@@ -605,9 +605,9 @@ fn bundle() -> EvidenceBundle {
     EvidenceBundle {
         trace_id: TRACE_ID.to_string(),
         filter: EvidenceFilter {
-            window_minutes: 60,
             domain: None,
             response_code: None,
+            instance: None,
         },
         generated_at: GENERATED_AT,
         fingerprint: String::new(),
@@ -674,9 +674,10 @@ fn evidence_bundle_serializes_camel_case_and_snake_case_missing() {
     ] {
         assert!(value.get(key).is_some(), "missing top-level key {key}");
     }
-    assert_eq!(value["filter"]["windowMinutes"], 60);
     assert!(value["filter"]["domain"].is_null());
     assert!(value["filter"]["responseCode"].is_null());
+    assert!(value["filter"]["instance"].is_null());
+    assert!(value["filter"].get("windowMinutes").is_none());
     assert_eq!(value["instance"]["matchQuality"], "exact");
     assert_eq!(
         value["instance"]["identity"]["serviceInstanceId"],
@@ -832,7 +833,10 @@ fn fingerprint_ignores_instance_fields_sampled_at_call_time() {
 #[test]
 fn fingerprint_changes_with_trace_id_and_filter() {
     assert_fingerprint_changes(|bundle| bundle.trace_id = "trace-2".to_string(), "traceId");
-    assert_fingerprint_changes(|bundle| bundle.filter.window_minutes = 30, "windowMinutes");
+    assert_fingerprint_changes(
+        |bundle| bundle.filter.instance = Some("dns-node-2".to_owned()),
+        "instance",
+    );
     assert_fingerprint_changes(
         |bundle| bundle.filter.domain = Some("example.com".to_string()),
         "filter domain",
@@ -1297,7 +1301,7 @@ impl FakeTelemetry {
 
 #[async_trait]
 impl TelemetrySource for FakeTelemetry {
-    async fn overview(&self, _window: Window) -> Result<Overview, DataError> {
+    async fn overview(&self, _range: Range) -> Result<Overview, DataError> {
         Err(DataError::NotConfigured("overview".to_string()))
     }
 
@@ -1413,10 +1417,27 @@ impl InstanceSource for FakeInstances {
 
 fn assemble_filter() -> FailureFilter {
     FailureFilter {
-        window: Window::new(60),
+        // Exactly 60 minutes, anchored on the fixture clock
+        // (`FixedClock(1_761_436_800_000)`): the fixture rows (which hang off
+        // that same clock) stay inside the bracket for Task 7's real
+        // filtering.
+        range: Range::new(1_761_436_800_000 - 60 * 60_000, 1_761_436_800_000),
+        instance: None,
         domain: None,
         response_code: None,
         limit: 10,
+    }
+}
+
+/// A bracket of `minutes` ending at `GENERATED_AT` (`1_793_443_200_000`), the
+/// clock the D11 assemble tests pass to [`run_assemble`], with every other
+/// field from [`assemble_filter`]. This is deliberately *not* the fixture clock
+/// (`FixedClock(1_761_436_800_000)`) that [`assemble_filter`]'s own range above
+/// is anchored on.
+fn bracket(minutes: i64) -> FailureFilter {
+    FailureFilter {
+        range: Range::new(GENERATED_AT - minutes * 60_000, GENERATED_AT),
+        ..assemble_filter()
     }
 }
 
@@ -1495,9 +1516,11 @@ fn matched_instance_for(
 async fn run_assemble(
     telemetry: &FakeTelemetry,
     instances: &FakeInstances,
+    trace_id: &str,
+    filter: &FailureFilter,
     clock: &dyn Clock,
 ) -> Result<EvidenceBundle, DataError> {
-    assemble(telemetry, instances, TRACE_ID, &assemble_filter(), clock).await
+    assemble(telemetry, instances, trace_id, filter, clock).await
 }
 
 #[tokio::test]
@@ -1549,9 +1572,15 @@ async fn assemble_builds_the_full_bundle_for_an_exact_match() {
         calls.clone(),
     );
 
-    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
-        .await
-        .unwrap();
+    let bundle = run_assemble(
+        &telemetry,
+        &instances,
+        TRACE_ID,
+        &assemble_filter(),
+        &FixedClock(GENERATED_AT),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(bundle.trace_id, TRACE_ID);
     assert_eq!(bundle.group.trace_id.as_deref(), Some(TRACE_ID));
@@ -1559,9 +1588,9 @@ async fn assemble_builds_the_full_bundle_for_an_exact_match() {
     assert_eq!(
         bundle.filter,
         EvidenceFilter {
-            window_minutes: 60,
             domain: None,
             response_code: None,
+            instance: None,
         }
     );
 
@@ -1726,9 +1755,15 @@ async fn assemble_extracts_identity_from_normalized_telemetry_aliases() {
         calls.clone(),
     );
 
-    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
-        .await
-        .unwrap();
+    let bundle = run_assemble(
+        &telemetry,
+        &instances,
+        TRACE_ID,
+        &assemble_filter(),
+        &FixedClock(GENERATED_AT),
+    )
+    .await
+    .unwrap();
 
     let identity = &bundle.instance.as_ref().unwrap().identity;
     assert_eq!(identity.service_instance_id.as_deref(), Some("node-b-9"));
@@ -1762,9 +1797,15 @@ async fn assemble_matches_host_and_ip_when_service_instance_id_is_absent() {
         calls.clone(),
     );
 
-    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
-        .await
-        .unwrap();
+    let bundle = run_assemble(
+        &telemetry,
+        &instances,
+        TRACE_ID,
+        &assemble_filter(),
+        &FixedClock(GENERATED_AT),
+    )
+    .await
+    .unwrap();
 
     let instance = bundle.instance.as_ref().unwrap();
     assert_eq!(instance.match_quality, MatchQuality::HostIp);
@@ -1797,9 +1838,15 @@ async fn assemble_falls_back_to_the_group_instance_for_host() {
         calls.clone(),
     );
 
-    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
-        .await
-        .unwrap();
+    let bundle = run_assemble(
+        &telemetry,
+        &instances,
+        TRACE_ID,
+        &assemble_filter(),
+        &FixedClock(GENERATED_AT),
+    )
+    .await
+    .unwrap();
 
     let instance = bundle.instance.as_ref().unwrap();
     assert_eq!(instance.identity.service_instance_id, None);
@@ -1826,9 +1873,15 @@ async fn assemble_reports_instance_not_found_without_identity() {
     );
     let instances = FakeInstances::new(ResolveMode::None, calls.clone());
 
-    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
-        .await
-        .unwrap();
+    let bundle = run_assemble(
+        &telemetry,
+        &instances,
+        TRACE_ID,
+        &assemble_filter(),
+        &FixedClock(GENERATED_AT),
+    )
+    .await
+    .unwrap();
 
     assert!(bundle.instance.is_none());
     assert!(bundle.missing.contains(&MissingEvidence::InstanceNotFound));
@@ -1867,9 +1920,15 @@ async fn assemble_preserves_telemetry_identity_when_resolution_fails() {
     let telemetry = FakeTelemetry::new(detail, false, Some(window_metrics()), calls.clone());
     let instances = FakeInstances::new(ResolveMode::Unavailable, calls.clone());
 
-    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
-        .await
-        .unwrap();
+    let bundle = run_assemble(
+        &telemetry,
+        &instances,
+        TRACE_ID,
+        &assemble_filter(),
+        &FixedClock(GENERATED_AT),
+    )
+    .await
+    .unwrap();
 
     let instance = bundle
         .instance
@@ -1930,9 +1989,15 @@ async fn assemble_does_not_fabricate_config_for_an_unreachable_match() {
         calls.clone(),
     );
 
-    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
-        .await
-        .unwrap();
+    let bundle = run_assemble(
+        &telemetry,
+        &instances,
+        TRACE_ID,
+        &assemble_filter(),
+        &FixedClock(GENERATED_AT),
+    )
+    .await
+    .unwrap();
 
     let instance = bundle.instance.as_ref().unwrap();
     assert_eq!(instance.match_quality, MatchQuality::Host);
@@ -1979,9 +2044,15 @@ async fn assemble_marks_unavailable_spans_without_claiming_absence() {
         calls.clone(),
     );
 
-    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
-        .await
-        .unwrap();
+    let bundle = run_assemble(
+        &telemetry,
+        &instances,
+        TRACE_ID,
+        &assemble_filter(),
+        &FixedClock(GENERATED_AT),
+    )
+    .await
+    .unwrap();
 
     assert!(bundle.spans.items.is_empty());
     assert_eq!(bundle.spans.total, 0);
@@ -2017,9 +2088,15 @@ async fn assemble_caps_spans_at_two_hundred_and_reports_truncation() {
         calls.clone(),
     );
 
-    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
-        .await
-        .unwrap();
+    let bundle = run_assemble(
+        &telemetry,
+        &instances,
+        TRACE_ID,
+        &assemble_filter(),
+        &FixedClock(GENERATED_AT),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(bundle.spans.total, 205);
     assert_eq!(bundle.spans.items.len(), 200);
@@ -2054,9 +2131,15 @@ async fn assemble_marks_unavailable_metrics_without_fabricating_zeroes() {
         calls.clone(),
     );
 
-    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
-        .await
-        .unwrap();
+    let bundle = run_assemble(
+        &telemetry,
+        &instances,
+        TRACE_ID,
+        &assemble_filter(),
+        &FixedClock(GENERATED_AT),
+    )
+    .await
+    .unwrap();
 
     assert!(bundle.metrics.is_none());
     assert!(
@@ -2096,9 +2179,15 @@ async fn assemble_reports_log_truncation_and_keeps_failure_rows() {
         calls.clone(),
     );
 
-    let bundle = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
-        .await
-        .unwrap();
+    let bundle = run_assemble(
+        &telemetry,
+        &instances,
+        TRACE_ID,
+        &assemble_filter(),
+        &FixedClock(GENERATED_AT),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(bundle.logs.total, 250);
     assert_eq!(bundle.logs.items.len(), MAX_LOGS);
@@ -2152,9 +2241,15 @@ async fn assemble_uses_the_lower_median_trace_time_for_the_metric_window() {
         calls.clone(),
     );
 
-    run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
-        .await
-        .unwrap();
+    run_assemble(
+        &telemetry,
+        &instances,
+        TRACE_ID,
+        &assemble_filter(),
+        &FixedClock(GENERATED_AT),
+    )
+    .await
+    .unwrap();
 
     let center = 1_000_050_i64;
     assert_eq!(
@@ -2183,9 +2278,15 @@ async fn assemble_falls_back_to_group_last_seen_then_generated_at_for_the_metric
         calls.clone(),
     );
 
-    run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
-        .await
-        .unwrap();
+    run_assemble(
+        &telemetry,
+        &instances,
+        TRACE_ID,
+        &assemble_filter(),
+        &FixedClock(GENERATED_AT),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         calls.metric_args().last().unwrap(),
         &(
@@ -2209,9 +2310,15 @@ async fn assemble_falls_back_to_group_last_seen_then_generated_at_for_the_metric
         calls.clone(),
     );
 
-    run_assemble(&telemetry, &instances, &FixedClock(3_000_000))
-        .await
-        .unwrap();
+    run_assemble(
+        &telemetry,
+        &instances,
+        TRACE_ID,
+        &assemble_filter(),
+        &FixedClock(3_000_000),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         calls.metric_args().last().unwrap(),
         &(
@@ -2248,12 +2355,24 @@ async fn assemble_fingerprint_is_stable_across_reads() {
     )
     .with_moving_samples();
 
-    let first = run_assemble(&telemetry, &instances, &FixedClock(1_000))
-        .await
-        .unwrap();
-    let second = run_assemble(&telemetry, &instances, &FixedClock(9_999))
-        .await
-        .unwrap();
+    let first = run_assemble(
+        &telemetry,
+        &instances,
+        TRACE_ID,
+        &assemble_filter(),
+        &FixedClock(1_000),
+    )
+    .await
+    .unwrap();
+    let second = run_assemble(
+        &telemetry,
+        &instances,
+        TRACE_ID,
+        &assemble_filter(),
+        &FixedClock(9_999),
+    )
+    .await
+    .unwrap();
 
     assert_ne!(first.generated_at, second.generated_at);
     let uptime = |bundle: &EvidenceBundle| bundle.instance.as_ref().unwrap().uptime_seconds;
@@ -2277,9 +2396,15 @@ async fn assemble_propagates_not_found_without_resolving_or_querying_metrics() {
     );
     let instances = FakeInstances::new(ResolveMode::None, calls.clone());
 
-    let error = run_assemble(&telemetry, &instances, &FixedClock(GENERATED_AT))
-        .await
-        .unwrap_err();
+    let error = run_assemble(
+        &telemetry,
+        &instances,
+        TRACE_ID,
+        &assemble_filter(),
+        &FixedClock(GENERATED_AT),
+    )
+    .await
+    .unwrap_err();
 
     assert!(matches!(error, DataError::NotFound(_)));
     assert_eq!(calls.count(&calls.detail), 1);
@@ -2293,6 +2418,7 @@ async fn console_service_evidence_delegates_to_assembly_with_fixture_sources() {
     let service = ConsoleService::new(
         fixture.clone() as Arc<dyn TelemetrySource>,
         fixture as Arc<dyn InstanceSource>,
+        Arc::new(FixedClock(1_761_436_800_000)),
     );
 
     let bundle = service
@@ -2305,9 +2431,9 @@ async fn console_service_evidence_delegates_to_assembly_with_fixture_sources() {
     assert_eq!(
         bundle.filter,
         EvidenceFilter {
-            window_minutes: 60,
             domain: None,
             response_code: None,
+            instance: None,
         }
     );
     assert!(!bundle.logs.items.is_empty());
@@ -2323,4 +2449,208 @@ async fn console_service_evidence_delegates_to_assembly_with_fixture_sources() {
     assert!(instance.config.is_some());
     assert!(bundle.metrics.is_some());
     assert!(bundle.fingerprint.starts_with("sha256:"));
+}
+
+// ---------------------------------------------------------------- D11: the
+// fingerprint is a property of the evidence, not of the requested bracket.
+
+#[tokio::test]
+async fn assemble_produces_the_same_fingerprint_for_a_one_hour_and_a_week_bracket() {
+    // The D11 core pin. Logs and spans are matched by trace id and the metric
+    // window is centred on the trace itself, so widening the requested bracket
+    // changes no evidence — and must not invalidate the cached analysis.
+    let calls = Calls::new();
+    // Real evidence rows: the supporting assertions below only prove
+    // evidence-equivalence if the bundles actually carry evidence.
+    let detail = fake_detail(
+        Some("dns-node-1"),
+        vec![
+            log_record(
+                LOG_TS,
+                "ERROR",
+                "upstream timeout",
+                Some("span-1"),
+                json!({
+                    "query": "a.example.",
+                    "qtype": "A",
+                    "response_code": "SERVFAIL",
+                    "error": "timeout"
+                }),
+            ),
+            log_record(
+                LOG_TS + 1_000,
+                "INFO",
+                "retry",
+                Some("span-2"),
+                json!({
+                    "query_name": "a.example.",
+                    "query_type": "A"
+                }),
+            ),
+        ],
+        vec![
+            span_record("span-1", "dns.query", 12.5),
+            span_record("span-2", "forward.lookup", 8.0),
+        ],
+    );
+    let telemetry = FakeTelemetry::new(detail, false, Some(window_metrics()), calls.clone());
+    let instances = FakeInstances::new(
+        resolve_match(matched_instance_for(
+            "dns-node-1",
+            "dns-node-1",
+            MatchQuality::Exact,
+            true,
+        )),
+        calls.clone(),
+    );
+
+    let one_hour = run_assemble(
+        &telemetry,
+        &instances,
+        TRACE_ID,
+        &bracket(60),
+        &FixedClock(GENERATED_AT),
+    )
+    .await
+    .unwrap();
+    let one_week = run_assemble(
+        &telemetry,
+        &instances,
+        TRACE_ID,
+        &bracket(7 * 1440),
+        &FixedClock(GENERATED_AT),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(one_hour.fingerprint, one_week.fingerprint);
+    assert_eq!(one_hour.logs.items, one_week.logs.items);
+    assert_eq!(one_hour.metrics, one_week.metrics);
+
+    // The two supporting assertions above are only evidence-equivalence if the
+    // evidence is there to compare.
+    assert_eq!(
+        one_hour.logs.items.len(),
+        2,
+        "the pin must compare real log rows, not two empty vectors"
+    );
+    assert!(one_hour.metrics.is_some(), "the metric evidence is missing");
+}
+
+#[tokio::test]
+async fn evidence_filter_no_longer_echoes_the_requested_span() {
+    let calls = Calls::new();
+    let telemetry = FakeTelemetry::new(
+        fake_detail(Some("dns-node-1"), vec![], vec![]),
+        false,
+        Some(window_metrics()),
+        calls.clone(),
+    );
+    let instances = FakeInstances::new(
+        resolve_match(matched_instance_for(
+            "dns-node-1",
+            "dns-node-1",
+            MatchQuality::Exact,
+            true,
+        )),
+        calls.clone(),
+    );
+
+    let bundle = run_assemble(
+        &telemetry,
+        &instances,
+        TRACE_ID,
+        &bracket(7 * 1440),
+        &FixedClock(GENERATED_AT),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(bundle.filter.domain, None);
+    assert_eq!(bundle.filter.response_code, None);
+    assert_eq!(bundle.filter.instance, None);
+}
+
+#[tokio::test]
+async fn evidence_filter_still_echoes_domain_response_code_and_instance() {
+    let calls = Calls::new();
+    let telemetry = FakeTelemetry::new(
+        fake_detail(Some("dns-node-1"), vec![], vec![]),
+        false,
+        Some(window_metrics()),
+        calls.clone(),
+    );
+    let instances = FakeInstances::new(
+        resolve_match(matched_instance_for(
+            "dns-node-1",
+            "dns-node-1",
+            MatchQuality::Exact,
+            true,
+        )),
+        calls.clone(),
+    );
+
+    let filter = FailureFilter {
+        domain: Some("api.internal".to_owned()),
+        response_code: Some("REFUSED".to_owned()),
+        instance: Some("dns-node-2".to_owned()),
+        ..bracket(60)
+    };
+
+    let bundle = run_assemble(
+        &telemetry,
+        &instances,
+        TRACE_ID,
+        &filter,
+        &FixedClock(GENERATED_AT),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(bundle.filter.domain.as_deref(), Some("api.internal"));
+    assert_eq!(bundle.filter.response_code.as_deref(), Some("REFUSED"));
+    assert_eq!(bundle.filter.instance.as_deref(), Some("dns-node-2"));
+}
+
+#[tokio::test]
+async fn changing_the_instance_filter_changes_the_fingerprint() {
+    // The three echoed fields are the only filter inputs the analyst sees, so
+    // each must still be able to mark a cached analysis stale.
+    let instance_changed = |instance: Option<String>| {
+        let calls = Calls::new();
+        let telemetry = FakeTelemetry::new(
+            fake_detail(Some("dns-node-1"), vec![], vec![]),
+            false,
+            Some(window_metrics()),
+            calls.clone(),
+        );
+        let instances = FakeInstances::new(
+            resolve_match(matched_instance_for(
+                "dns-node-1",
+                "dns-node-1",
+                MatchQuality::Exact,
+                true,
+            )),
+            calls,
+        );
+        let mut filter = assemble_filter();
+        filter.instance = instance;
+        async move {
+            run_assemble(
+                &telemetry,
+                &instances,
+                TRACE_ID,
+                &filter,
+                &FixedClock(GENERATED_AT),
+            )
+            .await
+            .unwrap()
+            .fingerprint
+        }
+    };
+
+    assert_ne!(
+        instance_changed(None).await,
+        instance_changed(Some("dns-node-2".to_owned())).await
+    );
 }

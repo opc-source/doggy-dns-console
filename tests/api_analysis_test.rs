@@ -22,7 +22,7 @@ use doggy_dns_console::api::state::{ApiState, Probe};
 use doggy_dns_console::config::AnalysisConfig;
 use doggy_dns_console::datasource::fixture::FixtureSource;
 use doggy_dns_console::datasource::{FixedClock, InstanceSource, TelemetrySource};
-use doggy_dns_console::domain::{FailureFilter, Window};
+use doggy_dns_console::domain::{FailureFilter, Range};
 use doggy_dns_console::error::DataError;
 use doggy_dns_console::evidence::assemble::assemble;
 use doggy_dns_console::evidence::model::EvidenceBundle;
@@ -54,9 +54,10 @@ async fn rate_limited_error_maps_to_429() {
 // --------------------------------------------------------------- harness
 
 fn filter() -> FailureFilter {
-    // The same defaults `filter_from(..., 1)` produces for the analysis routes.
+    // The same defaults `investigation_filter(..., 1)` produces for the analysis routes.
     FailureFilter {
-        window: Window::new(60),
+        range: Range::new(NOW_MS - 60 * 60_000, NOW_MS),
+        instance: None,
         domain: None,
         response_code: None,
         limit: 1,
@@ -125,7 +126,11 @@ fn build_app(analysis: Option<Arc<AnalysisService>>) -> Router {
     let fixture = Arc::new(FixtureSource::new(Arc::new(FixedClock(NOW_MS))));
     let instances: Arc<dyn InstanceSource> = fixture.clone();
     let telemetry: Arc<dyn TelemetrySource> = fixture;
-    let service = Arc::new(ConsoleService::new(telemetry, instances.clone()));
+    let service = Arc::new(ConsoleService::new(
+        telemetry,
+        instances.clone(),
+        Arc::new(FixedClock(NOW_MS)),
+    ));
     doggy_dns_console::api::business_router(ApiState {
         service,
         instances,
@@ -263,7 +268,10 @@ async fn post_starts_a_job_and_get_reports_the_snapshot() {
     );
     assert_eq!(finished_at % 1000, 0, "seconds leaked onto the wire");
     assert!(finished_at >= started_at);
-    assert_eq!(snapshot["filter"]["windowMinutes"], 60);
+    assert_eq!(snapshot["filter"]["domain"], serde_json::Value::Null);
+    assert_eq!(snapshot["filter"]["responseCode"], serde_json::Value::Null);
+    assert_eq!(snapshot["filter"]["instance"], serde_json::Value::Null);
+    assert!(snapshot["filter"].get("windowMinutes").is_none());
     assert_eq!(snapshot["error"], serde_json::Value::Null);
     assert_eq!(snapshot["result"]["status"], "ok");
     assert!(

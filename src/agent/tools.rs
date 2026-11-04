@@ -6,22 +6,39 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::domain::{FailureFilter, Window};
+use crate::domain::{FailureFilter, Range, host_filter};
 use crate::error::DataError;
 use crate::service::ConsoleService;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct OverviewArgs {
+    /// Relative shortcut; expanded to `[to - n, to]`. Used to derive the start
+    /// when from is absent; ignored when from is given.
     pub window_minutes: Option<u32>,
+    /// Absolute bracket start in epoch milliseconds. Wins over `windowMinutes`
+    /// on its own: `to` need not be present, and an absent `to` is the server
+    /// clock.
+    pub from: Option<i64>,
+    /// Absolute bracket end in epoch milliseconds; also anchors `windowMinutes`
+    /// when `from` is absent. Defaults to the server clock.
+    pub to: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FailureArgs {
+    /// Relative shortcut; expanded to `[to - n, to]`. Used to derive the start
+    /// when from is absent; ignored when from is given.
     pub window_minutes: Option<u32>,
+    /// Absolute bracket start in epoch milliseconds.
+    pub from: Option<i64>,
+    /// Absolute bracket end in epoch milliseconds; defaults to now.
+    pub to: Option<i64>,
     pub domain: Option<String>,
     pub response_code: Option<String>,
+    /// Case-insensitive host equality; omit to cover every host.
+    pub instance: Option<String>,
     pub limit: Option<usize>,
 }
 
@@ -30,8 +47,11 @@ pub struct FailureArgs {
 pub struct TraceArgs {
     pub trace_id: String,
     pub window_minutes: Option<u32>,
+    pub from: Option<i64>,
+    pub to: Option<i64>,
     pub domain: Option<String>,
     pub response_code: Option<String>,
+    pub instance: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -41,6 +61,16 @@ pub struct EmptyArgs {}
 #[serde(rename_all = "camelCase")]
 pub struct InstanceArgs {
     pub instance_id: String,
+    /// Relative shortcut; expanded to `[to - n, to]`. Used to derive the start
+    /// when from is absent; ignored when from is given.
+    pub window_minutes: Option<u32>,
+    /// Absolute bracket start in epoch milliseconds. Wins over `windowMinutes`
+    /// on its own: `to` need not be present, and an absent `to` is the server
+    /// clock.
+    pub from: Option<i64>,
+    /// Absolute bracket end in epoch milliseconds; also anchors `windowMinutes`
+    /// when `from` is absent. Defaults to the server clock.
+    pub to: Option<i64>,
 }
 
 pub struct ConsoleTools {
@@ -51,9 +81,9 @@ pub async fn get_overview(
     service: &ConsoleService,
     args: OverviewArgs,
 ) -> Result<Value, DataError> {
-    let overview = service
-        .overview(Window::new(args.window_minutes.unwrap_or(60)))
-        .await?;
+    let range = Range::resolve(args.from, args.to, args.window_minutes, service.now_ms())
+        .map_err(DataError::Invalid)?;
+    let overview = service.overview(range).await?;
     serde_json::to_value(overview).map_err(|error| DataError::Invalid(error.to_string()))
 }
 
@@ -61,10 +91,13 @@ pub async fn list_failures(
     service: &ConsoleService,
     args: FailureArgs,
 ) -> Result<Value, DataError> {
+    let range = Range::resolve(args.from, args.to, args.window_minutes, service.now_ms())
+        .map_err(DataError::Invalid)?;
     let filter = FailureFilter {
-        window: Window::new(args.window_minutes.unwrap_or(60)),
+        range,
         domain: args.domain,
         response_code: args.response_code,
+        instance: host_filter(args.instance),
         limit: args.limit.unwrap_or(50).clamp(1, 200),
     };
     let groups = service.failures(filter).await?;
@@ -75,10 +108,13 @@ pub async fn get_failure_detail(
     service: &ConsoleService,
     args: TraceArgs,
 ) -> Result<Value, DataError> {
+    let range = Range::resolve(args.from, args.to, args.window_minutes, service.now_ms())
+        .map_err(DataError::Invalid)?;
     let filter = FailureFilter {
-        window: Window::new(args.window_minutes.unwrap_or(60)),
+        range,
         domain: args.domain,
         response_code: args.response_code,
+        instance: host_filter(args.instance),
         limit: 1,
     };
     let detail = service.failure_detail(&args.trace_id, filter).await?;
@@ -94,7 +130,9 @@ pub async fn get_instance_detail(
     service: &ConsoleService,
     args: InstanceArgs,
 ) -> Result<Value, DataError> {
-    let detail = service.instance_detail(&args.instance_id).await?;
+    let range = Range::resolve(args.from, args.to, args.window_minutes, service.now_ms())
+        .map_err(DataError::Invalid)?;
+    let detail = service.instance_detail(&args.instance_id, range).await?;
     serde_json::to_value(detail).map_err(|error| DataError::Invalid(error.to_string()))
 }
 
@@ -104,7 +142,7 @@ pub fn build_tools(service: Arc<ConsoleService>) -> Vec<Arc<dyn Tool>> {
         Arc::new(
             StatefulTool::new(
                 "get_overview",
-                "Return DNS overview: instances online/total, query volume, failure count, success rate, p95 latency and the series. Use this before quoting any KPI.",
+                "Get fleet-wide DNS health for a time bracket: instances online/total, query volume, failure count, success rate, p95 latency and the trend series. Use this before quoting any KPI. Frame the window with from/to in epoch milliseconds (a span of 5 minutes up to 7 days, i.e. 10080 minutes) or with the windowMinutes shortcut; a bracket shorter than 5 minutes, longer than 10080 minutes, with a start at or after its end, or ending more than 60 seconds in the future is rejected, never clamped. P95 is the worst bucket inside the bracket, so a wider bracket reads higher.",
                 state.clone(),
                 tool_get_overview,
             )
@@ -115,7 +153,7 @@ pub fn build_tools(service: Arc<ConsoleService>) -> Vec<Arc<dyn Tool>> {
         Arc::new(
             StatefulTool::new(
                 "list_failures",
-                "List DNS failures (SERVFAIL / REFUSED / FORMERR / timeouts) grouped by trace_id. NXDOMAIN is a normal negative answer and is always excluded.",
+                "List DNS failures (SERVFAIL / REFUSED / FORMERR / timeouts) grouped by trace_id. NXDOMAIN is a normal negative answer and is always excluded. Frame the window with from/to in epoch milliseconds (span up to 7 days, i.e. 10080 minutes) or with the windowMinutes shortcut; a bracket under 5 minutes, over 10080 minutes, with start at or after end, or ending more than 60 seconds in the future is rejected. Set instance to a host name to restrict to that node; rows without a host label are then excluded.",
                 state.clone(),
                 tool_list_failures,
             )
@@ -126,7 +164,7 @@ pub fn build_tools(service: Arc<ConsoleService>) -> Vec<Arc<dyn Tool>> {
         Arc::new(
             StatefulTool::new(
                 "get_failure_detail",
-                "Return the failure group, logs and spans for one trace_id so the analysis can cite real evidence. Pass the same windowMinutes/domain/responseCode used by list_failures.",
+                "Return the failure group, logs and spans for one trace_id so the analysis can cite real evidence. Pass the same from/to/domain/responseCode/instance used by list_failures — or the same windowMinutes — so the detail cannot drift from the row the operator clicked. from/to are epoch milliseconds; a bracket shorter than 5 minutes or longer than 7 days (10080 minutes), with a start at or after its end, or ending more than 60 seconds in the future is rejected, never clamped.",
                 state.clone(),
                 tool_failure_detail,
             )
@@ -148,7 +186,7 @@ pub fn build_tools(service: Arc<ConsoleService>) -> Vec<Arc<dyn Tool>> {
         Arc::new(
             StatefulTool::new(
                 "get_instance_detail",
-                "Return one instance's pid, status, uptime, protocols, plugins, redacted TOML config and live runtime signals (Nacos cache/push freshness, XDP fast path state).",
+                "Return one instance's pid, status, uptime, protocols, plugins, redacted TOML config and live runtime signals (Nacos cache/push freshness, XDP fast path state). Pass the same from/to or windowMinutes the operator is looking at. from/to are epoch milliseconds; a bracket shorter than 5 minutes or longer than 7 days (10080 minutes), with a start at or after its end, or ending more than 60 seconds in the future is rejected, never clamped.",
                 state.clone(),
                 tool_instance_detail,
             )

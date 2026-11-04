@@ -5,7 +5,7 @@ pub mod openobserve;
 
 use crate::domain::{
     FailureDetail, FailureFilter, FailureGroup, Instance, InstanceDetail, InstanceIdentity,
-    MatchQuality, MatchedInstance, Overview, SeenInstance, Window, WindowMetrics,
+    MatchQuality, MatchedInstance, Overview, Range, SeenInstance, Window, WindowMetrics,
 };
 use crate::error::DataError;
 use async_trait::async_trait;
@@ -46,13 +46,32 @@ impl Clock for FixedClock {
 
 #[async_trait]
 pub trait TelemetrySource: Send + Sync {
-    async fn overview(&self, window: Window) -> Result<Overview, DataError>;
+    async fn overview(&self, range: Range) -> Result<Overview, DataError>;
     async fn failures(&self, filter: FailureFilter) -> Result<Vec<FailureGroup>, DataError>;
     async fn failure_detail(
         &self,
         trace_id: &str,
         filter: FailureFilter,
     ) -> Result<FailureDetail, DataError>;
+
+    /// Failures in the filter's bracket and domain/responseCode scope that carry no
+    /// host label, so the instance equality in the list query cannot reach them.
+    ///
+    /// Sources that cannot count them keep the default of zero; the UI then hides
+    /// the notice instead of inventing a number.
+    async fn unlabeled_failures(&self, _filter: FailureFilter) -> Result<u64, DataError> {
+        Ok(0)
+    }
+
+    /// Failure rows for `filter.instance` (plus its domain/responseCode scope)
+    /// inside the bracket, without the list's group cap. Sources that cannot
+    /// count return an error rather than zero, which would read as "healthy".
+    async fn instance_failure_count(&self, _filter: FailureFilter) -> Result<u64, DataError> {
+        Err(DataError::NotConfigured(
+            "instance_failure_count not implemented".to_string(),
+        ))
+    }
+
     async fn seen_instances(&self, window: Window) -> Result<Vec<SeenInstance>, DataError>;
 
     /// Aggregate query/failure counts for a window. Sources without metric

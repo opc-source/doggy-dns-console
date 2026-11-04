@@ -8,7 +8,7 @@ use doggy_dns_console::analysis::{
 };
 use doggy_dns_console::datasource::fixture::FixtureSource;
 use doggy_dns_console::datasource::{FixedClock, InstanceSource, TelemetrySource};
-use doggy_dns_console::domain::FailureFilter;
+use doggy_dns_console::domain::{FailureFilter, Range};
 use doggy_dns_console::evidence::assemble::assemble;
 use doggy_dns_console::evidence::model::EvidenceBundle;
 use serde_json::json;
@@ -24,7 +24,11 @@ async fn fixture_bundle() -> EvidenceBundle {
         &*telemetry,
         &*instances,
         "4bf92f3577b34da6",
-        &FailureFilter::default(),
+        // Task 7 made the fixture honour the bracket: `Range::default()`
+        // (`0..0`) is inert and would match nothing, so this harness requests
+        // the same legal 60-minute bracket the demo endpoints resolve by
+        // default, anchored on the fixture clock.
+        &FailureFilter::new(Range::new(NOW_MS - 60 * 60_000, NOW_MS)),
         &FixedClock(NOW_MS),
     )
     .await
@@ -335,6 +339,24 @@ fn prompt_is_versioned_and_states_the_contract() {
     ] {
         assert!(prompt.contains(needle), "prompt is missing {needle:?}");
     }
+}
+
+#[test]
+fn system_prompt_describes_the_range_free_filter_echo() {
+    let prompt = system_prompt(&prompt_facts());
+
+    assert!(
+        prompt.contains("{domain, responseCode, instance}"),
+        "the analyst is told the wrong filter shape: {prompt}"
+    );
+    assert!(
+        prompt.contains("does not carry the requested time bracket"),
+        "the analyst is not told the echo is range-free"
+    );
+    assert!(
+        !prompt.contains("windowMinutes"),
+        "the stale window legend is still promised to the analyst"
+    );
 }
 
 #[test]
@@ -1386,7 +1408,6 @@ use doggy_dns_console::analysis::store::{
     CacheKey, InvestigationMarker, InvestigationOutcome, InvestigationRecord, InvestigationStatus,
     InvestigationStore, NewInvestigation, SqliteInvestigationStore,
 };
-use doggy_dns_console::domain::Window;
 use sqlx::Row;
 
 const EVIDENCE_FINGERPRINT: &str = "sha256:evidence-fingerprint";
@@ -1394,7 +1415,8 @@ const MODEL: &str = "test-model";
 
 fn sample_filter() -> FailureFilter {
     FailureFilter {
-        window: Window::new(30),
+        range: Range::new(NOW_MS - 30 * 60_000, NOW_MS),
+        instance: None,
         domain: Some("example.com".to_string()),
         response_code: Some("SERVFAIL".to_string()),
         limit: 20,
@@ -2016,6 +2038,37 @@ async fn service_returns_a_cache_hit_without_calling_the_model() {
     assert!(matches!(second, AnalysisStart::Cached(_)));
     assert_eq!(second.analysis_id(), first_id);
     assert_eq!(llm.requests().len(), calls);
+}
+
+#[tokio::test]
+async fn service_reuses_the_analysis_across_two_brackets_of_the_same_evidence() {
+    let bundle = fixture_bundle().await;
+    let store: Arc<dyn InvestigationStore> = memory_store().await;
+    let llm = Arc::new(ScriptedLlm::new(
+        "test",
+        vec![submit(&valid_result(&first_log_id(&bundle)))],
+    ));
+    let service = Arc::new(AnalysisService::new(
+        store,
+        analysis_config(10),
+        Some(llm.clone()),
+        None,
+    ));
+
+    let narrow = FailureFilter::new(Range::new(1_761_436_800_000 - 3_600_000, 1_761_436_800_000));
+    let first = service.start(&bundle, &narrow, false).await.unwrap();
+    let first_id = first.analysis_id().to_string();
+    wait_terminal(&service, &bundle.trace_id, &first_id).await;
+
+    // D11: the fingerprint covers the evidence, not the requested bracket.
+    let wide = FailureFilter::new(Range::new(
+        1_761_436_800_000 - 7 * 86_400_000,
+        1_761_436_800_000,
+    ));
+    let second = service.start(&bundle, &wide, false).await.unwrap();
+    assert!(matches!(second, AnalysisStart::Cached(_)));
+    assert_eq!(second.analysis_id(), first_id);
+    assert_eq!(llm.requests().len(), 1);
 }
 
 #[tokio::test]

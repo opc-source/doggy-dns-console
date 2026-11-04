@@ -70,15 +70,78 @@ Opening a failure first loads a deterministic **evidence bundle** and then, when
 analysis is available, starts a read-only forensic analysis of that bundle.
 Evidence never depends on the model; analysis never blocks the evidence view.
 
+### Overview and instance APIs
+
+```
+GET /api/overview?from=&to=&windowMinutes=
+GET /api/instances/{id}?from=&to=&windowMinutes=
+```
+
+Both bind the same `RangeQuery` struct (`windowMinutes`, `from`, `to`, epoch
+milliseconds) and resolve it through the same `Range::resolve` rule as the failure
+family (`src/api/mod.rs`, `src/domain.rs`). Those three parameters are the whole
+contract: `/api/overview` takes no `domain`, `responseCode` or `instance` filter.
+`GET /api/instances` (the list) accepts no query at all — it stays the only
+bracket-free endpoint, because its rows are identity and reachability, not a time
+series.
+
+`p95` is the worst bucket inside the bracket, not the last point (the telemetry
+layer takes `max` over the sampled series). The trend and p95 queries share one
+bucket width, `ceil(span_minutes / 168)` held to `1..=60` minutes, and the rate
+window is `max(bucket, 5)` minutes — so the default one hour keeps the 60-second
+step and five-minute rate window it always had, and a week is one point per hour.
+Each point is a rate window that ENDS at its own timestamp, so the first bucket of
+a bracket reaches up to its rate window — `max(bucket, 5)` minutes — before the
+bracket's start: five minutes in the default one-hour view, as it always was, up to
+sixty in a seven-day view.
+State the cost plainly: a wider bracket can only read a higher p95, which is why
+the card hint says `worst bucket in range`.
+
+The instance detail's `failureCount` is an uncapped `SELECT COUNT(*)` scoped to the
+requested bracket and to that host. It deliberately does not reuse the
+`/api/failures` number: the list aggregates per trace group and caps a page at 200
+groups, so a busy week's total would be silently truncated into looking healthy.
+`null` is not 0 — it means the telemetry source could not count at all, and the UI
+renders `—` rather than a fabricated zero.
+
+### Failure list API
+
+```
+GET /api/failures?from=&to=&windowMinutes=&domain=&responseCode=&instance=&limit=
+GET /api/failures/uncovered?from=&to=&windowMinutes=&domain=&responseCode=&instance=
+```
+
+`limit` defaults to 50 and is clamped to `1..=200`. That clamp is not a bracket
+rule: an oversized `limit` is silently capped rather than rejected, because it
+only sizes a page. The `/failures` page asks for 200 rows and says so when the
+answer is exactly 200.
+
+`/api/failures/uncovered` returns `{"unlabeled": n}` — the in-scope failures
+whose `host_name` is null or empty, which the `instance` equality on the list
+query cannot reach. The count shares the list's scope (same bracket, `domain` and
+`responseCode`) and drops only the host equality. Its `instance` parameter is
+accepted for symmetry and ignored.
+
 ### Evidence API
 
 ```
-GET /api/failures/{traceId}/evidence?windowMinutes=&domain=&responseCode=
+GET /api/failures/{traceId}/evidence?from=&to=&windowMinutes=&domain=&responseCode=&instance=
 ```
 
-Synchronous, read-only and model-free. It uses the same window/domain/responseCode
-filter as the failure list and detail, so the bundle cannot drift from the entry
-that was clicked. The response contains:
+Synchronous, read-only and model-free. It uses the same bracket/domain/responseCode/
+instance filter as the failure list and detail, so the bundle cannot drift from the
+entry that was clicked.
+
+`from`/`to` are epoch milliseconds. `to` defaults to the server clock, and when
+`from` is absent `windowMinutes` (default 60) supplies the start as `end - n`. Every
+endpoint that takes a bracket — `/api/overview`, `/api/instances/{id}` and the
+investigation chain (`/api/failures`, `/uncovered`, `/evidence`, `/analysis`) —
+accepts a span from 5 minutes to 10080 minutes (7 days) and answers
+`400 invalid_request` — it never clamps — when the start is at or after the end, the
+span is outside that band, or `to` is more than 60 seconds in the future. The
+`/api/instances` list stays the only endpoint that takes no bracket at all.
+
+The response contains:
 
 - `group`: the same failure aggregate the list and detail return.
 - `instance`: matched identity (`matchQuality` is `exact`, `host_ip`, `host` or
@@ -99,8 +162,12 @@ that was clicked. The response contains:
 - `missing`: `instance_unreachable`, `instance_not_found`, `spans_unavailable`,
   `metrics_unavailable`, `logs_truncated`.
 
-Errors: `400` for a malformed query (the window is clamped to 5–1440 minutes,
-so an out-of-range value is not an error), `404` when the trace is not a failure
+Errors: `400` for a malformed query — a non-numeric integer is rejected by the
+parameter extractor as plain text, while a bracket whose start is at or after its
+end, a span outside 5–10080 minutes, or a `to` more than 60 seconds in the future
+is a `400 invalid_request` JSON error: every endpoint that takes a bracket — the
+chain, `/api/overview` and `/api/instances/{id}` — rejects an out-of-range bracket
+instead of clamping it. `404` when the trace is not a failure
 group in that window, `502` when OpenObserve itself fails. Because a production
 start still requires a model API key, evidence-only operation without one means
 `CONSOLE_DEMO=1`; the endpoint itself never calls the model.
@@ -108,7 +175,7 @@ start still requires a model API key, evidence-only operation without one means
 ### Analysis API
 
 ```
-POST /api/failures/{traceId}/analysis?windowMinutes=&domain=&responseCode=&force=
+POST /api/failures/{traceId}/analysis?from=&to=&windowMinutes=&domain=&responseCode=&instance=&force=
 GET  /api/failures/{traceId}/analysis?analysis=<id>
 GET  /api/analysis/markers?traceIds=<comma separated, max 200>
 ```
@@ -237,10 +304,35 @@ from the analyzed one, the old analysis is kept but marked stale
 ("证据已变化，需重新分析" — evidence changed, reanalyze) and is never silently
 reused.
 
-A deep link `/failures/{traceId}?windowMinutes=…&analysis=<id>` restores the
-window and the named attempt instead of starting a new one; an unknown id falls
-back to a fresh analysis. The failure list shows a marker for traces that
-already have an investigation and never triggers analysis itself.
+The failure list lives at `/failures?from=&to=&windowMinutes=&domain=&responseCode=&instance=`,
+and a row opens the drawer at `/failures/{traceId}?` carrying the list's filter query.
+Adding `analysis=<id>` restores that attempt instead of starting a new one; an unknown
+id falls back to a fresh analysis. The drawer keeps no store state of its own — the URL
+is the only input — so reloading or sharing it reproduces the same request; a relative
+window re-anchors when it is reopened — the list on the server clock, the drawer in
+the browser. The list shows a
+marker for traces that already have an investigation and never triggers analysis
+itself.
+
+The overview (`/`) and the instance drawer's failure count (`/instances`) obey the same
+rule: the URL is their only state too, and all three views drive one shared
+time-range control (presets 1h/6h/24h/7d plus manual `from`/`to`). The re-anchor stays
+true for the overview — a relative window is recomputed on every refresh, which is why
+the page keeps polling it every 15 seconds — while an absolute bracket is a fixed
+question that is never re-anchored, so the overview stops polling it.
+
+The fingerprint covers the trace's evidence, not the bracket that was requested: the
+group aggregate, logs and spans are read for the trace inside the bracket, and the
+metric window is centred on the trace itself. A wider bracket that still contains the
+whole trace yields the same evidence, so the stored analysis is reused on purpose
+instead of re-running the model; a bracket that clips the trace changes the bundle and
+is analyzed afresh. One consequence lands on every deployment
+upgrading to this version: analyses recorded before the change carry a range in their
+fingerprint, so they are reported stale the first time they are opened through an old
+`?analysis=<id>` link — the drawer keeps the old result, shows the stale banner and
+re-runs only when the operator asks. A plain open of the drawer (no `analysis` param)
+never shows that banner: it computes the new fingerprint, misses the cache and
+silently starts a fresh attempt. Either way nothing is rewritten in place.
 
 The eight-case manual evaluation runbook is
 [docs/analysis-golden-cases.md](docs/analysis-golden-cases.md).

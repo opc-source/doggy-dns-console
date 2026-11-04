@@ -7,7 +7,7 @@ use doggy_dns_console::api::state::{ApiState, Probe};
 use doggy_dns_console::datasource::fixture::FixtureSource;
 use doggy_dns_console::datasource::{FixedClock, InstanceSource, TelemetrySource};
 use doggy_dns_console::domain::{
-    FailureDetail, FailureFilter, FailureGroup, Overview, SeenInstance, Window,
+    FailureDetail, FailureFilter, FailureGroup, Overview, Range, SeenInstance, Window,
 };
 use doggy_dns_console::error::DataError;
 use doggy_dns_console::service::ConsoleService;
@@ -29,7 +29,7 @@ struct FailingTelemetry;
 
 #[async_trait]
 impl TelemetrySource for FailingTelemetry {
-    async fn overview(&self, _window: Window) -> Result<Overview, DataError> {
+    async fn overview(&self, _range: Range) -> Result<Overview, DataError> {
         Err(DataError::Upstream("connection refused".to_string()))
     }
 
@@ -57,7 +57,11 @@ fn fixture() -> Arc<FixtureSource> {
 fn app_with(telemetry: Arc<dyn TelemetrySource>) -> axum::Router {
     let fixture = fixture();
     let instances = fixture.clone() as Arc<dyn InstanceSource>;
-    let service = Arc::new(ConsoleService::new(telemetry, instances.clone()));
+    let service = Arc::new(ConsoleService::new(
+        telemetry,
+        instances.clone(),
+        Arc::new(FixedClock(1_761_436_800_000)),
+    ));
     doggy_dns_console::api::business_router(ApiState {
         service,
         instances,
@@ -96,7 +100,10 @@ async fn evidence_endpoint_returns_bundle() {
             .as_str()
             .is_some_and(|fingerprint| fingerprint.starts_with("sha256:"))
     );
-    assert_eq!(body["filter"]["windowMinutes"], 60);
+    assert_eq!(body["filter"]["domain"], serde_json::Value::Null);
+    assert_eq!(body["filter"]["responseCode"], serde_json::Value::Null);
+    assert_eq!(body["filter"]["instance"], serde_json::Value::Null);
+    assert!(body["filter"].get("windowMinutes").is_none());
     assert!(
         body["logs"]["items"]
             .as_array()
@@ -148,13 +155,15 @@ async fn evidence_endpoint_applies_the_list_filter() {
     let app = app_with(fixture() as Arc<dyn TelemetrySource>);
     let response = get(
         app,
-        "/api/failures/4bf92f3577b34da6/evidence?responseCode=SERVFAIL&domain=nacos",
+        "/api/failures/4bf92f3577b34da6/evidence?responseCode=SERVFAIL&domain=nacos&instance=dns-node-1",
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_body(response).await;
     assert_eq!(body["filter"]["responseCode"], "SERVFAIL");
     assert_eq!(body["filter"]["domain"], "nacos");
+    assert_eq!(body["filter"]["instance"], "dns-node-1");
+    assert!(body["filter"].get("windowMinutes").is_none());
 }
 
 #[tokio::test]
@@ -175,4 +184,21 @@ async fn evidence_endpoint_maps_upstream_failure_to_502() {
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     let body = json_body(response).await;
     assert_eq!(body["error"]["code"], "openobserve_unavailable");
+}
+
+#[tokio::test]
+async fn evidence_rejects_a_bracket_over_the_seven_day_ceiling() {
+    let now_ms: i64 = 1_761_436_800_000;
+    let app = app_with(fixture() as Arc<dyn TelemetrySource>);
+    let response = get(
+        app,
+        &format!(
+            "/api/failures/trace-1/evidence?from={}&to={}",
+            now_ms - 7 * 1440 * 60_000 - 1,
+            now_ms
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }

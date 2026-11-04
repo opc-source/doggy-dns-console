@@ -1,9 +1,10 @@
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia } from 'pinia'
-import { defineComponent } from 'vue'
+import { defineComponent, type PropType } from 'vue'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { InvestigationFilter } from '@/api/types'
 import { routes } from '@/router'
 import FailureView from '@/views/FailureView.vue'
 
@@ -11,12 +12,18 @@ const DrawerStub = defineComponent({
   name: 'FailureDrawer',
   props: {
     traceId: { type: String, required: true },
-    windowMinutes: { type: Number, required: true },
+    filter: { type: Object as PropType<InvestigationFilter>, required: true },
     analysisId: { type: String, default: undefined },
   },
   emits: ['close'],
   template: '<div data-testid="drawer-stub" />',
 })
+
+/** The bracket's width in whole minutes, which is what the old window prop was. */
+function bracketMinutes(filter: unknown): number {
+  const { from, to } = filter as InvestigationFilter
+  return Math.round((to - from) / 60_000)
+}
 
 const wrappers: VueWrapper[] = []
 
@@ -39,74 +46,127 @@ afterEach(() => {
   for (const wrapper of wrappers.splice(0)) wrapper.unmount()
 })
 
+const NOW = Date.now()
+const HOUR = 3_600_000
+
 describe('FailureView', () => {
-  it('passes the trace, window and analysis from the deep link to the drawer', async () => {
-    const { wrapper } = await mountView('/failures/t1?windowMinutes=360&analysis=a1')
+  it('passes an absolute bracket straight to the drawer', async () => {
+    const from = NOW - 26 * HOUR
+    const { wrapper } = await mountView(`/failures/t1?from=${from}&to=${NOW}`)
 
     const drawer = wrapper.findComponent(DrawerStub)
     expect(drawer.exists()).toBe(true)
     expect(drawer.props('traceId')).toBe('t1')
-    expect(drawer.props('windowMinutes')).toBe(360)
-    expect(drawer.props('analysisId')).toBe('a1')
+    const passed = drawer.props('filter')
+    expect(passed.from).toBe(from)
+    expect(passed.to).toBe(NOW)
+    expect(passed.instance).toBeNull()
     expect(wrapper.find('[aria-label="Failure investigation"]').exists()).toBe(true)
     // AppShell already owns the page's <main> landmark.
     expect(wrapper.find('main').exists()).toBe(false)
   })
 
-  it('falls back to a 60 minute window and no attempt for invalid query values', async () => {
-    const { wrapper } = await mountView('/failures/t2?windowMinutes=abc')
+  it('expands a relative shortcut against the server clock without clamping', async () => {
+    const { wrapper } = await mountView('/failures/t1?windowMinutes=10080')
 
-    const drawer = wrapper.findComponent(DrawerStub)
-    expect(drawer.props('traceId')).toBe('t2')
-    expect(drawer.props('windowMinutes')).toBe(60)
-    expect(drawer.props('analysisId')).toBeUndefined()
+    const passed = wrapper.findComponent(DrawerStub).props('filter')
+    expect(bracketMinutes(passed)).toBe(10080)
   })
 
-  it.each([
-    ['zero', '/failures/t3?windowMinutes=0'],
-    ['a fractional value', '/failures/t3?windowMinutes=1.5'],
-    ['a hexadecimal value', '/failures/t3?windowMinutes=0x10'],
-    ['an exponent value', '/failures/t3?windowMinutes=1e3'],
-  ])('falls back to 60 for %s', async (_label, path) => {
-    const { wrapper } = await mountView(path)
+  it('names an over-ceiling relative link instead of clamping it', async () => {
+    const { wrapper } = await mountView('/failures/t1?windowMinutes=99999999999999999999')
 
-    expect(wrapper.findComponent(DrawerStub).props('windowMinutes')).toBe(60)
+    // The child's refusal has its own id, so the page's `invalid-range` stays unique.
+    expect(wrapper.find('[data-testid="drawer-invalid-range"]').exists()).toBe(true)
+    expect(wrapper.findComponent(DrawerStub).exists()).toBe(false)
   })
 
-  it.each([
-    ['below the backend minimum', '/failures/t6?windowMinutes=1', 5],
-    ['above the backend maximum', '/failures/t6?windowMinutes=5000', 1440],
-    ['beyond u32', '/failures/t6?windowMinutes=99999999999999999999', 1440],
-    ['too large for a finite float', `/failures/t6?windowMinutes=${'9'.repeat(400)}`, 1440],
-  ])('clamps a window %s to the backend range', async (_label, path, expected) => {
-    const { wrapper } = await mountView(path)
+  it('keeps a seven-day bracket instead of folding it back to a day', async () => {
+    const from = NOW - 7 * 24 * HOUR
+    const { wrapper } = await mountView(`/failures/t1?from=${from}&to=${NOW}`)
 
-    expect(wrapper.findComponent(DrawerStub).props('windowMinutes')).toBe(expected)
+    expect(wrapper.findComponent(DrawerStub).props('filter').from).toBe(from)
+    expect(wrapper.find('[data-testid="drawer-invalid-range"]').exists()).toBe(false)
   })
 
-  it('trims whitespace around a positive integer window', async () => {
-    const { wrapper } = await mountView('/failures/t4?windowMinutes=%20360%20')
+  it('carries domain, responseCode and instance into the request filter', async () => {
+    const { wrapper } = await mountView(
+      `/failures/t1?from=${NOW - 2 * HOUR}&to=${NOW}&domain=nacos&responseCode=SERVFAIL&instance=dns-node-2`,
+    )
 
-    expect(wrapper.findComponent(DrawerStub).props('windowMinutes')).toBe(360)
+    const passed = wrapper.findComponent(DrawerStub).props('filter')
+    expect(passed).toMatchObject({
+      domain: 'nacos',
+      responseCode: 'SERVFAIL',
+      instance: 'dns-node-2',
+    })
   })
 
-  it.each([
-    ['an empty analysis value', '/failures/t5?analysis='],
-    ['a whitespace analysis value', '/failures/t5?analysis=%20'],
-  ])('omits the analysis id for %s', async (_label, path) => {
-    const { wrapper } = await mountView(path)
+  it('names an impossible bracket instead of querying something else', async () => {
+    const { wrapper } = await mountView(`/failures/t1?from=${NOW}&to=${NOW}`)
+
+    expect(wrapper.find('[data-testid="drawer-invalid-range"]').text()).toMatch(/早于|结束|分钟/)
+    expect(wrapper.findComponent(DrawerStub).exists()).toBe(false)
+  })
+
+  it('refuses a hand-edited one-sided bracket instead of drawing a relative window', async () => {
+    const { wrapper } = await mountView(`/failures/t1?from=${NOW - 2 * HOUR}`)
+
+    // The list refuses exactly this draft; the drawer must not open a bracket the
+    // list would not show.
+    expect(wrapper.find('[data-testid="drawer-invalid-range"]').text()).toMatch(/起止/)
+    expect(wrapper.findComponent(DrawerStub).exists()).toBe(false)
+  })
+
+  it('renders no drawer on an impossible bracket', async () => {
+    const { wrapper } = await mountView('/failures/t1?from=10&to=20')
+
+    // `v-if=invalid / v-else-if=traceId`: a refusal always replaces the drawer.
+    expect(wrapper.find('[data-testid="drawer-invalid-range"]').exists()).toBe(true)
+    expect(wrapper.findComponent(DrawerStub).exists()).toBe(false)
+  })
+
+  it('still restores a deep-linked analysis id', async () => {
+    const { wrapper } = await mountView(
+      `/failures/t1?from=${NOW - 2 * HOUR}&to=${NOW}&analysis=inv-9`,
+    )
+
+    expect(wrapper.findComponent(DrawerStub).props('analysisId')).toBe('inv-9')
+  })
+
+  it('omits a whitespace-only analysis id instead of passing it through', async () => {
+    const { wrapper } = await mountView('/failures/t1?windowMinutes=60&analysis=%20')
 
     expect(wrapper.findComponent(DrawerStub).props('analysisId')).toBeUndefined()
   })
 
-  it('navigates back to the overview when the drawer closes', async () => {
-    const { wrapper, router } = await mountView('/failures/t1?windowMinutes=360&analysis=a1')
+  it('returns to the list with the bracket when the drawer closes', async () => {
+    const from = NOW - 2 * HOUR
+    const { wrapper, router } = await mountView(
+      `/failures/t1?from=${from}&to=${NOW}&instance=dns-node-2&analysis=a1`,
+    )
+    const replace = vi.spyOn(router, 'replace')
+    const push = vi.spyOn(router, 'push')
 
     wrapper.findComponent(DrawerStub).vm.$emit('close')
 
-    // The overview route is lazily imported, so the navigation settles later.
-    await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('overview'), {
+    // The list route is lazily imported, so the navigation settles later.
+    await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('failures-list'), {
       timeout: 5000,
     })
+
+    // Closing is a replace, so Back does not reopen the drawer and re-run the
+    // investigation it just closed.
+    expect(replace).toHaveBeenCalled()
+    expect(push).not.toHaveBeenCalled()
+
+    // Only the analysis deep-link param is dropped: the bracket and the host
+    // filter come back exactly as the operator left them.
+    expect(router.currentRoute.value.query).toEqual({
+      from: String(from),
+      to: String(NOW),
+      instance: 'dns-node-2',
+    })
+    expect(router.currentRoute.value.query.analysis).toBeUndefined()
   })
 })

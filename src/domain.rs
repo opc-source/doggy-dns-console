@@ -21,6 +21,136 @@ impl Default for Window {
     }
 }
 
+pub const MIN_RANGE_MINUTES: u32 = 5;
+/// The investigation chain may look back a full week; a bracket outside
+/// `MIN_RANGE_MINUTES..=MAX_RANGE_MINUTES` is refused, never clamped. The
+/// 1440-minute [`Window::new`] clamp guards no endpoint any more: the only
+/// call site left in the crate is the internal discovery window in
+/// `src/datasource/instances.rs`, which no request parameter can reach.
+pub const MAX_RANGE_MINUTES: u32 = 7 * 1440;
+/// The trend chart stays readable at about this many points; the bucket width
+/// is derived from it, never tuned per query.
+pub const MAX_SERIES_POINTS: u32 = 168;
+/// The narrowest rate window a trend query uses.
+pub const MIN_RATE_WINDOW_MINUTES: u32 = 5;
+/// The widest bucket: seven days at one point per hour.
+pub const MAX_BUCKET_MINUTES: u32 = 60;
+/// Clock skew between the console and the browser, in milliseconds.
+pub const FUTURE_TOLERANCE_MS: i64 = 60_000;
+pub const DEFAULT_WINDOW_MINUTES: u32 = 60;
+
+/// An absolute `[start, end]` bracket in epoch milliseconds.
+///
+/// `Default` is the deliberately inert `0..0`: legacy `filter_json` blobs stored
+/// before the range was introduced decode into it, and nothing reads the range
+/// off the evidence echo any more (see the fingerprint decoupling).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Range {
+    pub start_ms: i64,
+    pub end_ms: i64,
+}
+
+impl Range {
+    pub fn new(start_ms: i64, end_ms: i64) -> Self {
+        Self { start_ms, end_ms }
+    }
+
+    /// Expand a relative window into `[now - minutes, now]`.
+    pub fn from_window(window: Window, now_ms: i64) -> Self {
+        let span = i64::from(window.minutes) * 60_000;
+        Self::new(now_ms - span, now_ms)
+    }
+
+    /// Apply the precedence rule: an explicit `from`/`to` pair wins, otherwise
+    /// `windowMinutes` (default 60) is measured backwards from `to` (default
+    /// `now`). A lone `from` or lone `to` still participates, which is why the
+    /// fallback anchors on the resolved `end`.
+    pub fn resolve(
+        from: Option<i64>,
+        to: Option<i64>,
+        window_minutes: Option<u32>,
+        now_ms: i64,
+    ) -> Result<Self, String> {
+        let end_ms = to.unwrap_or(now_ms);
+        let minutes = i64::from(window_minutes.unwrap_or(DEFAULT_WINDOW_MINUTES));
+        // `saturating_sub` keeps a hostile `to = i64::MIN` inside `checked`'s
+        // rejection path instead of panicking in a debug build.
+        let start_ms = from.unwrap_or(end_ms.saturating_sub(minutes * 60_000));
+        Self::checked(start_ms, end_ms, now_ms)
+    }
+
+    /// The three rejection rules plus the future tolerance, and nothing else.
+    pub fn checked(start_ms: i64, end_ms: i64, now_ms: i64) -> Result<Self, String> {
+        if start_ms >= end_ms {
+            return Err("range start must be before range end".to_owned());
+        }
+        if end_ms > now_ms.saturating_add(FUTURE_TOLERANCE_MS) {
+            return Err("range end is too far in the future".to_owned());
+        }
+        let span_ms = end_ms.saturating_sub(start_ms);
+        if span_ms < i64::from(MIN_RANGE_MINUTES) * 60_000 {
+            return Err(format!(
+                "range is shorter than the {MIN_RANGE_MINUTES}-minute floor"
+            ));
+        }
+        if span_ms > i64::from(MAX_RANGE_MINUTES) * 60_000 {
+            return Err(format!(
+                "range is longer than the {MAX_RANGE_MINUTES}-minute ceiling"
+            ));
+        }
+        Ok(Self::new(start_ms, end_ms))
+    }
+
+    /// Whole minutes covered by the bracket, rounded up so a sub-minute sliver
+    /// still gets its own bucket instead of a zero-width one. Saturating
+    /// throughout: a `Range` that never went through `checked` can carry
+    /// `i64::MIN..i64::MAX`, and a hostile bracket must clamp to `u32::MAX`
+    /// instead of panicking (dev) or truncating (release) to a nonsense span.
+    pub fn span_minutes(&self) -> u32 {
+        let span_ms = self.end_ms.saturating_sub(self.start_ms).max(0);
+        let minutes = span_ms.saturating_add(59_999) / 60_000;
+        u32::try_from(minutes).unwrap_or(u32::MAX).max(1)
+    }
+
+    /// Bucket width the trend and p95 queries share (spec D15). A one-hour
+    /// bracket gets `1`, so the default chart keeps the 60-second step it has
+    /// always used.
+    pub fn bucket_minutes(&self) -> u32 {
+        self.span_minutes()
+            .div_ceil(MAX_SERIES_POINTS)
+            .clamp(1, MAX_BUCKET_MINUTES)
+    }
+
+    /// Rate window for the trend and p95 queries: never narrower than five
+    /// minutes, which is what keeps the default one-hour curve byte-identical
+    /// to the pre-bracket version.
+    pub fn rate_window_minutes(&self) -> u32 {
+        self.bucket_minutes().max(MIN_RATE_WINDOW_MINUTES)
+    }
+
+    /// Range-query step, in seconds, that tiles the bracket into buckets.
+    pub fn step_seconds(&self) -> u64 {
+        u64::from(self.bucket_minutes()) * 60
+    }
+
+    /// Range-query step, in seconds, for a single sample covering the bracket.
+    /// Totals use this so a seven-day chart does not replay the same
+    /// `increase` window ten thousand times.
+    pub fn whole_step_seconds(&self) -> u64 {
+        u64::from(self.span_minutes()) * 60
+    }
+
+    /// Bracket start that makes the whole-span totals query evaluate its LAST
+    /// sample exactly at `end_ms`. A `query_range` steps forward from `start`, so
+    /// passing the real (possibly sub-minute) start would leave one sample at
+    /// `start` — a window covering the period BEFORE the bracket.
+    pub fn whole_window_start_ms(&self) -> i64 {
+        self.end_ms
+            .saturating_sub(i64::from(self.span_minutes()) * 60_000)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesPoint {
@@ -55,9 +185,14 @@ impl Overview {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FailureFilter {
-    pub window: Window,
+    /// The absolute bracket the investigation chain queries. `#[serde(default)]`
+    /// keeps rows written before this field existed decodable.
+    #[serde(default)]
+    pub range: Range,
     pub domain: Option<String>,
     pub response_code: Option<String>,
+    /// Case-insensitive equality against the telemetry `host_name` column.
+    pub instance: Option<String>,
     pub limit: usize,
 }
 
@@ -208,16 +343,35 @@ pub struct InstanceDetail {
     /// Raw `get_runtime_status` payload (`{"signals": {...}}`); absent when
     /// the instance's MCP build predates the tool or the call failed.
     pub runtime: Option<Value>,
-    pub recent_failures: u64,
+    /// Failure rows attributed to this host inside the bracket the caller
+    /// asked for. `None` when the telemetry source cannot count them — the
+    /// drawer shows an em dash rather than a fabricated zero.
+    pub failure_count: Option<u64>,
+}
+
+/// The `instance` filter as the telemetry layer means it: a trimmed host label,
+/// or none. `?instance=` and `?instance=%20` must mean "no host filter", never
+/// "only the rows that have no host".
+pub fn host_filter(value: Option<String>) -> Option<String> {
+    value
+        .map(|host| host.trim().to_owned())
+        .filter(|host| !host.is_empty())
+}
+
+impl FailureFilter {
+    pub fn new(range: Range) -> Self {
+        Self {
+            range,
+            domain: None,
+            response_code: None,
+            instance: None,
+            limit: 50,
+        }
+    }
 }
 
 impl Default for FailureFilter {
     fn default() -> Self {
-        Self {
-            window: Window::default(),
-            domain: None,
-            response_code: None,
-            limit: 50,
-        }
+        Self::new(Range::default())
     }
 }

@@ -5,7 +5,8 @@ use async_trait::async_trait;
 
 use crate::datasource::openobserve::client::{OpenObserveClient, PromSeries};
 use crate::datasource::openobserve::failures::{
-    failure_group_query, failure_groups_query, failure_logs_query, trace_spans_query,
+    failure_group_query, failure_groups_query, failure_logs_query, instance_failure_count_query,
+    trace_spans_query, unlabeled_failures_query,
 };
 use crate::datasource::openobserve::normalize::{
     normalize_failure_group_row, normalize_log_row, normalize_span_row,
@@ -16,8 +17,8 @@ use crate::datasource::openobserve::overview::{
 };
 use crate::datasource::{Clock, TelemetrySource};
 use crate::domain::{
-    FailureDetail, FailureFilter, FailureGroup, MetricCounts, Overview, SeenInstance, SeriesPoint,
-    Window, WindowMetrics,
+    FailureDetail, FailureFilter, FailureGroup, MetricCounts, Overview, Range, SeenInstance,
+    SeriesPoint, Window, WindowMetrics,
 };
 use crate::error::DataError;
 
@@ -31,6 +32,8 @@ impl OpenObserveTelemetry {
         Self { client, clock }
     }
 
+    /// Discovery still runs on a relative window: after the overview moved to
+    /// absolute brackets, `Window` has only this internal use left (spec D2).
     fn range(&self, window: Window) -> (i64, i64) {
         let end = self.clock.now_ms();
         (end - i64::from(window.minutes) * 60_000, end)
@@ -39,20 +42,33 @@ impl OpenObserveTelemetry {
 
 #[async_trait]
 impl TelemetrySource for OpenObserveTelemetry {
-    async fn overview(&self, window: Window) -> Result<Overview, DataError> {
-        let (start, end) = self.range(window);
+    async fn overview(&self, range: Range) -> Result<Overview, DataError> {
+        let (start, end) = (range.start_ms, range.end_ms);
         let cfg = self.client.config();
-        let total = total_query(&cfg.metric_queries, window);
-        let failure = failure_query(&cfg.metric_queries, window);
-        let p95 = p95_query(&cfg.metric_duration, window);
-        let volume = series_query(&cfg.metric_queries, false);
-        let failure_volume = failure_series_query(&cfg.metric_queries);
+        let rate_window = range.rate_window_minutes();
+        let step = range.step_seconds();
+        // Totals describe the whole bracket, so they ask for one sample at the
+        // end. A 60-second step over seven days would replay the same
+        // `increase` window 10080 times to read its last point (spec D15).
+        let whole = range.whole_step_seconds();
+        // The totals start is aligned to that step, never the raw bracket start:
+        // `whole` is rounded UP from the real span, and a `query_range` steps
+        // forward from `start`, so an unaligned start would evaluate a single
+        // sample whose `increase` window ends where the bracket begins — the
+        // period before the operator asked for. Series and p95 keep `start`,
+        // because for them tiling from the start IS the contract.
+        let totals_start = range.whole_window_start_ms();
+        let total = total_query(&cfg.metric_queries, range);
+        let failure = failure_query(&cfg.metric_queries, range);
+        let p95 = p95_query(&cfg.metric_duration, rate_window);
+        let volume = series_query(&cfg.metric_queries, rate_window);
+        let failure_volume = failure_series_query(&cfg.metric_queries, rate_window);
 
-        let queries = self.client.query_promql(&total, start, end, 60);
-        let failures = self.client.query_promql(&failure, start, end, 60);
-        let p95 = self.client.query_promql(&p95, start, end, 60);
-        let volume_series = self.client.query_promql(&volume, start, end, 60);
-        let failure_series = self.client.query_promql(&failure_volume, start, end, 60);
+        let queries = self.client.query_promql(&total, totals_start, end, whole);
+        let failures = self.client.query_promql(&failure, totals_start, end, whole);
+        let p95 = self.client.query_promql(&p95, start, end, step);
+        let volume_series = self.client.query_promql(&volume, start, end, step);
+        let failure_series = self.client.query_promql(&failure_volume, start, end, step);
 
         let (queries, failures, p95, volume_series, failure_series) =
             tokio::join!(queries, failures, p95, volume_series, failure_series);
@@ -64,11 +80,11 @@ impl TelemetrySource for OpenObserveTelemetry {
 
         let query_total = last_u64(&queries).unwrap_or(0);
         let failure_total = last_u64(&failures).unwrap_or(0);
-        let p95_value = last_value(&p95).map(|value| (value * 100.0).round() / 100.0);
+        let p95_value = worst_value(&p95).map(|value| (value * 100.0).round() / 100.0);
         let series = zip_series(&volume_series, &failure_series);
 
         Ok(Overview {
-            window_minutes: window.minutes,
+            window_minutes: range.span_minutes(),
             instances_online: 0,
             instances_total: 0,
             queries: query_total,
@@ -80,7 +96,7 @@ impl TelemetrySource for OpenObserveTelemetry {
     }
 
     async fn failures(&self, filter: FailureFilter) -> Result<Vec<FailureGroup>, DataError> {
-        let (start, end) = self.range(filter.window);
+        let (start, end) = (filter.range.start_ms, filter.range.end_ms);
         let limit = filter.limit.clamp(1, 200);
         let sql =
             failure_groups_query(&self.client.config().log_stream, &filter, start, end, limit);
@@ -97,7 +113,7 @@ impl TelemetrySource for OpenObserveTelemetry {
         trace_id: &str,
         filter: FailureFilter,
     ) -> Result<FailureDetail, DataError> {
-        let (start, end) = self.range(filter.window);
+        let (start, end) = (filter.range.start_ms, filter.range.end_ms);
         let log_stream = &self.client.config().log_stream;
         let trace_stream = &self.client.config().trace_stream;
 
@@ -146,6 +162,53 @@ impl TelemetrySource for OpenObserveTelemetry {
         })
     }
 
+    async fn unlabeled_failures(&self, filter: FailureFilter) -> Result<u64, DataError> {
+        let (start, end) = (filter.range.start_ms, filter.range.end_ms);
+        let sql = unlabeled_failures_query(&self.client.config().log_stream, &filter, start, end);
+        let rows = self.client.search_logs(&sql, start, end, 1).await?;
+        let Some(unlabeled) = rows
+            .iter()
+            .find_map(|row| row.get("count").and_then(serde_json::Value::as_i64))
+        else {
+            tracing::warn!(
+                start_ms = filter.range.start_ms,
+                end_ms = filter.range.end_ms,
+                rows = rows.len(),
+                "unlabeled failure count query returned no integer `count`; reporting 0"
+            );
+            return Ok(0);
+        };
+        Ok(unlabeled.max(0) as u64)
+    }
+
+    /// The instance detail's own number: an uncapped `COUNT(*)` for one host.
+    ///
+    /// Unlike [`TelemetrySource::unlabeled_failures`], a response without a
+    /// parsable integer is an error, not zero. "No unlabeled rows" is an answer;
+    /// `Some(0)` here would read as "this node was healthy all week", which the
+    /// detail must never invent (spec D17).
+    async fn instance_failure_count(&self, filter: FailureFilter) -> Result<u64, DataError> {
+        let (start, end) = (filter.range.start_ms, filter.range.end_ms);
+        let sql =
+            instance_failure_count_query(&self.client.config().log_stream, &filter, start, end);
+        let rows = self.client.search_logs(&sql, start, end, 1).await?;
+        let Some(count) = rows
+            .iter()
+            .find_map(|row| row.get("count").and_then(serde_json::Value::as_i64))
+        else {
+            tracing::warn!(
+                start_ms = filter.range.start_ms,
+                end_ms = filter.range.end_ms,
+                rows = rows.len(),
+                "instance failure count query returned no integer `count`; reporting no number"
+            );
+            return Err(DataError::Internal(
+                "instance failure count query returned no integer count".to_string(),
+            ));
+        };
+        Ok(count.max(0) as u64)
+    }
+
     async fn failure_metrics(
         &self,
         host: Option<&str>,
@@ -161,15 +224,24 @@ impl TelemetrySource for OpenObserveTelemetry {
         let end_ms = end_ms as i64;
         let minutes = ((end_ms - start_ms + 59_999) / 60_000).max(1) as u32;
         let step = u64::from(minutes) * 60;
+        // `minutes` rounds the span UP and `query_range` steps FORWARD from `start`,
+        // so a span that is not a whole number of minutes produces one evaluation —
+        // at `start` — whose `increase[Nm]` window describes the period BEFORE the
+        // requested one. Anchoring the start on `end` costs nothing when the span is
+        // already whole (it equals `start_ms` exactly, as for the only production
+        // caller at `evidence/assemble.rs:113-114`) and keeps the sample at `end`
+        // for every other span. Same alignment as `Range::whole_window_start_ms`,
+        // spelled out here because this entry point takes bare bounds.
+        let totals_start_ms = (end_ms - i64::from(minutes) * 60_000).max(0);
         let metric = &self.client.config().metric_queries;
 
         let global_queries_query = scoped_total_query(metric, minutes, None);
         let global_failures_query = scoped_failure_query(metric, minutes, None);
         let (global_queries, global_failures) = tokio::try_join!(
             self.client
-                .query_promql(&global_queries_query, start_ms, end_ms, step),
+                .query_promql(&global_queries_query, totals_start_ms, end_ms, step),
             self.client
-                .query_promql(&global_failures_query, start_ms, end_ms, step),
+                .query_promql(&global_failures_query, totals_start_ms, end_ms, step),
         )?;
         if global_queries.is_empty() {
             // No series for the unfiltered total means the metric itself is
@@ -186,9 +258,9 @@ impl TelemetrySource for OpenObserveTelemetry {
                 let host_failures_query = scoped_failure_query(metric, minutes, Some(host));
                 let (host_queries, host_failures) = tokio::try_join!(
                     self.client
-                        .query_promql(&host_queries_query, start_ms, end_ms, step),
+                        .query_promql(&host_queries_query, totals_start_ms, end_ms, step),
                     self.client
-                        .query_promql(&host_failures_query, start_ms, end_ms, step),
+                        .query_promql(&host_failures_query, totals_start_ms, end_ms, step),
                 )?;
                 if host_queries.is_empty() {
                     // An absent host total cannot be told apart from a host
@@ -308,6 +380,20 @@ fn last_value(series: &[PromSeries]) -> Option<f64> {
 
 fn last_u64(series: &[PromSeries]) -> Option<u64> {
     last_value(series).map(|value| value.max(0.0).round() as u64)
+}
+
+/// The worst finite sample in a p95 series (spec D16): a bucket with no
+/// traffic answers NaN, and reporting the last point would report that NaN.
+///
+/// Only the first series is read — the p95 query returns a single unlabeled
+/// series, so a second one would mean the selector widened by accident.
+fn worst_value(series: &[PromSeries]) -> Option<f64> {
+    series
+        .first()?
+        .points
+        .iter()
+        .filter_map(|(_, value)| value.is_finite().then_some(*value))
+        .max_by(f64::total_cmp)
 }
 
 /// Sums the newest sample of every series.

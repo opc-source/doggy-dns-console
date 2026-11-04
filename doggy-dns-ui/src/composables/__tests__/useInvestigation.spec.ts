@@ -1,8 +1,8 @@
-import { effectScope, ref } from 'vue'
+import { effectScope, nextTick, ref } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError, apiGet, apiPostWithStatus } from '@/api/http'
-import type { AnalysisResult, AnalysisSnapshot, EvidenceBundle } from '@/api/types'
+import type { AnalysisResult, AnalysisSnapshot, EvidenceBundle, InvestigationFilter } from '@/api/types'
 import { ANALYSIS_POLL_INTERVAL_MS, useInvestigation } from '@/composables/useInvestigation'
 
 vi.mock('@/api/http', async (importOriginal) => {
@@ -20,7 +20,7 @@ const TRACE_SEGMENT = 'trace%201'
 function bundle(fingerprint = 'sha256:a'): EvidenceBundle {
   return {
     traceId: TRACE,
-    filter: { windowMinutes: 60, domain: null, responseCode: null },
+    filter: { domain: null, responseCode: null, instance: null },
     generatedAt: 1,
     fingerprint,
     group: {
@@ -64,7 +64,7 @@ function snapshot(overrides: Partial<AnalysisSnapshot> = {}): AnalysisSnapshot {
     toolCallCount: 0,
     startedAt: 1,
     finishedAt: 2,
-    filter: { windowMinutes: 60, domain: null, responseCode: null },
+    filter: { domain: null, responseCode: null, instance: null },
     evidenceFingerprint: 'sha256:a',
     model: 'model',
     promptVersion: 'v1',
@@ -99,14 +99,23 @@ function deferred<T>(): Deferred<T> {
 
 const scopes: Array<{ stop: () => void }> = []
 
-function setup(trace: string | null = TRACE) {
+/** A one-hour absolute bracket the tests pin the request URLs to. */
+const EVIDENCE_FILTER: InvestigationFilter = {
+  from: 1_761_433_200_000,
+  to: 1_761_436_800_000,
+  domain: null,
+  responseCode: null,
+  instance: null,
+}
+
+function setup(trace: string | null = TRACE, filter: InvestigationFilter = EVIDENCE_FILTER) {
   const traceId = ref<string | null>(trace)
-  const windowMinutes = ref(60)
+  const investigationFilter = ref<InvestigationFilter>(filter)
   const scope = effectScope()
-  const item = scope.run(() => useInvestigation(traceId, windowMinutes))
+  const item = scope.run(() => useInvestigation(traceId, investigationFilter))
   if (!item) throw new Error('composable did not run')
   scopes.push(scope)
-  return { traceId, windowMinutes, scope, item }
+  return { traceId, investigationFilter, scope, item }
 }
 
 function getPaths(): string[] {
@@ -142,10 +151,35 @@ describe('useInvestigation', () => {
 
     const path = getPaths()[0]
     expect(path).toContain(`/api/failures/${TRACE_SEGMENT}/evidence`)
-    expect(path).toContain('windowMinutes=60')
+    expect(path).toContain('from=1761433200000')
+    expect(path).toContain('to=1761436800000')
     expect(item.state.value).toBe('evidenceReady')
     expect(item.evidence.value?.fingerprint).toBe('sha256:a')
     expect(item.error.value).toBeNull()
+  })
+
+  it('builds_the_evidence_url_for_the_absolute_bracket_and_no_window', async () => {
+    const { item } = setup()
+    getMock().mockResolvedValueOnce(bundle())
+    await item.loadEvidence()
+
+    const path = getPaths()[0]
+    expect(path).toContain(`from=${EVIDENCE_FILTER.from}`)
+    expect(path).toContain(`to=${EVIDENCE_FILTER.to}`)
+    expect(path).not.toContain('windowMinutes=')
+  })
+
+  it('builds_the_analysis_url_for_the_same_bracket', async () => {
+    const { item } = setup()
+    getMock().mockResolvedValueOnce(bundle())
+    await item.loadEvidence()
+    postMock().mockResolvedValueOnce({ status: 200, body: snapshot() })
+    await item.startAnalysis()
+
+    const path = postPaths()[0]
+    expect(path).toContain(`from=${EVIDENCE_FILTER.from}`)
+    expect(path).toContain(`to=${EVIDENCE_FILTER.to}`)
+    expect(path).not.toContain('windowMinutes=')
   })
 
   it('starts_a_job_and_reaches_analysis_done', async () => {
@@ -421,6 +455,25 @@ describe('useInvestigation', () => {
 
     expect(item.state.value).toBe('analysisDone')
     expect(item.analysis.value?.analysisId).toBe('a1')
+  })
+
+  it('drops_evidence_for_a_bracket_the_drawer_already_replaced', async () => {
+    const { item, investigationFilter } = setup()
+    let resolveFirst!: (value: EvidenceBundle) => void
+    const first = new Promise<EvidenceBundle>((resolve) => {
+      resolveFirst = resolve
+    })
+    getMock().mockReturnValueOnce(first)
+    getMock().mockResolvedValueOnce(bundle('sha256:b'))
+
+    const stale = item.loadEvidence()
+    investigationFilter.value = { ...EVIDENCE_FILTER, from: EVIDENCE_FILTER.from - 3_600_000 }
+    await nextTick()
+    await expect(item.loadEvidence()).resolves.toBe(true)
+
+    resolveFirst(bundle('sha256:a'))
+    await expect(stale).resolves.toBe(false)
+    expect(item.evidence.value?.fingerprint).toBe('sha256:b')
   })
 
   it('stops_polling_after_scope_dispose', async () => {

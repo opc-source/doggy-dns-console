@@ -1,15 +1,15 @@
-use crate::domain::Window;
+use crate::domain::Range;
 
 /// Failure selector shared by every failure-rate query. It is the response
 /// code set the console has always treated as failures.
 const FAILURE_SELECTOR: &str = r#"dns_response_code=~"SERVFAIL|REFUSED|FORMERR""#;
 
-pub fn total_query(metric: &str, window: Window) -> String {
-    scoped_total_query(metric, window.minutes, None)
+pub fn total_query(metric: &str, range: Range) -> String {
+    scoped_total_query(metric, range.span_minutes(), None)
 }
 
-pub fn failure_query(metric: &str, window: Window) -> String {
-    scoped_failure_query(metric, window.minutes, None)
+pub fn failure_query(metric: &str, range: Range) -> String {
+    scoped_failure_query(metric, range.span_minutes(), None)
 }
 
 /// Query-rate query, optionally scoped to the `host_name` label exported by
@@ -45,23 +45,20 @@ fn promql_label_value(value: &str) -> String {
         .replace('\t', "\\t")
 }
 
-pub fn p95_query(metric: &str, window: Window) -> String {
+/// p95 over ONE bucket (spec D16): the caller samples it at `step_seconds`,
+/// so the series is one number per bucket and the report takes the worst.
+pub fn p95_query(metric: &str, rate_window_minutes: u32) -> String {
+    format!("histogram_quantile(0.95, sum by (le) (rate({metric}[{rate_window_minutes}m])))")
+}
+
+pub fn series_query(metric: &str, rate_window_minutes: u32) -> String {
+    format!("sum(rate({metric}[{rate_window_minutes}m])) * 60")
+}
+
+pub fn failure_series_query(metric: &str, rate_window_minutes: u32) -> String {
     format!(
-        "histogram_quantile(0.95, sum by (le) (rate({metric}[{}m])))",
-        window.minutes
+        "sum(rate({metric}{{dns_response_code=~\"SERVFAIL|REFUSED|FORMERR\"}}[{rate_window_minutes}m])) * 60"
     )
-}
-
-pub fn series_query(metric: &str, failures: bool) -> String {
-    if failures {
-        failure_series_query(metric)
-    } else {
-        format!("sum(rate({metric}[5m])) * 60")
-    }
-}
-
-pub fn failure_series_query(metric: &str) -> String {
-    format!("sum(rate({metric}{{dns_response_code=~\"SERVFAIL|REFUSED|FORMERR\"}}[5m])) * 60")
 }
 
 pub fn seen_query(metric: &str) -> String {

@@ -47,12 +47,6 @@ export interface SpanRecord {
   attributes: Record<string, unknown>
 }
 
-export interface FailureDetail {
-  group: FailureGroup
-  logs: LogRecord[]
-  spans: SpanRecord[]
-}
-
 export interface Instance {
   id: string
   host: string
@@ -85,7 +79,10 @@ export interface InstanceDetail {
   configToml: string | null
   redactedKeys: string[]
   runtime: RuntimeStatus | null
-  recentFailures: number
+  /** Failure rows for this host inside the requested bracket; `null` means the
+   * telemetry source could not count them — the drawer renders an em dash
+   * rather than a fabricated zero (mirrors `Option<u64>` in `src/domain.rs`). */
+  failureCount: number | null
 }
 
 export interface Connections {
@@ -131,10 +128,30 @@ export type MissingEvidence =
   | 'metrics_unavailable'
   | 'logs_truncated'
 
-export interface EvidenceFilter {
-  windowMinutes: number
+/**
+ * The subset of `FailureQuery` the drawer sends: the absolute bracket plus the
+ * echoes. It deliberately omits `windowMinutes`/`limit` — the bracket owns the
+ * range, so the server never resolves a window for an investigation.
+ */
+export interface InvestigationFilter {
+  from: number
+  to: number
   domain: string | null
   responseCode: string | null
+  instance: string | null
+}
+
+/**
+ * Filter echo inside an evidence bundle.
+ *
+ * Deliberately range-free: the fingerprint is computed over the trace's own
+ * evidence, so widening the bracket reuses the stored analysis by design.
+ * Mirrors `EvidenceFilter` in `src/evidence/model.rs`.
+ */
+export interface EvidenceFilter {
+  domain: string | null
+  responseCode: string | null
+  instance: string | null
 }
 
 export interface EvidenceBundle {

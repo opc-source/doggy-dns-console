@@ -1,25 +1,15 @@
 use axum::Json;
 use axum::extract::{Query, State};
-use serde::Deserialize;
 
+use crate::api::RangeQuery;
 use crate::api::error::ApiError;
 use crate::api::state::ApiState;
-use crate::domain::{Overview, Window};
-
-#[derive(Debug, Deserialize)]
-pub struct WindowQuery {
-    #[serde(rename = "windowMinutes")]
-    pub window_minutes: Option<u32>,
-}
+use crate::domain::Overview;
 
 pub async fn overview(
     State(state): State<ApiState>,
-    Query(query): Query<WindowQuery>,
+    Query(query): Query<RangeQuery>,
 ) -> Result<Json<Overview>, ApiError> {
-    Ok(Json(
-        state
-            .service
-            .overview(Window::new(query.window_minutes.unwrap_or(60)))
-            .await?,
-    ))
+    let range = query.range(state.service.now_ms())?;
+    Ok(Json(state.service.overview(range).await?))
 }

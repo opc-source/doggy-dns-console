@@ -25,7 +25,7 @@ use crate::analysis::service::{AnalysisService, AnalysisStart};
 use crate::analysis::store::{InvestigationMarker, InvestigationRecord, InvestigationStatus};
 use crate::analysis::{AnalysisResult, Confidence, ToolCallAudit, VerdictCategory};
 use crate::api::error::ApiError;
-use crate::api::failures::{FailureQuery, filter_from};
+use crate::api::failures::{FailureQuery, investigation_filter};
 use crate::api::state::ApiState;
 use crate::domain::FailureFilter;
 use crate::error::DataError;
@@ -39,9 +39,16 @@ pub const MAX_MARKER_IDS: usize = 200;
 pub struct StartQuery {
     #[serde(rename = "windowMinutes")]
     pub window_minutes: Option<u32>,
+    /// Absolute bracket start in epoch milliseconds; same precedence as
+    /// [`FailureQuery`].
+    pub from: Option<i64>,
+    /// Absolute bracket end in epoch milliseconds; same precedence as
+    /// [`FailureQuery`].
+    pub to: Option<i64>,
     pub domain: Option<String>,
     #[serde(rename = "responseCode")]
     pub response_code: Option<String>,
+    pub instance: Option<String>,
     pub force: Option<bool>,
 }
 
@@ -74,8 +81,11 @@ pub struct AnalysisSnapshot {
     pub tool_call_count: usize,
     pub started_at: i64,
     pub finished_at: Option<i64>,
-    /// Serialized as the evidence filter (`{windowMinutes, domain,
-    /// responseCode}`): the list-only `limit` is not part of an analysis.
+    /// Serialized as the evidence filter (`{domain, responseCode,
+    /// instance}`): the list-only `limit` is not part of an analysis, and the
+    /// requested bracket is not part of the evidence fingerprint, so reusing
+    /// a stored analysis after widening the window is intended behaviour, not
+    /// staleness.
     #[serde(serialize_with = "serialize_filter")]
     pub filter: FailureFilter,
     pub evidence_fingerprint: String,
@@ -164,15 +174,19 @@ pub async fn start(
     Query(query): Query<StartQuery>,
 ) -> Result<Response, ApiError> {
     let analysis = analysis_service(&state)?;
-    let filter = filter_from(
+    let filter = investigation_filter(
         FailureQuery {
             window_minutes: query.window_minutes,
+            from: query.from,
+            to: query.to,
             domain: query.domain,
             response_code: query.response_code,
+            instance: query.instance,
             limit: None,
         },
         1,
-    );
+        state.service.now_ms(),
+    )?;
     let bundle = state.service.evidence(&trace_id, &filter).await?;
     match analysis
         .start(&bundle, &filter, query.force.unwrap_or(false))

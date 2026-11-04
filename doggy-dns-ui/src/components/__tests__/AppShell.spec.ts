@@ -66,11 +66,12 @@ describe('AppShell', () => {
     localStorage.clear()
   })
 
-  it('renders the three nav destinations', async () => {
+  it('renders the four nav destinations', async () => {
     const wrapper = await mountShell()
     expect(wrapper.text()).toContain('Overview')
     expect(wrapper.text()).toContain('Instances')
     expect(wrapper.text()).toContain('Sessions')
+    expect(wrapper.text()).toContain('失败列表')
   })
 
   it('docks the panel on a wide layout', async () => {

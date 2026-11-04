@@ -52,10 +52,15 @@ function toggleFullscreen() {
 function reopenFailure() {
   const handoff = ui.handoff
   if (!handoff) return
+  const query: Record<string, string> = {}
+  if (handoff.fromMs !== undefined && handoff.toMs !== undefined) {
+    query.from = String(handoff.fromMs)
+    query.to = String(handoff.toMs)
+  }
   void router.push({
-    name: 'failure',
+    name: 'failure-detail',
     params: { traceId: handoff.traceId },
-    query: handoff.windowMinutes ? { windowMinutes: String(handoff.windowMinutes) } : {},
+    query,
   })
 }
 

@@ -394,6 +394,6 @@ fn degraded_detail(instance: Instance) -> InstanceDetail {
         config_toml: None,
         redacted_keys: Vec::new(),
         runtime: None,
-        recent_failures: 0,
+        failure_count: None,
     }
 }

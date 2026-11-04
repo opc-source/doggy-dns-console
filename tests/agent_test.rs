@@ -10,7 +10,7 @@ use doggy_dns_console::agent::build_agent;
 use doggy_dns_console::datasource::fixture::FixtureSource;
 use doggy_dns_console::datasource::{FixedClock, InstanceSource, TelemetrySource};
 use doggy_dns_console::domain::{
-    FailureDetail, FailureFilter, FailureGroup, Overview, SeenInstance, Window,
+    FailureDetail, FailureFilter, FailureGroup, Overview, Range, SeenInstance, Window,
 };
 use doggy_dns_console::error::DataError;
 use doggy_dns_console::service::ConsoleService;
@@ -24,9 +24,9 @@ struct CountingTelemetry {
 
 #[async_trait]
 impl TelemetrySource for CountingTelemetry {
-    async fn overview(&self, window: Window) -> Result<Overview, DataError> {
+    async fn overview(&self, range: Range) -> Result<Overview, DataError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        self.inner.overview(window).await
+        self.inner.overview(range).await
     }
     async fn failures(&self, filter: FailureFilter) -> Result<Vec<FailureGroup>, DataError> {
         self.inner.failures(filter).await
@@ -45,11 +45,12 @@ impl TelemetrySource for CountingTelemetry {
 
 fn service(calls: Arc<AtomicUsize>) -> Arc<ConsoleService> {
     let clock = Arc::new(FixedClock(1_761_436_800_000));
-    let inner = FixtureSource::new(clock);
+    let inner = FixtureSource::new(clock.clone());
     let instances = Arc::new(FixtureSource::new(Arc::new(FixedClock(1_761_436_800_000))));
     Arc::new(ConsoleService::new(
         Arc::new(CountingTelemetry { inner, calls }),
         instances as Arc<dyn InstanceSource>,
+        clock,
     ))
 }
 
