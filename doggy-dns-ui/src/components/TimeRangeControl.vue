@@ -75,15 +75,6 @@ function useRelative(minutes: number) {
   })
 }
 
-function resetTime() {
-  emit('update:modelValue', {
-    ...props.modelValue,
-    fromMs: null,
-    toMs: null,
-    windowMinutes: DEFAULT_WINDOW_MINUTES,
-  })
-}
-
 const activeQuick = computed(() =>
   !props.modelValue.fromMs && !props.modelValue.toMs ? props.modelValue.windowMinutes : null,
 )
@@ -117,7 +108,7 @@ const activeQuick = computed(() =>
       </button>
     </div>
 
-    <label class="flex shrink-0 flex-col gap-1 text-[11px] text-muted">
+    <label class="flex shrink-0 items-center gap-1 text-[11px] text-muted">
       起
       <input
         type="datetime-local"
@@ -127,7 +118,7 @@ const activeQuick = computed(() =>
         @change="setFrom(($event.target as HTMLInputElement).value)"
       />
     </label>
-    <label class="flex shrink-0 flex-col gap-1 text-[11px] text-muted">
+    <label class="flex shrink-0 items-center gap-1 text-[11px] text-muted">
       止
       <input
         type="datetime-local"
@@ -137,14 +128,6 @@ const activeQuick = computed(() =>
         @change="setTo(($event.target as HTMLInputElement).value)"
       />
     </label>
-
-    <button
-      data-testid="reset-time"
-      class="focus-ring shrink-0 rounded-lg bg-surface-2 px-2 py-1 text-xs text-muted hover:text-text"
-      @click="resetTime"
-    >
-      回到近 1 小时
-    </button>
 
     <p data-testid="range-hint" class="w-full text-[11px] text-muted">
       <!--

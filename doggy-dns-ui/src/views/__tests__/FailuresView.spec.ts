@@ -297,7 +297,9 @@ describe('FailuresView', () => {
     const { router, wrapper } = await mountView(`/failures?from=${now - 3 * HOUR}&to=${now}`)
     expect(router.currentRoute.value.query.from).toBeTruthy()
 
-    await wrapper.find('[data-testid="reset-time"]').trigger('click')
+    // The 1 小时 preset is the escape hatch: it swaps the absolute pair for a
+    // relative window, which is all a separate reset button ever did.
+    await wrapper.find('[data-testid="quick-1h"]').trigger('click')
     await flushPromises()
 
     expect(router.currentRoute.value.query.windowMinutes).toBe('60')

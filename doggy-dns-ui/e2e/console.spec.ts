@@ -145,14 +145,26 @@ test('the shared time control keeps its labels on one line', async ({ page }) =>
   // squeezed "1 小时" into a 36x80 vertical stack and the hint into the middle of
   // it. Text assertions cannot see that, so this case reads geometry — a
   // single-line `text-xs` button is ~32px tall, a wrapped one is 80+.
-  for (const testId of ['quick-1h', 'quick-6h', 'quick-24h', 'quick-7d', 'reset-time']) {
+  for (const testId of ['quick-1h', 'quick-6h', 'quick-24h', 'quick-7d']) {
     const box = await page.getByTestId(testId).boundingBox()
     expect(box, testId).not.toBeNull()
     expect(box!.height, testId).toBeLessThan(40)
   }
 
-  // The hint owns a line of its own below the controls, not a column beside them.
+  // 起/止 sit inline with their inputs, so the bracket shares the presets' line
+  // instead of growing a label row above itself. The row bottom-aligns, and an
+  // input is shorter than a preset button, so inline leaves a 7.5px step; the
+  // stacked label measured 25px because it added its own line on top.
   const presets = await page.getByTestId('quick-1h').boundingBox()
+  const from = await page.getByTestId('range-from').boundingBox()
+  expect(from).not.toBeNull()
+  expect(from!.y - presets!.y).toBeLessThan(12)
+
+  // Going back to a relative window is what the presets do; a dedicated reset
+  // button next to them only repeated the first one.
+  await expect(page.getByTestId('reset-time')).toHaveCount(0)
+
+  // The hint owns a line of its own below the controls, not a column beside them.
   const hint = await page.getByTestId('range-hint').boundingBox()
   expect(hint).not.toBeNull()
   expect(hint!.y).toBeGreaterThan(presets!.y)

@@ -180,7 +180,7 @@ describe('TimeRangeControl', () => {
     expect([...row.children].map((child) => child.getAttribute('data-testid'))).toEqual([
       'range-controls',
     ])
-    for (const testId of ['quick-1h', 'range-from', 'range-to', 'reset-time', 'range-hint']) {
+    for (const testId of ['quick-1h', 'range-from', 'range-to', 'range-hint']) {
       expect(row.querySelector(`[data-testid="${testId}"]`)).not.toBeNull()
     }
   })
