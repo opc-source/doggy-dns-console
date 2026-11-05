@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::Mutex;
 
@@ -27,7 +27,7 @@ pub struct OpenObserveMcpClient {
     http: Client,
     cfg: OpenObserveMcpConfig,
     session: Mutex<Option<String>>,
-    initialized: AtomicBool,
+    next_id: AtomicU64,
 }
 
 impl OpenObserveMcpClient {
@@ -40,7 +40,7 @@ impl OpenObserveMcpClient {
             http,
             cfg,
             session: Mutex::new(None),
-            initialized: AtomicBool::new(false),
+            next_id: AtomicU64::new(0),
         })
     }
 
@@ -127,7 +127,7 @@ impl OpenObserveMcpClient {
         match self.rpc(method, params.clone()).await {
             Ok(value) => Ok(value),
             Err(first) => {
-                if self.ensure_initialized().await.is_ok() {
+                if self.reinitialize().await.is_ok() {
                     self.rpc(method, params).await
                 } else {
                     Err(first)
@@ -136,14 +136,16 @@ impl OpenObserveMcpClient {
         }
     }
 
-    async fn ensure_initialized(&self) -> Result<(), DataError> {
-        if self.initialized.load(Ordering::SeqCst) {
-            return Ok(());
-        }
+    fn next_id(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    async fn reinitialize(&self) -> Result<(), DataError> {
+        *self.session.lock().await = None;
         let (value, session) = self
             .post(json!({
                 "jsonrpc": "2.0",
-                "id": 0,
+                "id": self.next_id(),
                 "method": "initialize",
                 "params": {
                     "protocolVersion": "2025-11-25",
@@ -166,7 +168,6 @@ impl OpenObserveMcpClient {
         let _ = self
             .post(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
             .await;
-        self.initialized.store(true, Ordering::SeqCst);
         Ok(())
     }
 
@@ -174,7 +175,7 @@ impl OpenObserveMcpClient {
         let (value, _) = self
             .post(json!({
                 "jsonrpc": "2.0",
-                "id": 1,
+                "id": self.next_id(),
                 "method": method,
                 "params": params
             }))

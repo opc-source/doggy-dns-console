@@ -1,10 +1,19 @@
 use std::sync::Arc;
 
 use doggy_dns_console::agent::openobserve_mcp::OpenObserveMcpClient;
+use doggy_dns_console::api::state::Probe;
 use doggy_dns_console::config::{OpenObserveAuth, OpenObserveMcpConfig};
 use serde_json::json;
-use wiremock::matchers::{body_partial_json, method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::matchers::{body_partial_json, header, method, path};
+use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
+
+struct NoSessionHeader;
+
+impl Match for NoSessionHeader {
+    fn matches(&self, request: &Request) -> bool {
+        !request.headers.contains_key("mcp-session-id")
+    }
+}
 
 fn test_cfg(base_url: String) -> OpenObserveMcpConfig {
     OpenObserveMcpConfig {
@@ -168,6 +177,85 @@ async fn rejects_tool_outside_allowlist_before_network() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains("not allowed"));
+}
+
+#[tokio::test]
+async fn rehandshakes_when_session_expires_mid_process() {
+    let server = MockServer::start().await;
+    let init_ok = |session: &str| {
+        ResponseTemplate::new(200)
+            .insert_header("mcp-session-id", session)
+            .set_body_json(json!({
+                "jsonrpc": "2.0",
+                "result": { "protocolVersion": "2025-11-25", "capabilities": {} }
+            }))
+    };
+    let list_ok = |session: &str| {
+        ResponseTemplate::new(200)
+            .insert_header("mcp-session-id", session)
+            .set_body_json(json!({ "jsonrpc": "2.0", "result": { "tools": [] } }))
+    };
+
+    // First handshake hands out s1; every later one hands out s2. Both require an
+    // absent session header, so a stale s1 leaking into re-initialize never matches.
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .and(body_partial_json(json!({ "method": "initialize" })))
+        .and(NoSessionHeader)
+        .respond_with(init_ok("s1"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .and(body_partial_json(json!({ "method": "initialize" })))
+        .and(NoSessionHeader)
+        .respond_with(init_ok("s2"))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .and(body_partial_json(json!({ "method": "tools/list" })))
+        .and(NoSessionHeader)
+        .respond_with(ResponseTemplate::new(400).set_body_string("need initialize"))
+        .mount(&server)
+        .await;
+    // s1 works exactly once, then the server "restarts" and only accepts s2.
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .and(body_partial_json(json!({ "method": "tools/list" })))
+        .and(header("mcp-session-id", "s1"))
+        .respond_with(list_ok("s1"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .and(body_partial_json(json!({ "method": "tools/list" })))
+        .and(header("mcp-session-id", "s1"))
+        .respond_with(ResponseTemplate::new(404).set_body_string("session expired"))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .and(body_partial_json(json!({ "method": "tools/list" })))
+        .and(header("mcp-session-id", "s2"))
+        .respond_with(list_ok("s2"))
+        .mount(&server)
+        .await;
+
+    let client = Arc::new(OpenObserveMcpClient::new(test_cfg(server.uri() + "/mcp")).unwrap());
+    client.probe().await.unwrap();
+    client.probe().await.unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let handshakes = requests
+        .iter()
+        .filter(|request| {
+            String::from_utf8_lossy(&request.body).contains("\"method\":\"initialize\"")
+        })
+        .count();
+    assert_eq!(handshakes, 2);
 }
 
 #[tokio::test]
