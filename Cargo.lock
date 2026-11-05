@@ -15,7 +15,7 @@ dependencies = [
 [[package]]
 name = "adk-agent"
 version = "3.0.0"
-source = "git+https://github.com/zavora-ai/adk-rust?rev=791f6aafa32723f132375084385530ab7f039465#791f6aafa32723f132375084385530ab7f039465"
+source = "git+https://github.com/zavora-ai/adk-rust?rev=ffbfb053f65e11e93927fbd9bca01fdf217eb5cb#ffbfb053f65e11e93927fbd9bca01fdf217eb5cb"
 dependencies = [
  "adk-core",
  "adk-skill",
@@ -38,7 +38,7 @@ dependencies = [
 [[package]]
 name = "adk-artifact"
 version = "3.0.0"
-source = "git+https://github.com/zavora-ai/adk-rust?rev=791f6aafa32723f132375084385530ab7f039465#791f6aafa32723f132375084385530ab7f039465"
+source = "git+https://github.com/zavora-ai/adk-rust?rev=ffbfb053f65e11e93927fbd9bca01fdf217eb5cb#ffbfb053f65e11e93927fbd9bca01fdf217eb5cb"
 dependencies = [
  "adk-core",
  "async-trait",
@@ -49,12 +49,13 @@ dependencies = [
 [[package]]
 name = "adk-core"
 version = "3.0.0"
-source = "git+https://github.com/zavora-ai/adk-rust?rev=791f6aafa32723f132375084385530ab7f039465#791f6aafa32723f132375084385530ab7f039465"
+source = "git+https://github.com/zavora-ai/adk-rust?rev=ffbfb053f65e11e93927fbd9bca01fdf217eb5cb#ffbfb053f65e11e93927fbd9bca01fdf217eb5cb"
 dependencies = [
  "async-trait",
  "chrono",
  "futures",
  "http",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -68,7 +69,7 @@ dependencies = [
 [[package]]
 name = "adk-managed"
 version = "3.0.0"
-source = "git+https://github.com/zavora-ai/adk-rust?rev=791f6aafa32723f132375084385530ab7f039465#791f6aafa32723f132375084385530ab7f039465"
+source = "git+https://github.com/zavora-ai/adk-rust?rev=ffbfb053f65e11e93927fbd9bca01fdf217eb5cb#ffbfb053f65e11e93927fbd9bca01fdf217eb5cb"
 dependencies = [
  "adk-agent",
  "adk-core",
@@ -95,7 +96,7 @@ dependencies = [
 [[package]]
 name = "adk-model"
 version = "3.0.0"
-source = "git+https://github.com/zavora-ai/adk-rust?rev=791f6aafa32723f132375084385530ab7f039465#791f6aafa32723f132375084385530ab7f039465"
+source = "git+https://github.com/zavora-ai/adk-rust?rev=ffbfb053f65e11e93927fbd9bca01fdf217eb5cb#ffbfb053f65e11e93927fbd9bca01fdf217eb5cb"
 dependencies = [
  "adk-core",
  "adk-telemetry",
@@ -120,7 +121,7 @@ dependencies = [
 [[package]]
 name = "adk-plugin"
 version = "3.0.0"
-source = "git+https://github.com/zavora-ai/adk-rust?rev=791f6aafa32723f132375084385530ab7f039465#791f6aafa32723f132375084385530ab7f039465"
+source = "git+https://github.com/zavora-ai/adk-rust?rev=ffbfb053f65e11e93927fbd9bca01fdf217eb5cb#ffbfb053f65e11e93927fbd9bca01fdf217eb5cb"
 dependencies = [
  "adk-core",
  "serde_json",
@@ -131,7 +132,7 @@ dependencies = [
 [[package]]
 name = "adk-runner"
 version = "3.0.0"
-source = "git+https://github.com/zavora-ai/adk-rust?rev=791f6aafa32723f132375084385530ab7f039465#791f6aafa32723f132375084385530ab7f039465"
+source = "git+https://github.com/zavora-ai/adk-rust?rev=ffbfb053f65e11e93927fbd9bca01fdf217eb5cb#ffbfb053f65e11e93927fbd9bca01fdf217eb5cb"
 dependencies = [
  "adk-artifact",
  "adk-core",
@@ -153,7 +154,7 @@ dependencies = [
 [[package]]
 name = "adk-rust"
 version = "3.0.0"
-source = "git+https://github.com/zavora-ai/adk-rust?rev=791f6aafa32723f132375084385530ab7f039465#791f6aafa32723f132375084385530ab7f039465"
+source = "git+https://github.com/zavora-ai/adk-rust?rev=ffbfb053f65e11e93927fbd9bca01fdf217eb5cb#ffbfb053f65e11e93927fbd9bca01fdf217eb5cb"
 dependencies = [
  "adk-agent",
  "adk-core",
@@ -175,7 +176,7 @@ dependencies = [
 [[package]]
 name = "adk-rust-macros"
 version = "3.0.0"
-source = "git+https://github.com/zavora-ai/adk-rust?rev=791f6aafa32723f132375084385530ab7f039465#791f6aafa32723f132375084385530ab7f039465"
+source = "git+https://github.com/zavora-ai/adk-rust?rev=ffbfb053f65e11e93927fbd9bca01fdf217eb5cb#ffbfb053f65e11e93927fbd9bca01fdf217eb5cb"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -185,7 +186,7 @@ dependencies = [
 [[package]]
 name = "adk-sandbox"
 version = "3.0.0"
-source = "git+https://github.com/zavora-ai/adk-rust?rev=791f6aafa32723f132375084385530ab7f039465#791f6aafa32723f132375084385530ab7f039465"
+source = "git+https://github.com/zavora-ai/adk-rust?rev=ffbfb053f65e11e93927fbd9bca01fdf217eb5cb#ffbfb053f65e11e93927fbd9bca01fdf217eb5cb"
 dependencies = [
  "adk-core",
  "async-trait",
@@ -203,7 +204,7 @@ dependencies = [
 [[package]]
 name = "adk-server"
 version = "3.0.0"
-source = "git+https://github.com/zavora-ai/adk-rust?rev=791f6aafa32723f132375084385530ab7f039465#791f6aafa32723f132375084385530ab7f039465"
+source = "git+https://github.com/zavora-ai/adk-rust?rev=ffbfb053f65e11e93927fbd9bca01fdf217eb5cb#ffbfb053f65e11e93927fbd9bca01fdf217eb5cb"
 dependencies = [
  "a2a-protocol-types",
  "adk-agent",
@@ -237,7 +238,7 @@ dependencies = [
 [[package]]
 name = "adk-session"
 version = "3.0.0"
-source = "git+https://github.com/zavora-ai/adk-rust?rev=791f6aafa32723f132375084385530ab7f039465#791f6aafa32723f132375084385530ab7f039465"
+source = "git+https://github.com/zavora-ai/adk-rust?rev=ffbfb053f65e11e93927fbd9bca01fdf217eb5cb#ffbfb053f65e11e93927fbd9bca01fdf217eb5cb"
 dependencies = [
  "adk-core",
  "async-trait",
@@ -252,7 +253,7 @@ dependencies = [
 [[package]]
 name = "adk-skill"
 version = "3.0.0"
-source = "git+https://github.com/zavora-ai/adk-rust?rev=791f6aafa32723f132375084385530ab7f039465#791f6aafa32723f132375084385530ab7f039465"
+source = "git+https://github.com/zavora-ai/adk-rust?rev=ffbfb053f65e11e93927fbd9bca01fdf217eb5cb#ffbfb053f65e11e93927fbd9bca01fdf217eb5cb"
 dependencies = [
  "adk-core",
  "adk-plugin",
@@ -269,7 +270,7 @@ dependencies = [
 [[package]]
 name = "adk-telemetry"
 version = "3.0.0"
-source = "git+https://github.com/zavora-ai/adk-rust?rev=791f6aafa32723f132375084385530ab7f039465#791f6aafa32723f132375084385530ab7f039465"
+source = "git+https://github.com/zavora-ai/adk-rust?rev=ffbfb053f65e11e93927fbd9bca01fdf217eb5cb#ffbfb053f65e11e93927fbd9bca01fdf217eb5cb"
 dependencies = [
  "thiserror",
  "tracing",
@@ -279,7 +280,7 @@ dependencies = [
 [[package]]
 name = "adk-tool"
 version = "3.0.0"
-source = "git+https://github.com/zavora-ai/adk-rust?rev=791f6aafa32723f132375084385530ab7f039465#791f6aafa32723f132375084385530ab7f039465"
+source = "git+https://github.com/zavora-ai/adk-rust?rev=ffbfb053f65e11e93927fbd9bca01fdf217eb5cb#ffbfb053f65e11e93927fbd9bca01fdf217eb5cb"
 dependencies = [
  "adk-core",
  "adk-rust-macros",

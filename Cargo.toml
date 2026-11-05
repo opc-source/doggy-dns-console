@@ -25,8 +25,8 @@ uuid = { version = "1", features = ["v4"] }
 url = "2"
 futures = "0.3"
 rmcp = { version = "3.7", features = ["client", "transport-streamable-http-client-reqwest"] }
-adk-rust = { git = "https://github.com/zavora-ai/adk-rust", rev = "791f6aafa32723f132375084385530ab7f039465", default-features = false, features = ["agents", "models", "openai", "deepseek", "tools", "runner", "sessions", "server"] }
-adk-session = { git = "https://github.com/zavora-ai/adk-rust", rev = "791f6aafa32723f132375084385530ab7f039465", features = ["sqlite"] }
+adk-rust = { git = "https://github.com/zavora-ai/adk-rust", rev = "ffbfb053f65e11e93927fbd9bca01fdf217eb5cb", default-features = false, features = ["agents", "models", "openai", "deepseek", "tools", "runner", "sessions", "server"] }
+adk-session = { git = "https://github.com/zavora-ai/adk-rust", rev = "ffbfb053f65e11e93927fbd9bca01fdf217eb5cb", features = ["sqlite"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
