@@ -38,3 +38,14 @@ describe('ToolCallCard', () => {
     expect(wrapper.text()).toContain('error')
   })
 })
+
+describe('ToolCallCard failure', () => {
+  it('opens an errored call so the failure is visible', () => {
+    const wrapper = mount(ToolCallCard, {
+      props: { call: tool({ status: 'error', result: '{"error":"denied"}' }) },
+    })
+
+    expect(wrapper.find('details').element.hasAttribute('open')).toBe(true)
+    expect(wrapper.get('[data-test="tool-result"]').text()).toContain('denied')
+  })
+})

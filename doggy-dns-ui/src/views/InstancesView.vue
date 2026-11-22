@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, toRef } from 'vue'
+import { computed, ref, toRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { RefreshCw, X } from '@lucide/vue'
 
@@ -8,8 +8,9 @@ import ErrorBanner from '@/components/ErrorBanner.vue'
 import InstanceCard from '@/components/InstanceCard.vue'
 import StatusDot from '@/components/StatusDot.vue'
 import TimeRangeControl from '@/components/TimeRangeControl.vue'
+import { apiPost } from '@/api/http'
 import { useInstanceDetail, useInstances } from '@/composables/useInstances'
-import type { Instance } from '@/api/types'
+import type { Instance, LogLevelState } from '@/api/types'
 import {
   DEFAULT_WINDOW_MINUTES,
   parseFilterQuery,
@@ -43,7 +44,61 @@ function setDraft(next: FilterDraft) {
 const { instances, error, refresh } = useInstances()
 const selected = ref<string | null>(null)
 const selectedId = toRef(selected)
-const { detail, error: detailError, invalid, loading } = useInstanceDetail(selectedId, draft)
+const { detail, error: detailError, invalid, loading, refresh: refreshDetail } = useInstanceDetail(selectedId, draft)
+
+const logLevelDraft = ref('')
+const logLevelBusy = ref(false)
+const logLevelError = ref<string | null>(null)
+let logLevelSeq = 0
+
+watch(selected, () => {
+  // The drawer moved: retire any answer still in flight so A's failure cannot
+  // render under B, and release the spinner the closed panel will not show.
+  logLevelSeq += 1
+  logLevelDraft.value = ''
+  logLevelError.value = null
+  logLevelBusy.value = false
+})
+
+const logLevels = computed(() => detail.value?.runtime?.logs ?? null)
+const canControl = computed(
+  () =>
+    Boolean(detail.value?.controlEnabled) &&
+    Boolean(detail.value?.instance.online) &&
+    Boolean(detail.value?.instance.mcpReachable),
+)
+
+async function changeLogLevel(payload: { directives?: string; reset?: boolean }) {
+  const current = detail.value
+  if (!current || logLevelBusy.value) return
+  const seq = ++logLevelSeq
+  logLevelBusy.value = true
+  logLevelError.value = null
+  try {
+    await apiPost<LogLevelState>(
+      `/api/instances/${encodeURIComponent(current.instance.id)}/log-level`,
+      payload,
+    )
+    if (seq !== logLevelSeq) return
+    logLevelDraft.value = ''
+    await refreshDetail()
+  } catch (cause) {
+    if (seq !== logLevelSeq) return
+    logLevelError.value = cause instanceof Error ? cause.message : String(cause)
+  } finally {
+    if (seq === logLevelSeq) logLevelBusy.value = false
+  }
+}
+
+function applyDirectives() {
+  const directives = logLevelDraft.value.trim()
+  if (!directives) return
+  void changeLogLevel({ directives })
+}
+
+function resetLogLevel() {
+  void changeLogLevel({ reset: true })
+}
 
 const online = computed(() => instances.value.filter((item) => item.online).length)
 
@@ -186,6 +241,71 @@ function describeSignal(signal: unknown): string | null {
               </div>
               <p v-else-if="detail.runtime" class="text-xs text-muted">No live signals registered.</p>
               <p v-else class="text-xs text-muted">MCP did not return runtime signals.</p>
+            </section>
+
+            <section>
+              <h3 class="mb-2 text-[11px] uppercase tracking-[0.14em] text-muted">Runtime log level</h3>
+              <div class="panel p-3">
+                <div class="grid grid-cols-2 gap-2">
+                  <div>
+                    <p class="text-[10px] uppercase tracking-wide text-muted">stdout</p>
+                    <p class="mono mt-1 text-xs" data-testid="log-level-stdout">
+                      {{ logLevels ? (logLevels.stdout ?? 'off') : '—' }}
+                    </p>
+                  </div>
+                  <div>
+                    <p class="text-[10px] uppercase tracking-wide text-muted">otlp</p>
+                    <p class="mono mt-1 text-xs" data-testid="log-level-otlp">
+                      {{ logLevels ? (logLevels.otlp ?? 'off') : '—' }}
+                    </p>
+                  </div>
+                </div>
+                <p v-if="!logLevels" class="mt-2 text-[11px] text-muted">
+                  MCP did not return log filters.
+                </p>
+                <template v-if="canControl">
+                  <div class="mt-3 flex flex-wrap items-center gap-2">
+                    <input
+                      v-model="logLevelDraft"
+                      aria-label="Log filter directives"
+                      data-testid="log-level-input"
+                      class="mono min-w-0 flex-1 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs"
+                      placeholder="doggy_dns_nacos=debug,hickory_proto=info"
+                      :disabled="logLevelBusy"
+                      @keydown.enter="applyDirectives"
+                    />
+                    <button
+                      data-testid="log-level-apply"
+                      class="focus-ring rounded-lg border border-border bg-surface px-3 py-2 text-xs text-text disabled:opacity-50"
+                      :disabled="logLevelBusy || !logLevelDraft.trim()"
+                      @click="applyDirectives"
+                    >
+                      Apply
+                    </button>
+                    <button
+                      data-testid="log-level-reset"
+                      class="focus-ring rounded-lg border border-border bg-surface px-3 py-2 text-xs text-muted hover:text-text disabled:opacity-50"
+                      :disabled="logLevelBusy"
+                      @click="resetLogLevel"
+                    >
+                      Reset
+                    </button>
+                  </div>
+                  <p class="mt-2 text-[11px] text-muted">
+                    Applies to stdout and OTLP until reset or restart; it does not write the config
+                    file.
+                  </p>
+                </template>
+                <p v-else-if="!detail.controlEnabled" class="mt-2 text-[11px] text-muted">
+                  Runtime control is disabled; set MCP_TOKEN to enable it.
+                </p>
+                <p v-else class="mt-2 text-[11px] text-muted">
+                  Runtime control needs a reachable MCP endpoint.
+                </p>
+                <p v-if="logLevelError" class="mt-2 text-[11px] text-error" data-testid="log-level-error">
+                  {{ logLevelError }}
+                </p>
+              </div>
             </section>
 
             <section>

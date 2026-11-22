@@ -63,8 +63,14 @@ export interface PluginInfo {
   details: Record<string, unknown>
 }
 
+export interface LogLevelState {
+  stdout: string | null
+  otlp: string | null
+}
+
 export interface RuntimeStatus {
   signals: Record<string, unknown>
+  logs?: LogLevelState | null
 }
 
 export interface InstanceDetail {
@@ -79,6 +85,9 @@ export interface InstanceDetail {
   configToml: string | null
   redactedKeys: string[]
   runtime: RuntimeStatus | null
+  /** Whether this console process holds the control-plane credential and may
+   * issue `set_log_level`; mirrors `ConsoleService::control_enabled`. */
+  controlEnabled: boolean
   /** Failure rows for this host inside the requested bracket; `null` means the
    * telemetry source could not count them — the drawer renders an em dash
    * rather than a fabricated zero (mirrors `Option<u64>` in `src/domain.rs`). */

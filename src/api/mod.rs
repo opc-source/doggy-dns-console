@@ -55,6 +55,10 @@ pub fn business_router(state: ApiState) -> Router {
         .route("/api/analysis/markers", get(analysis::markers))
         .route("/api/instances", get(instances::instances))
         .route("/api/instances/{id}", get(instances::instance_detail))
+        .route(
+            "/api/instances/{id}/log-level",
+            post(instances::set_log_level),
+        )
         .route("/api/connections", get(connections::connections))
         .with_state(state)
 }

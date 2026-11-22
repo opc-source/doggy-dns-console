@@ -22,7 +22,8 @@ function detailBody(overrides: Record<string, unknown> = {}) {
     plugins: [],
     configToml: '',
     redactedKeys: [],
-    runtime: { signals: {} },
+    runtime: { signals: {}, logs: { stdout: 'info', otlp: 'info' } },
+    controlEnabled: true,
     // 旧字段 `recentFailures` 到这一步已经不存在:Task 4 把 `InstanceDetail`
     // 换成 `failureCount: Option<u64>`,序列化就是 `failureCount: number | null`。
     failureCount: 0,
@@ -32,6 +33,12 @@ function detailBody(overrides: Record<string, unknown> = {}) {
 
 const wrappers: VueWrapper[] = []
 let fetches: string[] = []
+interface Call {
+  url: string
+  method: string
+  body: unknown
+}
+let calls: Call[] = []
 
 // The view reads the bracket from `useRoute()` now, so every mount here carries
 // the app's own route table in a memory router (same shape as
@@ -40,17 +47,34 @@ let fetches: string[] = []
 // not a second route.
 async function mountView(
   path: string,
-  detail: () => unknown = () => detailBody(),
+  detail: (url?: string) => unknown = () => detailBody(),
   list: () => unknown = () => listed,
+  post: () => Response | Promise<Response> = () =>
+    new Response(JSON.stringify({ stdout: 'debug', otlp: 'debug' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
 ): Promise<{ router: Router; wrapper: VueWrapper }> {
   fetches = []
+  calls = []
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (input: RequestInfo | URL) => {
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
+      const method = init?.method ?? 'GET'
+      let body: unknown = null
+      if (typeof init?.body === 'string') {
+        try {
+          body = JSON.parse(init.body)
+        } catch {
+          body = init.body
+        }
+      }
+      calls.push({ url, method, body })
+      if (method === 'POST') return post()
       fetches.push(url)
-      const body = url.includes('/api/instances/') ? detail() : list()
-      return new Response(JSON.stringify(body), {
+      const payload = url.includes('/api/instances/') ? detail(url) : list()
+      return new Response(JSON.stringify(payload), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       })
@@ -197,5 +221,131 @@ describe('InstancesView', () => {
     const wrapper = mount(ConfigPanel, { props: { toml: '[server]\nport = 15353' } })
     expect(wrapper.find('pre').text()).toContain('port = 15353')
     expect(wrapper.find('textarea').exists()).toBe(false)
+  })
+})
+
+describe('InstancesView runtime log level', () => {
+  it('shows the filters the node reports', async () => {
+    const { wrapper } = await mountView('/instances', () =>
+      detailBody({
+        runtime: { signals: {}, logs: { stdout: 'doggy_dns=debug', otlp: null } },
+      }),
+    )
+
+    expect(wrapper.get('[data-testid="log-level-stdout"]').text()).toBe('doggy_dns=debug')
+    expect(wrapper.get('[data-testid="log-level-otlp"]').text()).toBe('off')
+    wrapper.unmount()
+  })
+
+  it('applies directives and refreshes the detail', async () => {
+    const { wrapper } = await mountView('/instances')
+    const before = calls.filter(
+      (call) => call.method === 'GET' && call.url.includes('/api/instances/'),
+    ).length
+
+    await wrapper.get('[data-testid="log-level-input"]').setValue('doggy_dns=debug')
+    await wrapper.get('[data-testid="log-level-apply"]').trigger('click')
+    await flushPromises()
+
+    const post = calls.find((call) => call.method === 'POST')
+    expect(post?.url).toBe('/api/instances/n1/log-level')
+    expect(post?.body).toEqual({ directives: 'doggy_dns=debug' })
+    const after = calls.filter(
+      (call) => call.method === 'GET' && call.url.includes('/api/instances/'),
+    ).length
+    expect(after).toBe(before + 1)
+    wrapper.unmount()
+  })
+
+  it('resets to the startup filters', async () => {
+    const { wrapper } = await mountView('/instances')
+
+    await wrapper.get('[data-testid="log-level-reset"]').trigger('click')
+    await flushPromises()
+
+    const post = calls.find((call) => call.method === 'POST')
+    expect(post?.body).toEqual({ reset: true })
+    wrapper.unmount()
+  })
+
+  it('hides the editor when runtime control is disabled', async () => {
+    const { wrapper } = await mountView('/instances', () => detailBody({ controlEnabled: false }))
+
+    expect(wrapper.find('[data-testid="log-level-input"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('MCP_TOKEN')
+    wrapper.unmount()
+  })
+
+  it('reports the message when the endpoint rejects the change', async () => {
+    const { wrapper } = await mountView(
+      '/instances',
+      () => detailBody(),
+      () => listed,
+      () =>
+        new Response(
+          JSON.stringify({
+            error: { code: 'invalid_request', message: 'directives must not be empty' },
+          }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        ),
+    )
+
+    await wrapper.get('[data-testid="log-level-input"]').setValue('debug')
+    await wrapper.get('[data-testid="log-level-apply"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('directives must not be empty')
+    wrapper.unmount()
+  })
+})
+
+describe('InstancesView runtime log level race', () => {
+  it('discards a failed change after the drawer moved to another instance', async () => {
+    const second = {
+      id: 'n2',
+      host: 'dns-node-2',
+      version: '0.1.0',
+      online: true,
+      lastSeen: 1,
+      mcpReachable: true,
+    }
+    let resolvePost!: (response: Response) => void
+    const pending = new Promise<Response>((resolve) => {
+      resolvePost = resolve
+    })
+    const detailFor = (url?: string) =>
+      detailBody({
+        instance: url?.includes('/n2') ? second : listed[0]!,
+      })
+
+    const { wrapper } = await mountView(
+      '/instances',
+      detailFor,
+      () => [listed[0]!, second],
+      () => pending,
+    )
+
+    await wrapper.get('[data-testid="log-level-input"]').setValue('debug')
+    await wrapper.get('[data-testid="log-level-apply"]').trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[aria-label="Close"]').trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button.panel')[1]!.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('dns-node-2')
+
+    resolvePost(
+      new Response(
+        JSON.stringify({
+          error: { code: 'invalid_request', message: 'stale failure' },
+        }),
+        { status: 400, headers: { 'content-type': 'application/json' } },
+      ),
+    )
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('stale failure')
+    wrapper.unmount()
   })
 })

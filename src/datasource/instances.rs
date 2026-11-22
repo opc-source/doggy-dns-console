@@ -5,9 +5,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::datasource::mcp::{McpInstanceSource, Probe};
-use crate::datasource::{Clock, InstanceSource, TelemetrySource};
+use crate::datasource::{Clock, InstanceControl, InstanceSource, TelemetrySource};
 use crate::domain::{
-    Instance, InstanceDetail, InstanceIdentity, MatchQuality, MatchedInstance, SeenInstance, Window,
+    Instance, InstanceDetail, InstanceIdentity, LogLevelChange, LogLevelState, MatchQuality,
+    MatchedInstance, SeenInstance, Window,
 };
 use crate::error::DataError;
 
@@ -200,6 +201,37 @@ impl InstanceSource for MergedInstanceSource {
                 )),
             })),
             Err(error) => Err(error),
+        }
+    }
+}
+
+#[async_trait]
+impl InstanceControl for MergedInstanceSource {
+    async fn set_log_level(
+        &self,
+        id: &str,
+        change: LogLevelChange,
+    ) -> Result<LogLevelState, DataError> {
+        let seen = self.seen().await;
+        let probes = self.detail_probes(&seen, id);
+        match self.mcp.set_log_level_at(&probes, id, change).await {
+            // A node telemetry still lists is known; if no control endpoint
+            // answered, the write failed upstream rather than the id being
+            // unknown. Host-only ids are rejected by the exact-id match.
+            Err(DataError::NotFound(_))
+                if seen
+                    .iter()
+                    .any(|instance| instance.id.eq_ignore_ascii_case(id)) =>
+            {
+                tracing::warn!(
+                    instance = id,
+                    "known instance has no reachable control endpoint"
+                );
+                Err(DataError::Control(format!(
+                    "instance {id} is not reachable at its control endpoint"
+                )))
+            }
+            result => result,
         }
     }
 }

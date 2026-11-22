@@ -97,6 +97,21 @@ test('the instance drawer counts failures over the chosen bracket', async ({ pag
   expect(week).toBeGreaterThan(hour)
 })
 
+test('the instance drawer applies and resets the runtime log level', async ({ page }) => {
+  await page.goto('/instances?windowMinutes=60')
+  await page.getByRole('button', { name: /^dns-node-1\b/ }).click()
+
+  const stdout = page.getByTestId('log-level-stdout')
+  await expect(stdout).toHaveText('info')
+
+  await page.getByTestId('log-level-input').fill('doggy_dns_nacos=debug')
+  await page.getByTestId('log-level-apply').click()
+  await expect(stdout).toHaveText('doggy_dns_nacos=debug')
+
+  await page.getByTestId('log-level-reset').click()
+  await expect(stdout).toHaveText('info')
+})
+
 // D8 splits the two directions of the same rule, so each case gets its own
 // 20s window (and its own timeout budget): a relative bracket must keep
 // re-anchoring every 15s, an absolute one must stop asking entirely.
