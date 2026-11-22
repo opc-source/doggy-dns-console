@@ -41,7 +41,8 @@ export function useInstanceDetail(id: Ref<string | null>, draft: Ref<FilterDraft
   const loading = ref(false)
   let seq = 0
 
-  async function refresh() {
+  async function refresh(options: { silent?: boolean } = {}) {
+    const { silent = false } = options
     // Bump before doing anything else: an answer still in flight describes the
     // bracket that was just replaced (or the drawer that was just closed), so it
     // must not land over the newer one — the same `++seq` retirement
@@ -75,7 +76,9 @@ export function useInstanceDetail(id: Ref<string | null>, draft: Ref<FilterDraft
       return
     }
     invalid.value = null
-    loading.value = true
+    // A silent refetch runs after a write while the drawer is open: keeping the
+    // body mounted preserves its scroll position and the control's focus.
+    if (!silent) loading.value = true
     try {
       // The bracket travels with the request: the failure number is a range
       // answer, everything else in the detail is live MCP data.

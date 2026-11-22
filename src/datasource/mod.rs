@@ -131,8 +131,8 @@ pub trait InstanceSource: Send + Sync {
 /// a source can be wired for observation without also gaining writes.
 #[async_trait]
 pub trait InstanceControl: Send + Sync {
-    /// Replace or restore the process's log filters. The id resolves the same
-    /// way [`InstanceSource::detail`] does.
+    /// Replace or restore the process's log filters. `id` must be the exact
+    /// instance id (for example `host-pid`), not a host alias.
     async fn set_log_level(
         &self,
         id: &str,

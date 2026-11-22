@@ -107,6 +107,8 @@ test('the instance drawer applies and resets the runtime log level', async ({ pa
   await page.getByTestId('log-level-input').fill('doggy_dns_nacos=debug')
   await page.getByTestId('log-level-apply').click()
   await expect(stdout).toHaveText('doggy_dns_nacos=debug')
+  // Both outputs come from the refetched detail, not from an echoed draft.
+  await expect(page.getByTestId('log-level-otlp')).toHaveText('doggy_dns_nacos=debug')
 
   await page.getByTestId('log-level-reset').click()
   await expect(stdout).toHaveText('info')

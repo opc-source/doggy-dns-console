@@ -213,26 +213,9 @@ impl InstanceControl for MergedInstanceSource {
         change: LogLevelChange,
     ) -> Result<LogLevelState, DataError> {
         let seen = self.seen().await;
-        let probes = self.detail_probes(&seen, id);
-        match self.mcp.set_log_level_at(&probes, id, change).await {
-            // A node telemetry still lists is known; if no control endpoint
-            // answered, the write failed upstream rather than the id being
-            // unknown. Host-only ids are rejected by the exact-id match.
-            Err(DataError::NotFound(_))
-                if seen
-                    .iter()
-                    .any(|instance| instance.id.eq_ignore_ascii_case(id)) =>
-            {
-                tracing::warn!(
-                    instance = id,
-                    "known instance has no reachable control endpoint"
-                );
-                Err(DataError::Control(format!(
-                    "instance {id} is not reachable at its control endpoint"
-                )))
-            }
-            result => result,
-        }
+        self.mcp
+            .set_log_level_at(&self.detail_probes(&seen, id), id, change)
+            .await
     }
 }
 

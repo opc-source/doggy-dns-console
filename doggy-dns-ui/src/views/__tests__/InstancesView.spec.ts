@@ -334,6 +334,11 @@ describe('InstancesView runtime log level race', () => {
     await wrapper.findAll('button.panel')[1]!.trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('dns-node-2')
+    // The new drawer is not stuck behind the old instance's in-flight write:
+    // its controls must be enabled before that answer lands.
+    expect(
+      wrapper.get('[data-testid="log-level-reset"]').attributes('disabled'),
+    ).toBeUndefined()
 
     resolvePost(
       new Response(

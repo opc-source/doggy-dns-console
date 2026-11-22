@@ -302,8 +302,8 @@ async fn control_targets_the_exact_process_and_never_a_host_alias() {
         .await
         .unwrap_err();
     assert!(
-        matches!(error, DataError::NotFound(_)),
-        "a host-only id must not pick an arbitrary process, got {error:?}"
+        matches!(error, DataError::Invalid(_)),
+        "a host-only id must be an invalid request, got {error:?}"
     );
     assert_eq!(
         transport
@@ -342,7 +342,7 @@ async fn control_of_a_known_but_unreachable_instance_is_a_control_failure() {
     ));
     let merged = MergedInstanceSource::new(mcp, telemetry, 19090, Arc::new(FixedClock(now)));
 
-    let error = InstanceControl::set_log_level(&merged, "node-a", LogLevelChange::Reset)
+    let error = InstanceControl::set_log_level(&merged, "node-a-123", LogLevelChange::Reset)
         .await
         .unwrap_err();
     assert!(
@@ -370,5 +370,53 @@ async fn fixture_control_is_scoped_to_one_instance() {
     assert_eq!(
         node2["logs"]["stdout"], "info",
         "a demo change on one node must not leak to another"
+    );
+}
+
+struct ProducerTransport;
+
+#[async_trait]
+impl InstanceTransport for ProducerTransport {
+    async fn call(&self, _endpoint: &str, tool: &str, _args: Value) -> Result<Value, DataError> {
+        match tool {
+            "get_status" => Ok(json!({ "instanceId": "node-a-123", "host": "node-a" })),
+            "set_log_level" => Ok(json!({ "stdout": "debug", "otlp": "debug" })),
+            other => Err(DataError::Invalid(format!("unexpected tool {other}"))),
+        }
+    }
+}
+
+#[tokio::test]
+async fn control_resolves_a_producer_instance_id_through_host_telemetry() {
+    // Production telemetry identifies a node by host, while its control plane
+    // reports `host-pid`; the write must follow the exact producer id.
+    let now = 1_761_436_800_000;
+    let telemetry: Arc<dyn TelemetrySource> = Arc::new(SeenOnly(vec![SeenInstance {
+        id: "node-a".to_string(),
+        host: "node-a".to_string(),
+        last_seen: now,
+        endpoint: Some("http://node-a.internal:19999/mcp".to_string()),
+    }]));
+    let mcp = Arc::new(McpInstanceSource::new(
+        Vec::new(),
+        Arc::new(ProducerTransport),
+    ));
+    let merged = MergedInstanceSource::new(mcp, telemetry, 19090, Arc::new(FixedClock(now)));
+
+    let state = InstanceControl::set_log_level(
+        &merged,
+        "node-a-123",
+        LogLevelChange::Set("debug".to_string()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(state.stdout.as_deref(), Some("debug"));
+
+    let error = InstanceControl::set_log_level(&merged, "node-a", LogLevelChange::Reset)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, DataError::Invalid(_)),
+        "a host alias must be a 400, got {error:?}"
     );
 }

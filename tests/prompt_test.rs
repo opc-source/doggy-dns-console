@@ -33,4 +33,5 @@ fn prompt_limits_writes_to_the_explicit_log_level_control() {
     // instead of promising a control the model cannot call.
     assert!(SYSTEM_PROMPT.contains("不在工具列表中"));
     assert!(SYSTEM_PROMPT.contains("MCP_TOKEN"));
+    assert!(SYSTEM_PROMPT.contains("精确 id"));
 }

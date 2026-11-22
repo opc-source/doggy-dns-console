@@ -101,11 +101,11 @@ same host. The shape is validated locally: both, neither, empty directives, or a
 is `400 invalid_request`. The answer is the directives now in force,
 `{"stdout": "...", "otlp": "..."}`, with `null` for a disabled output. It answers
 `503 not_configured` when `MCP_TOKEN` is unset, `404` for an unknown instance, `400` when the
-node's MCP build rejects the directives, and `502 mcp_control_failed` when a known instance's
-control endpoint is unreachable or the control call otherwise fails. Control transport detail
-(endpoint and upstream body) is logged in the console, not returned to the caller or model. The
-instance detail carries `controlEnabled` so the drawer only renders the editor on a console that
-may write.
+node's MCP build rejects the directives or the id is a host alias, and `502 mcp_control_failed`
+when a known instance's control endpoint is unreachable or the control call otherwise fails.
+Control transport detail (endpoint and upstream body) is logged in the console, not returned to
+the caller or model. The instance detail carries `controlEnabled` so the drawer only renders the
+editor on a console that may write.
 
 `p95` is the worst bucket inside the bracket, not the last point (the telemetry
 layer takes `max` over the sampled series). The trend and p95 queries share one

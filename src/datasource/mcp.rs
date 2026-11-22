@@ -311,7 +311,6 @@ impl McpInstanceSource {
         probes: &'a [Probe],
         id: &str,
         context: &'static str,
-        exact: bool,
     ) -> Option<(&'a Probe, Instance, Value)> {
         for probe in probes {
             let status = match self.status_at(&probe.endpoint).await {
@@ -325,12 +324,7 @@ impl McpInstanceSource {
                 tracing::warn!(endpoint = %probe.endpoint, "mcp get_status missing instance identity");
                 continue;
             };
-            let matches = if exact {
-                instance.id == id
-            } else {
-                instance.id == id || instance.host == id
-            };
-            if !matches {
+            if instance.id != id && instance.host != id {
                 continue;
             }
             return Some((probe, instance, status));
@@ -338,9 +332,55 @@ impl McpInstanceSource {
         None
     }
 
+    /// Resolves an exact instance id to the probe a write should use. A host
+    /// alias is an invalid request; an answered probe with another identity is
+    /// not found; a probe set that never identified anyone is a control
+    /// failure, not an unknown instance.
+    async fn control_endpoint<'a>(
+        &self,
+        probes: &'a [Probe],
+        id: &str,
+    ) -> Result<&'a Probe, DataError> {
+        if probes.is_empty() {
+            return Err(DataError::NotFound(format!("instance {id}")));
+        }
+        let mut identified = false;
+        let mut host_alias = false;
+        for probe in probes {
+            let status = match self.status_at(&probe.endpoint).await {
+                Ok(status) => status,
+                Err(error) => {
+                    tracing::warn!(endpoint = %probe.endpoint, error = %error, "mcp control unavailable");
+                    continue;
+                }
+            };
+            let Some(instance) = instance_from_status(&status) else {
+                tracing::warn!(endpoint = %probe.endpoint, "mcp get_status missing instance identity");
+                continue;
+            };
+            identified = true;
+            if instance.id == id {
+                return Ok(probe);
+            }
+            if instance.host == id {
+                host_alias = true;
+            }
+        }
+        if host_alias {
+            return Err(DataError::Invalid(format!(
+                "pass the exact instance id, not the host alias {id}"
+            )));
+        }
+        if identified {
+            return Err(DataError::NotFound(format!("instance {id}")));
+        }
+        Err(DataError::Control(format!(
+            "instance {id} is not reachable at its control endpoint"
+        )))
+    }
+
     pub async fn detail_at(&self, probes: &[Probe], id: &str) -> Result<InstanceDetail, DataError> {
-        let Some((probe, mut instance, status)) =
-            self.matched_status(probes, id, "detail", false).await
+        let Some((probe, mut instance, status)) = self.matched_status(probes, id, "detail").await
         else {
             return Err(DataError::NotFound(format!("instance {id}")));
         };
@@ -415,9 +455,7 @@ impl McpInstanceSource {
         id: &str,
         change: LogLevelChange,
     ) -> Result<LogLevelState, DataError> {
-        let Some((probe, _, _)) = self.matched_status(probes, id, "control", true).await else {
-            return Err(DataError::NotFound(format!("instance {id}")));
-        };
+        let probe = self.control_endpoint(probes, id).await?;
         let args = match &change {
             LogLevelChange::Set(directives) => json!({ "directives": directives }),
             LogLevelChange::Reset => json!({ "reset": true }),

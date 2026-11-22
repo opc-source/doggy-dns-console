@@ -222,3 +222,29 @@ describe('useInstanceDetail ordering', () => {
     expect(detail.detail.value).toBeNull()
   })
 })
+
+describe('useInstanceDetail silent refresh', () => {
+  it('refetches without hiding the open drawer', async () => {
+    const draft = ref<FilterDraft>({ ...emptyDraft(), windowMinutes: 60 })
+    const next = deferred<Response>()
+    let first = true
+    const { detail } = mountDetail(ref('n1'), draft, () =>
+      first ? json(detailBody()) : next.promise,
+    )
+    await flushPromises()
+    expect(detail.loading.value).toBe(false)
+    first = false
+
+    const pending = detail.refresh({ silent: true })
+    await flushPromises()
+    // The body must stay mounted while the post-mutation refetch runs, or the
+    // drawer collapses, loses scroll and drops focus.
+    expect(detail.loading.value).toBe(false)
+
+    next.resolve(json(detailBody({ pid: 5252 })))
+    await pending
+    await flushPromises()
+    expect(detail.loading.value).toBe(false)
+    expect(detail.detail.value?.pid).toBe(5252)
+  })
+})

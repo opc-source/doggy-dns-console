@@ -526,4 +526,9 @@ async fn set_instance_log_level_tool_is_registered_as_a_write() {
         .expect("set_instance_log_level is registered");
     assert!(!tool.is_read_only(), "a log-level change is a write");
     assert!(!tool.is_concurrency_safe(), "writes must run one at a time");
+    assert!(
+        tool.description().contains("not the host"),
+        "the tool must tell the model to pass the exact id: {}",
+        tool.description()
+    );
 }

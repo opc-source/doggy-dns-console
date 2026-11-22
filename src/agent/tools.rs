@@ -223,7 +223,7 @@ pub fn build_tools(service: Arc<ConsoleService>) -> Vec<Arc<dyn Tool>> {
         tools.push(Arc::new(
             StatefulTool::new(
                 "set_instance_log_level",
-                "Change one doggy-dns instance's runtime log filters. Call only when the operator explicitly asks to change logging; read the current filters with get_instance_detail first, and restate the directives you are applying. Pass exactly one of directives (EnvFilter-style, e.g. \"doggy_dns_nacos=debug,hickory_proto=info\") or reset=true (restore the startup filters). The change is non-destructive, idempotent and does not persist across a restart; it affects both stdout and OTLP logs.",
+                "Change one doggy-dns instance's runtime log filters. Call only when the operator explicitly asks to change logging; read the current filters with get_instance_detail first, and restate the directives you are applying. instanceId must be the exact id reported by list_instances or get_instance_detail (for example \"host-pid\"), not the host. Pass exactly one of directives (EnvFilter-style, e.g. \"doggy_dns_nacos=debug,hickory_proto=info\") or reset=true (restore the startup filters). The change is non-destructive, idempotent and does not persist across a restart; it affects both stdout and OTLP logs.",
                 state.clone(),
                 tool_set_instance_log_level,
             )

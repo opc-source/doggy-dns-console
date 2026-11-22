@@ -81,7 +81,7 @@ async function changeLogLevel(payload: { directives?: string; reset?: boolean })
     )
     if (seq !== logLevelSeq) return
     logLevelDraft.value = ''
-    await refreshDetail()
+    await refreshDetail({ silent: true })
   } catch (cause) {
     if (seq !== logLevelSeq) return
     logLevelError.value = cause instanceof Error ? cause.message : String(cause)
@@ -249,13 +249,13 @@ function describeSignal(signal: unknown): string | null {
                 <div class="grid grid-cols-2 gap-2">
                   <div>
                     <p class="text-[10px] uppercase tracking-wide text-muted">stdout</p>
-                    <p class="mono mt-1 text-xs" data-testid="log-level-stdout">
+                    <p class="mono mt-1 text-xs" data-testid="log-level-stdout" aria-live="polite">
                       {{ logLevels ? (logLevels.stdout ?? 'off') : '—' }}
                     </p>
                   </div>
                   <div>
                     <p class="text-[10px] uppercase tracking-wide text-muted">otlp</p>
-                    <p class="mono mt-1 text-xs" data-testid="log-level-otlp">
+                    <p class="mono mt-1 text-xs" data-testid="log-level-otlp" aria-live="polite">
                       {{ logLevels ? (logLevels.otlp ?? 'off') : '—' }}
                     </p>
                   </div>
@@ -302,7 +302,12 @@ function describeSignal(signal: unknown): string | null {
                 <p v-else class="mt-2 text-[11px] text-muted">
                   Runtime control needs a reachable MCP endpoint.
                 </p>
-                <p v-if="logLevelError" class="mt-2 text-[11px] text-error" data-testid="log-level-error">
+                <p
+                  v-if="logLevelError"
+                  class="mt-2 text-[11px] text-error"
+                  data-testid="log-level-error"
+                  role="alert"
+                >
                   {{ logLevelError }}
                 </p>
               </div>

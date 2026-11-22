@@ -457,7 +457,7 @@ impl InstanceControl for FixtureSource {
             .list()
             .await?
             .into_iter()
-            .find(|instance| instance.id == id || instance.host == id)
+            .find(|instance| instance.id == id)
             .ok_or_else(|| DataError::NotFound(format!("instance {id}")))?;
         let mut state = self.log_level.lock().unwrap();
         match change {
