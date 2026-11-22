@@ -78,12 +78,10 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     ) = if config.demo {
         let fixture = Arc::new(FixtureSource::new(clock.clone()));
         let telemetry = fixture.clone() as Arc<dyn TelemetrySource>;
-        let instances = fixture as Arc<dyn InstanceSource>;
-        let service = Arc::new(ConsoleService::new(
-            telemetry,
-            instances.clone(),
-            clock.clone(),
-        ));
+        let instances = fixture.clone() as Arc<dyn InstanceSource>;
+        let service = Arc::new(
+            ConsoleService::new(telemetry, instances.clone(), clock.clone()).with_control(fixture),
+        );
         (
             service,
             instances,
@@ -106,17 +104,20 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                 config.mcp.timeout,
             )),
         ));
-        let instances: Arc<dyn InstanceSource> = Arc::new(MergedInstanceSource::new(
+        let merged = Arc::new(MergedInstanceSource::new(
             mcp,
             telemetry.clone(),
             config.mcp.control_port,
             clock.clone(),
         ));
-        let service = Arc::new(ConsoleService::new(
-            telemetry,
-            instances.clone(),
-            clock.clone(),
-        ));
+        let instances: Arc<dyn InstanceSource> = merged.clone();
+        let mut service = ConsoleService::new(telemetry, instances.clone(), clock.clone());
+        // MCP_TOKEN is both the upstream credential and the write switch: a
+        // console that has never proven control-plane access stays read-only.
+        if config.mcp.token.is_some() {
+            service = service.with_control(merged);
+        }
+        let service = Arc::new(service);
 
         let (openobserve_mcp_health, extra_tools, mcp_client) = if config.openobserve_mcp.enabled {
             let client = Arc::new(crate::agent::openobserve_mcp::OpenObserveMcpClient::new(

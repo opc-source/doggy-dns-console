@@ -327,6 +327,42 @@ pub struct PluginInfo {
     pub details: Value,
 }
 
+/// The log filter directives in force on each output; `None` means that output
+/// is disabled.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogLevelState {
+    pub stdout: Option<String>,
+    pub otlp: Option<String>,
+}
+
+/// One `set_log_level` request: replace the directives, or restore the startup
+/// filters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LogLevelChange {
+    Set(String),
+    Reset,
+}
+
+impl LogLevelChange {
+    /// Interprets the wire shape shared by the HTTP body and the Copilot tool:
+    /// exactly one of `directives` and `reset = true`.
+    pub fn from_parts(directives: Option<String>, reset: Option<bool>) -> Result<Self, String> {
+        match (directives, reset.unwrap_or(false)) {
+            (Some(_), true) => Err("pass either directives or reset, not both".to_string()),
+            (None, false) => Err("pass directives or reset".to_string()),
+            (Some(directives), false) => {
+                let directives = directives.trim();
+                if directives.is_empty() {
+                    Err("directives must not be empty".to_string())
+                } else {
+                    Ok(Self::Set(directives.to_string()))
+                }
+            }
+            (None, true) => Ok(Self::Reset),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct InstanceDetail {

@@ -1,8 +1,9 @@
 # Doggy DNS Console
 
-An AI-first, read-only operations console for [doggy-dns](../doggy-dns). The dashboard reads
+An AI-first operations console for [doggy-dns](../doggy-dns). The dashboard reads
 OpenObserve REST; the copilot uses OpenObserve MCP (allowlisted read-only tools) and the
-doggy-dns instance MCP. No login: bind it to loopback by default.
+doggy-dns instance MCP. The console stays read-only until `MCP_TOKEN` is set — that token also
+unlocks runtime log-level control. No login: bind it to loopback by default.
 
 ## Quick start (no external services)
 
@@ -16,8 +17,8 @@ cd doggy-dns-ui && bun install && bun run dev
 ```
 
 `CONSOLE_DEMO=1` uses built-in fixtures and a scripted model, so the overview, failure drawer,
-and one AI turn work without OpenObserve, doggy-dns, or an API key. The production build can be
-served by the Rust binary:
+the runtime log-level panel (simulated in-process) and one AI turn work without OpenObserve,
+doggy-dns, or an API key. The production build can be served by the Rust binary:
 
 ```bash
 cd doggy-dns-ui && bun run build
@@ -37,15 +38,22 @@ cd .. && CONSOLE_DEMO=1 cargo run
    publish no address are probed at `http://{host}:{MCP_CONTROL_PORT}/mcp`
    (default `19090`). `doggy_dns.ip_addr` is the DNS listener's reachable
    address; if the control plane binds a different interface, list that node in
-   `MCP_ENDPOINTS` instead. Set `MCP_TOKEN` to the control-plane token, if set.
+   `MCP_ENDPOINTS` instead. Set `MCP_TOKEN` to the control-plane token. The same
+   token is the write switch: with it the console may change each node's runtime
+   log filters; without it the console is read-only.
 5. Optional: set `MCP_ENDPOINTS` (comma separated) to probe extra or
    misconfigured nodes that never reach OpenObserve.
 6. `cargo run`.
 
-The console consumes all four read-only tools from each instance's control plane: `get_status`,
-`list_plugins`, `get_config` and `get_runtime_status`. The instance drawer shows pid/status,
-plugins, the redacted TOML (with the masked keys listed) and live signals such as Nacos cache
-size/push freshness and XDP attachment. `MCP_TOKEN` is sent as a bearer token to every probed
+The console consumes all five control-plane tools: the read-only `get_status`, `list_plugins`,
+`get_config` and `get_runtime_status`, plus `set_log_level` when `MCP_TOKEN` is set. The instance
+drawer shows pid/status, plugins, the redacted TOML (with the masked keys listed), live signals
+such as Nacos cache size/push freshness and XDP attachment, and the current `stdout`/`otlp` log
+filters. With the token it can apply EnvFilter-style directives or reset them; the change is
+non-destructive, idempotent, affects both outputs and does not survive a restart. Without the
+token `POST /api/instances/{id}/log-level` answers `503 not_configured`, the drawer says so, and
+the Copilot does not register `set_instance_log_level`.
+`MCP_TOKEN` is sent as a bearer token to every probed
 endpoint — static and discovered alike — so anyone able to publish metrics for this OpenObserve
 org can make the console present that token to an address of their choosing; keep the metric
 stream trusted or leave `MCP_TOKEN` unset. Per-node tokens are not supported yet.
@@ -75,6 +83,7 @@ Evidence never depends on the model; analysis never blocks the evidence view.
 ```
 GET /api/overview?from=&to=&windowMinutes=
 GET /api/instances/{id}?from=&to=&windowMinutes=
+POST /api/instances/{id}/log-level
 ```
 
 Both bind the same `RangeQuery` struct (`windowMinutes`, `from`, `to`, epoch
@@ -84,6 +93,19 @@ contract: `/api/overview` takes no `domain`, `responseCode` or `instance` filter
 `GET /api/instances` (the list) accepts no query at all — it stays the only
 bracket-free endpoint, because its rows are identity and reachability, not a time
 series.
+
+`POST /api/instances/{id}/log-level` takes exactly one of
+`{"directives": "doggy_dns_nacos=debug,hickory_proto=info"}` or `{"reset": true}`. `{id}` must be
+the instance's exact id (not a host alias), so a write cannot land on a sibling process on the
+same host. The shape is validated locally: both, neither, empty directives, or a malformed body
+is `400 invalid_request`. The answer is the directives now in force,
+`{"stdout": "...", "otlp": "..."}`, with `null` for a disabled output. It answers
+`503 not_configured` when `MCP_TOKEN` is unset, `404` for an unknown instance, `400` when the
+node's MCP build rejects the directives or the id is a host alias, and `502 mcp_control_failed`
+when a known instance's control endpoint is unreachable or the control call otherwise fails.
+Control transport detail (endpoint and upstream body) is logged in the console, not returned to
+the caller or model. The instance detail carries `controlEnabled` so the drawer only renders the
+editor on a console that may write.
 
 `p95` is the worst bucket inside the bracket, not the last point (the telemetry
 layer takes `max` over the sampled series). The trend and p95 queries share one
@@ -356,7 +378,12 @@ backend and the Vite dev server automatically.
 
 ## Boundaries
 
-- Read-only: no config writes, no DNS mutations, no alert management.
+- Read-mostly: the only write is `set_log_level` (runtime log filters), and only when
+  `MCP_TOKEN` is set. No config writes, DNS mutations, restarts or alert management.
+- Tool failures: a failed `set_instance_log_level` is returned to the model with a
+  bounded, endpoint-free reason and rendered as an open error card in the Copilot panel;
+  the transport detail (endpoint and upstream body) stays in the console log. Raw
+  OpenObserve tool messages keep ADK's default withholding.
 - SQLite stores agent sessions and failure investigation metadata/results
   (`data/console.db`); raw telemetry logs and spans are never copied locally.
 - Failure analysis is read-only (allowlisted OpenObserve tools only) and is

@@ -1,7 +1,9 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use doggy_dns_console::agent::tools::{self, FailureArgs, InstanceArgs, OverviewArgs, TraceArgs};
+use doggy_dns_console::agent::tools::{
+    self, FailureArgs, InstanceArgs, InstanceLogLevelArgs, OverviewArgs, TraceArgs,
+};
 use doggy_dns_console::datasource::fixture::FixtureSource;
 use doggy_dns_console::datasource::{FixedClock, InstanceSource, TelemetrySource};
 use doggy_dns_console::domain::{
@@ -18,12 +20,26 @@ fn fixture_service() -> ConsoleService {
     ConsoleService::new(telemetry, instances, clock)
 }
 
+fn fixture_service_with_control() -> ConsoleService {
+    let clock = Arc::new(FixedClock(1_761_436_800_000));
+    let fixture = Arc::new(FixtureSource::new(clock.clone()));
+    let telemetry = fixture.clone() as Arc<dyn TelemetrySource>;
+    let instances = fixture.clone() as Arc<dyn InstanceSource>;
+    ConsoleService::new(telemetry, instances, clock).with_control(fixture)
+}
+
 #[tokio::test]
 async fn get_overview_tool_returns_service_payload() {
     let service = fixture_service();
     let tools = tools::build_tools(Arc::new(service.clone()));
     assert!(tools.iter().any(|tool| tool.name() == "get_overview"));
     assert_eq!(tools.len(), 5);
+    assert!(
+        tools
+            .iter()
+            .all(|tool| tool.name() != "set_instance_log_level"),
+        "a console without a control handle must not advertise the write tool"
+    );
     let value = tools::get_overview(
         &service,
         OverviewArgs {
@@ -433,5 +449,86 @@ async fn get_overview_tool_refuses_a_week_plus_a_day() {
     assert!(
         error.to_string().contains("10080-minute ceiling"),
         "{error}"
+    );
+}
+
+#[tokio::test]
+async fn set_instance_log_level_tool_applies_and_resets() {
+    let service = fixture_service_with_control();
+    let value = tools::set_instance_log_level(
+        &service,
+        InstanceLogLevelArgs {
+            instance_id: "dns-node-1".to_string(),
+            directives: Some("doggy_dns_nacos=debug".to_string()),
+            reset: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(value["stdout"], "doggy_dns_nacos=debug");
+    assert_eq!(value["otlp"], "doggy_dns_nacos=debug");
+
+    let detail = tools::get_instance_detail(
+        &service,
+        InstanceArgs {
+            instance_id: "dns-node-1".to_string(),
+            window_minutes: None,
+            from: None,
+            to: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(detail["runtime"]["logs"]["stdout"], "doggy_dns_nacos=debug");
+
+    let reset = tools::set_instance_log_level(
+        &service,
+        InstanceLogLevelArgs {
+            instance_id: "dns-node-1".to_string(),
+            directives: None,
+            reset: Some(true),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(reset["stdout"], "info");
+}
+
+#[tokio::test]
+async fn set_instance_log_level_rejects_both_and_neither() {
+    let service = fixture_service_with_control();
+    for (directives, reset) in [(Some("debug".to_string()), Some(true)), (None, None)] {
+        let error = tools::set_instance_log_level(
+            &service,
+            InstanceLogLevelArgs {
+                instance_id: "dns-node-1".to_string(),
+                directives,
+                reset,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, DataError::Invalid(_)),
+            "expected a rejection, got {error:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn set_instance_log_level_tool_is_registered_as_a_write() {
+    let service = fixture_service_with_control();
+    let tools = tools::build_tools(Arc::new(service));
+    assert_eq!(tools.len(), 6);
+    let tool = tools
+        .iter()
+        .find(|tool| tool.name() == "set_instance_log_level")
+        .expect("set_instance_log_level is registered");
+    assert!(!tool.is_read_only(), "a log-level change is a write");
+    assert!(!tool.is_concurrency_safe(), "writes must run one at a time");
+    assert!(
+        tool.description().contains("not the host"),
+        "the tool must tell the model to pass the exact id: {}",
+        tool.description()
     );
 }

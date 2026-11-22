@@ -56,6 +56,29 @@ function findTool(segments: Segment[], toolCallId: string): ToolSegment | undefi
   )
 }
 
+/** ADK answers a failed call with exactly `{"error": "..."}`; a successful
+ * payload may carry any shape, so only that single-key shape is a failure. */
+function toolResultStatus(content: string): ToolCallStatus {
+  try {
+    const parsed = JSON.parse(content) as unknown
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const record = parsed as Record<string, unknown>
+      const keys = Object.keys(record)
+      if (
+        keys.length === 1 &&
+        keys[0] === 'error' &&
+        typeof record.error === 'string' &&
+        record.error.length > 0
+      ) {
+        return 'error'
+      }
+    }
+  } catch {
+    // Non-JSON payloads are successful results.
+  }
+  return 'done'
+}
+
 /** A run that ends without answering an open call leaves the card pulsing forever. */
 export function settleRunningTools(segments: Segment[], status: ToolCallStatus): void {
   for (const segment of segments) {
@@ -128,8 +151,9 @@ export function applyAgUiEvent(segments: Segment[], event: AgUiEvent): void {
       // A held call resumes in a later run, so a result can name a call this panel
       // never saw; rebuild it rather than dropping the payload.
       const call = appendTool(segments, event)
-      call.result = String(event.content ?? '')
-      call.status = 'done'
+      const content = String(event.content ?? '')
+      call.result = content
+      call.status = toolResultStatus(content)
       break
     }
     case 'RUN_ERROR': {
@@ -196,18 +220,19 @@ export function messagesFromSessionEvents(events: SessionEvent[]): ChatMessage[]
       if (part.functionResponse) {
         assistant ??= pushAssistant(messages)
         const response = part.functionResponse
+        const result = jsonOf(response.response)
         const call = findTool(assistant.segments, part.id ?? '')
         if (call) {
-          call.result = jsonOf(response.response)
-          call.status = 'done'
+          call.result = result
+          call.status = toolResultStatus(result)
         } else {
           assistant.segments.push({
             kind: 'tool',
             toolCallId: part.id ?? messageId,
             name: response.name,
             args: '',
-            result: jsonOf(response.response),
-            status: 'done',
+            result,
+            status: toolResultStatus(result),
           })
         }
         return

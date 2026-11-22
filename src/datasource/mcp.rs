@@ -3,16 +3,17 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rmcp::model::{
-    CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation, ProtocolVersion,
+    CallToolRequestParams, ClientCapabilities, ClientConfig, ErrorCode, Implementation,
+    ProtocolVersion,
 };
-use rmcp::service::RunningService;
+use rmcp::service::{RunningService, ServiceError};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::{ClientLifecycleMode, ClientServiceExt, RoleClient};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::datasource::InstanceSource;
-use crate::domain::{Instance, InstanceDetail, PluginInfo};
+use crate::domain::{Instance, InstanceDetail, LogLevelChange, LogLevelState, PluginInfo};
 use crate::error::DataError;
 
 type McpClient = RunningService<RoleClient, ClientConfig>;
@@ -46,6 +47,17 @@ impl Probe {
 pub trait InstanceTransport: Send + Sync {
     async fn call(&self, endpoint: &str, tool: &str, args: Value) -> Result<Value, DataError>;
 
+    /// Call a tool that changes runtime state. The default keeps the read
+    /// path's behavior; real transports classify upstream validation errors.
+    async fn call_control(
+        &self,
+        endpoint: &str,
+        tool: &str,
+        args: Value,
+    ) -> Result<Value, DataError> {
+        self.call(endpoint, tool, args).await
+    }
+
     /// Call several no-argument tools on one endpoint. The default keeps the
     /// per-call behavior; real transports reuse a single MCP session so a
     /// detail view costs one handshake instead of one per tool.
@@ -62,6 +74,41 @@ pub trait InstanceTransport: Send + Sync {
             );
         }
         results
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CallKind {
+    Read,
+    Control,
+}
+
+impl CallKind {
+    fn wrap(self, message: String) -> DataError {
+        match self {
+            Self::Read => DataError::Upstream(message),
+            // Control failures reach the model, so keep the answer
+            // endpoint-free and generic; the transport detail stays in the log.
+            Self::Control => {
+                tracing::warn!(error = %message, "mcp control call failed");
+                DataError::Control("mcp control call failed; see the console log".to_string())
+            }
+        }
+    }
+
+    fn wrap_service(self, error: ServiceError, endpoint: &str, tool: &str) -> DataError {
+        match self {
+            Self::Read => DataError::Upstream(format!("mcp call {endpoint}/{tool}: {error}")),
+            Self::Control => match error {
+                ServiceError::McpError(mcp) if mcp.code == ErrorCode::INVALID_PARAMS => {
+                    DataError::Invalid(mcp.message.into_owned())
+                }
+                other => {
+                    tracing::warn!(endpoint, tool, error = %other, "mcp control call failed");
+                    DataError::Control("mcp control call failed; see the console log".to_string())
+                }
+            },
+        }
     }
 }
 
@@ -112,6 +159,18 @@ impl RmcpTransport {
         tool: &str,
         args: &Value,
     ) -> Result<Value, DataError> {
+        self.call_on_kind(client, endpoint, tool, args, CallKind::Read)
+            .await
+    }
+
+    async fn call_on_kind(
+        &self,
+        client: &McpClient,
+        endpoint: &str,
+        tool: &str,
+        args: &Value,
+        kind: CallKind,
+    ) -> Result<Value, DataError> {
         let arguments = args.as_object().cloned().unwrap_or_default();
         let result = tokio::time::timeout(
             self.timeout,
@@ -119,8 +178,8 @@ impl RmcpTransport {
                 .call_tool(CallToolRequestParams::new(tool.to_string()).with_arguments(arguments)),
         )
         .await
-        .map_err(|_| DataError::Upstream(format!("mcp call timeout: {endpoint}/{tool}")))?
-        .map_err(|error| DataError::Upstream(format!("mcp call {endpoint}/{tool}: {error}")))?;
+        .map_err(|_| kind.wrap(format!("mcp call timeout: {endpoint}/{tool}")))?
+        .map_err(|error| kind.wrap_service(error, endpoint, tool))?;
 
         if result.is_error == Some(true) {
             let message = result
@@ -129,7 +188,7 @@ impl RmcpTransport {
                 .find_map(|content| content.as_text())
                 .map(|text| text.text.clone())
                 .unwrap_or_else(|| "unknown mcp tool error".to_string());
-            return Err(DataError::Upstream(message));
+            return Err(kind.wrap(message));
         }
         if let Some(structured) = result.structured_content {
             return Ok(structured);
@@ -139,7 +198,7 @@ impl RmcpTransport {
             .iter()
             .find_map(|content| content.as_text())
             .map(|text| text.text.clone())
-            .ok_or_else(|| DataError::Upstream("mcp returned no text content".to_string()))?;
+            .ok_or_else(|| kind.wrap("mcp returned no text content".to_string()))?;
         match serde_json::from_str(&text) {
             Ok(value) => Ok(value),
             Err(_) => Ok(Value::String(text)),
@@ -152,6 +211,23 @@ impl InstanceTransport for RmcpTransport {
     async fn call(&self, endpoint: &str, tool: &str, args: Value) -> Result<Value, DataError> {
         let client = self.connect(endpoint).await.map_err(DataError::Upstream)?;
         let result = self.call_on(&client, endpoint, tool, &args).await;
+        let _ = client.cancel().await;
+        result
+    }
+
+    async fn call_control(
+        &self,
+        endpoint: &str,
+        tool: &str,
+        args: Value,
+    ) -> Result<Value, DataError> {
+        let client = self.connect(endpoint).await.map_err(|error| {
+            tracing::warn!(endpoint, error = %error, "mcp control connect failed");
+            DataError::Control("mcp control endpoint unreachable".to_string())
+        })?;
+        let result = self
+            .call_on_kind(&client, endpoint, tool, &args, CallKind::Control)
+            .await;
         let _ = client.cancel().await;
         result
     }
@@ -227,87 +303,170 @@ impl McpInstanceSource {
         instances
     }
 
-    pub async fn detail_at(&self, probes: &[Probe], id: &str) -> Result<InstanceDetail, DataError> {
+    /// The first probe whose `get_status` identifies `id` (or its host), with
+    /// the identity and the raw status payload. Unreachable or foreign probes
+    /// are logged and skipped, so a later endpoint can still answer.
+    async fn matched_status<'a>(
+        &self,
+        probes: &'a [Probe],
+        id: &str,
+        context: &'static str,
+    ) -> Option<(&'a Probe, Instance, Value)> {
         for probe in probes {
             let status = match self.status_at(&probe.endpoint).await {
                 Ok(status) => status,
                 Err(error) => {
-                    tracing::warn!(endpoint = %probe.endpoint, error = %error, "mcp detail unavailable");
+                    tracing::warn!(endpoint = %probe.endpoint, error = %error, "mcp {} unavailable", context);
                     continue;
                 }
             };
-            let Some(mut instance) = instance_from_status(&status) else {
+            let Some(instance) = instance_from_status(&status) else {
                 tracing::warn!(endpoint = %probe.endpoint, "mcp get_status missing instance identity");
                 continue;
             };
             if instance.id != id && instance.host != id {
                 continue;
             }
-            instance.mcp_reachable = true;
-            instance.online = true;
-
-            let mut auxiliary = self
-                .transport
-                .call_tools(
-                    &probe.endpoint,
-                    &["list_plugins", "get_config", "get_runtime_status"],
-                )
-                .await
-                .into_iter();
-            let plugins = auxiliary
-                .next()
-                .and_then(Result::ok)
-                .map(|value| plugins_from_value(&value))
-                .unwrap_or_default();
-            let config = auxiliary.next().and_then(Result::ok);
-            let config_toml = config
-                .as_ref()
-                .and_then(|value| value.get("content").and_then(Value::as_str))
-                .map(ToString::to_string);
-            let redacted_keys = config
-                .as_ref()
-                .map(|value| string_array(value, "redactedKeys"))
-                .unwrap_or_default();
-            let runtime = auxiliary.next().and_then(Result::ok);
-
-            return Ok(InstanceDetail {
-                instance,
-                pid: status
-                    .get("pid")
-                    .and_then(Value::as_u64)
-                    .and_then(|pid| u32::try_from(pid).ok()),
-                status: status
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .map(ToString::to_string),
-                uptime_seconds: status.get("uptimeSeconds").and_then(Value::as_u64),
-                started_at: status
-                    .get("startedAt")
-                    .and_then(Value::as_str)
-                    .map(ToString::to_string),
-                listen_addr: status
-                    .get("listenAddr")
-                    .and_then(Value::as_str)
-                    .map(ToString::to_string),
-                protocols: status
-                    .get("protocols")
-                    .and_then(Value::as_array)
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .map(ToString::to_string)
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                plugins,
-                config_toml,
-                redacted_keys,
-                runtime,
-                failure_count: None,
-            });
+            return Some((probe, instance, status));
         }
-        Err(DataError::NotFound(format!("instance {id}")))
+        None
+    }
+
+    /// Resolves an exact instance id to the probe a write should use. A host
+    /// alias is an invalid request; an answered probe with another identity is
+    /// not found; a probe set that never identified anyone is a control
+    /// failure, not an unknown instance.
+    async fn control_endpoint<'a>(
+        &self,
+        probes: &'a [Probe],
+        id: &str,
+    ) -> Result<&'a Probe, DataError> {
+        if probes.is_empty() {
+            return Err(DataError::NotFound(format!("instance {id}")));
+        }
+        let mut identified = false;
+        let mut host_alias = false;
+        for probe in probes {
+            let status = match self.status_at(&probe.endpoint).await {
+                Ok(status) => status,
+                Err(error) => {
+                    tracing::warn!(endpoint = %probe.endpoint, error = %error, "mcp control unavailable");
+                    continue;
+                }
+            };
+            let Some(instance) = instance_from_status(&status) else {
+                tracing::warn!(endpoint = %probe.endpoint, "mcp get_status missing instance identity");
+                continue;
+            };
+            identified = true;
+            if instance.id == id {
+                return Ok(probe);
+            }
+            if instance.host == id {
+                host_alias = true;
+            }
+        }
+        if host_alias {
+            return Err(DataError::Invalid(format!(
+                "pass the exact instance id, not the host alias {id}"
+            )));
+        }
+        if identified {
+            return Err(DataError::NotFound(format!("instance {id}")));
+        }
+        Err(DataError::Control(format!(
+            "instance {id} is not reachable at its control endpoint"
+        )))
+    }
+
+    pub async fn detail_at(&self, probes: &[Probe], id: &str) -> Result<InstanceDetail, DataError> {
+        let Some((probe, mut instance, status)) = self.matched_status(probes, id, "detail").await
+        else {
+            return Err(DataError::NotFound(format!("instance {id}")));
+        };
+        instance.mcp_reachable = true;
+        instance.online = true;
+
+        let mut auxiliary = self
+            .transport
+            .call_tools(
+                &probe.endpoint,
+                &["list_plugins", "get_config", "get_runtime_status"],
+            )
+            .await
+            .into_iter();
+        let plugins = auxiliary
+            .next()
+            .and_then(Result::ok)
+            .map(|value| plugins_from_value(&value))
+            .unwrap_or_default();
+        let config = auxiliary.next().and_then(Result::ok);
+        let config_toml = config
+            .as_ref()
+            .and_then(|value| value.get("content").and_then(Value::as_str))
+            .map(ToString::to_string);
+        let redacted_keys = config
+            .as_ref()
+            .map(|value| string_array(value, "redactedKeys"))
+            .unwrap_or_default();
+        let runtime = auxiliary.next().and_then(Result::ok);
+
+        Ok(InstanceDetail {
+            instance,
+            pid: status
+                .get("pid")
+                .and_then(Value::as_u64)
+                .and_then(|pid| u32::try_from(pid).ok()),
+            status: status
+                .get("status")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            uptime_seconds: status.get("uptimeSeconds").and_then(Value::as_u64),
+            started_at: status
+                .get("startedAt")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            listen_addr: status
+                .get("listenAddr")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            protocols: status
+                .get("protocols")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(ToString::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            plugins,
+            config_toml,
+            redacted_keys,
+            runtime,
+            failure_count: None,
+        })
+    }
+
+    pub async fn set_log_level_at(
+        &self,
+        probes: &[Probe],
+        id: &str,
+        change: LogLevelChange,
+    ) -> Result<LogLevelState, DataError> {
+        let probe = self.control_endpoint(probes, id).await?;
+        let args = match &change {
+            LogLevelChange::Set(directives) => json!({ "directives": directives }),
+            LogLevelChange::Reset => json!({ "reset": true }),
+        };
+        let state = self
+            .transport
+            .call_control(&probe.endpoint, "set_log_level", args)
+            .await?;
+        log_level_from_value(&state).ok_or_else(|| {
+            DataError::Control("mcp set_log_level returned an unexpected body".to_string())
+        })
     }
 }
 
@@ -370,6 +529,23 @@ fn instance_from_status(value: &Value) -> Option<Instance> {
     })
 }
 
+fn log_level_from_value(value: &Value) -> Option<LogLevelState> {
+    let object = value.as_object()?;
+    if !object.contains_key("stdout") || !object.contains_key("otlp") {
+        return None;
+    }
+    Some(LogLevelState {
+        stdout: value
+            .get("stdout")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        otlp: value
+            .get("otlp")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+    })
+}
+
 fn string_array(value: &Value, key: &str) -> Vec<String> {
     value
         .get(key)
@@ -405,4 +581,45 @@ fn plugins_from_value(value: &Value) -> Vec<PluginInfo> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use rmcp::model::ErrorData;
+    use rmcp::service::ServiceError;
+
+    use super::*;
+
+    #[test]
+    fn invalid_params_from_a_control_call_is_the_callers_error() {
+        let mapped = CallKind::Control.wrap_service(
+            ServiceError::McpError(ErrorData::invalid_params("bad directives", None)),
+            "http://node/mcp",
+            "set_log_level",
+        );
+        assert!(matches!(mapped, DataError::Invalid(message) if message == "bad directives"));
+    }
+
+    #[test]
+    fn other_control_failures_are_control_errors() {
+        let mapped = CallKind::Control.wrap_service(
+            ServiceError::TransportClosed,
+            "http://node/mcp",
+            "set_log_level",
+        );
+        assert!(matches!(
+            mapped,
+            DataError::Control(message) if message == "mcp control call failed; see the console log"
+        ));
+    }
+
+    #[test]
+    fn read_calls_keep_their_upstream_error() {
+        let mapped = CallKind::Read.wrap_service(
+            ServiceError::McpError(ErrorData::internal_error("boom", None)),
+            "http://node/mcp",
+            "get_status",
+        );
+        assert!(matches!(mapped, DataError::Upstream(_)));
+    }
 }

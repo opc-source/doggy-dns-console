@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use crate::datasource::{Clock, InstanceSource, TelemetrySource};
+use crate::datasource::{Clock, InstanceControl, InstanceSource, TelemetrySource};
 use crate::domain::{
-    FailureDetail, FailureFilter, FailureGroup, Instance, InstanceDetail, Overview, Range,
-    host_filter,
+    FailureDetail, FailureFilter, FailureGroup, Instance, InstanceDetail, LogLevelChange,
+    LogLevelState, Overview, Range, host_filter,
 };
 use crate::error::DataError;
 use crate::evidence::assemble::assemble;
@@ -14,6 +14,7 @@ pub struct ConsoleService {
     telemetry: Arc<dyn TelemetrySource>,
     instances: Arc<dyn InstanceSource>,
     clock: Arc<dyn Clock>,
+    control: Option<Arc<dyn InstanceControl>>,
 }
 
 impl ConsoleService {
@@ -26,7 +27,19 @@ impl ConsoleService {
             telemetry,
             instances,
             clock,
+            control: None,
         }
+    }
+
+    /// Attach the runtime-control surface; without it the console stays
+    /// read-only and `set_log_level` answers [`DataError::NotConfigured`].
+    pub fn with_control(mut self, control: Arc<dyn InstanceControl>) -> Self {
+        self.control = Some(control);
+        self
+    }
+
+    pub fn control_enabled(&self) -> bool {
+        self.control.is_some()
     }
 
     /// The single source of truth for "now" behind every resolved bracket, so
@@ -83,6 +96,22 @@ impl ConsoleService {
 
     pub async fn instances(&self) -> Result<Vec<Instance>, DataError> {
         self.instances.list().await
+    }
+
+    pub async fn set_log_level(
+        &self,
+        id: &str,
+        change: LogLevelChange,
+    ) -> Result<LogLevelState, DataError> {
+        self.control
+            .as_ref()
+            .ok_or_else(|| {
+                DataError::NotConfigured(
+                    "runtime log control is disabled; set MCP_TOKEN to enable it".to_string(),
+                )
+            })?
+            .set_log_level(id, change)
+            .await
     }
 
     pub async fn instance_detail(

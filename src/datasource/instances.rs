@@ -5,9 +5,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::datasource::mcp::{McpInstanceSource, Probe};
-use crate::datasource::{Clock, InstanceSource, TelemetrySource};
+use crate::datasource::{Clock, InstanceControl, InstanceSource, TelemetrySource};
 use crate::domain::{
-    Instance, InstanceDetail, InstanceIdentity, MatchQuality, MatchedInstance, SeenInstance, Window,
+    Instance, InstanceDetail, InstanceIdentity, LogLevelChange, LogLevelState, MatchQuality,
+    MatchedInstance, SeenInstance, Window,
 };
 use crate::error::DataError;
 
@@ -201,6 +202,20 @@ impl InstanceSource for MergedInstanceSource {
             })),
             Err(error) => Err(error),
         }
+    }
+}
+
+#[async_trait]
+impl InstanceControl for MergedInstanceSource {
+    async fn set_log_level(
+        &self,
+        id: &str,
+        change: LogLevelChange,
+    ) -> Result<LogLevelState, DataError> {
+        let seen = self.seen().await;
+        self.mcp
+            .set_log_level_at(&self.detail_probes(&seen, id), id, change)
+            .await
     }
 }
 

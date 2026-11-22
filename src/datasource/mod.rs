@@ -5,7 +5,8 @@ pub mod openobserve;
 
 use crate::domain::{
     FailureDetail, FailureFilter, FailureGroup, Instance, InstanceDetail, InstanceIdentity,
-    MatchQuality, MatchedInstance, Overview, Range, SeenInstance, Window, WindowMetrics,
+    LogLevelChange, LogLevelState, MatchQuality, MatchedInstance, Overview, Range, SeenInstance,
+    Window, WindowMetrics,
 };
 use crate::error::DataError;
 use async_trait::async_trait;
@@ -124,4 +125,17 @@ pub trait InstanceSource: Send + Sync {
             Err(error) => Err(error),
         }
     }
+}
+
+/// Runtime control, separate from the read-only [`InstanceSource`] contract so
+/// a source can be wired for observation without also gaining writes.
+#[async_trait]
+pub trait InstanceControl: Send + Sync {
+    /// Replace or restore the process's log filters. `id` must be the exact
+    /// instance id (for example `host-pid`), not a host alias.
+    async fn set_log_level(
+        &self,
+        id: &str,
+        change: LogLevelChange,
+    ) -> Result<LogLevelState, DataError>;
 }

@@ -6,7 +6,8 @@ use doggy_dns_console::agent::build_agent;
 use doggy_dns_console::api::state::Probe;
 use doggy_dns_console::config::Config;
 use doggy_dns_console::datasource::fixture::FixtureSource;
-use doggy_dns_console::datasource::{FixedClock, InstanceSource, TelemetrySource};
+use doggy_dns_console::datasource::{FixedClock, InstanceControl, InstanceSource, TelemetrySource};
+use doggy_dns_console::domain::{LogLevelChange, LogLevelState};
 use doggy_dns_console::error::DataError;
 use doggy_dns_console::server::{AppDeps, build_app};
 use doggy_dns_console::service::ConsoleService;
@@ -26,6 +27,21 @@ struct FailingProbe;
 impl Probe for FailingProbe {
     async fn probe(&self) -> Result<(), DataError> {
         Err(DataError::Upstream("mcp down".to_string()))
+    }
+}
+
+struct FailingControl;
+
+#[async_trait]
+impl InstanceControl for FailingControl {
+    async fn set_log_level(
+        &self,
+        _id: &str,
+        _change: LogLevelChange,
+    ) -> Result<LogLevelState, DataError> {
+        Err(DataError::Control(
+            "instance dns-node-1 is not reachable at its control endpoint".to_string(),
+        ))
     }
 }
 
@@ -167,5 +183,93 @@ async fn overview_works_when_openobserve_mcp_is_down() {
         .await
         .unwrap();
     assert_eq!(connections["openobserveMcp"]["ok"], false);
+    handle.abort();
+}
+
+/// The SSE event the drawer consumes must carry the tool's specific failure,
+/// not ADK's default `tool.internal (tool.legacy)` code.
+#[tokio::test]
+async fn run_sse_returns_the_specific_control_failure() {
+    use adk_rust::model::{ScriptedLlm, ScriptedResponse};
+    use adk_rust::session::InMemorySessionService;
+
+    let clock = Arc::new(FixedClock(1_761_436_800_000));
+    let fixture = Arc::new(FixtureSource::new(clock.clone()));
+    let telemetry = fixture.clone() as Arc<dyn TelemetrySource>;
+    let instances = fixture.clone() as Arc<dyn InstanceSource>;
+    let service = Arc::new(
+        ConsoleService::new(telemetry, instances.clone(), clock.clone())
+            .with_control(Arc::new(FailingControl)),
+    );
+    let model: Arc<dyn adk_rust::prelude::Llm> = Arc::new(ScriptedLlm::new(
+        "test",
+        [
+            ScriptedResponse::function_call(
+                "set_instance_log_level",
+                serde_json::json!({
+                    "instanceId": "dns-node-1",
+                    "reset": true
+                }),
+            ),
+            ScriptedResponse::text("调整失败。"),
+        ],
+    ));
+    let deps = AppDeps {
+        service,
+        instances,
+        model: model.clone(),
+        sessions: Arc::new(InMemorySessionService::new()),
+        extra_tools: Vec::new(),
+        openobserve_health: Arc::new(Healthy),
+        openobserve_mcp_health: None,
+        model_configured: true,
+        analysis: None,
+    };
+    let app = build_app(config(), deps).await.unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!(
+            "{base}/api/apps/doggy-dns-console/users/local/sessions"
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+    let body = serde_json::json!({
+        "appName": "doggy-dns-console",
+        "userId": "local",
+        "sessionId": session_id,
+        "newMessage": { "role": "user", "parts": [{ "text": "把日志级别改成 debug 并重置" }] },
+        "uiProtocol": "ag_ui",
+        "uiTransport": "protocol_native"
+    });
+    let text = client
+        .post(format!("{base}/api/run_sse"))
+        .header("x-adk-ui-protocol", "ag_ui")
+        .header("x-adk-ui-transport", "protocol_native")
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert!(text.contains("\"type\":\"TOOL_CALL_RESULT\""), "{text}");
+    assert!(
+        text.contains("instance dns-node-1 is not reachable at its control endpoint"),
+        "the SSE result must carry the specific failure: {text}"
+    );
     handle.abort();
 }

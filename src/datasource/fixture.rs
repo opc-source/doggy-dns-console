@@ -1,22 +1,37 @@
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::datasource::{Clock, InstanceSource, TelemetrySource};
+use crate::datasource::{Clock, InstanceControl, InstanceSource, TelemetrySource};
 use crate::domain::{
-    FailureDetail, FailureFilter, FailureGroup, Instance, InstanceDetail, LogRecord, MetricCounts,
-    Overview, PluginInfo, Range, SeenInstance, SeriesPoint, SpanRecord, Window, WindowMetrics,
+    FailureDetail, FailureFilter, FailureGroup, Instance, InstanceDetail, LogLevelChange,
+    LogLevelState, LogRecord, MetricCounts, Overview, PluginInfo, Range, SeenInstance, SeriesPoint,
+    SpanRecord, Window, WindowMetrics,
 };
 use crate::error::DataError;
 
 pub struct FixtureSource {
     clock: Arc<dyn Clock>,
+    log_level: Mutex<BTreeMap<String, LogLevelState>>,
 }
 
 impl FixtureSource {
     pub fn new(clock: Arc<dyn Clock>) -> Self {
-        Self { clock }
+        Self {
+            clock,
+            log_level: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    fn log_state(&self, id: &str) -> LogLevelState {
+        self.log_level
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .unwrap_or_else(default_log_level)
     }
 
     /// Eight rows spread from 10 minutes to 8 days across three hosts plus one
@@ -365,6 +380,7 @@ impl InstanceSource for FixtureSource {
             .into_iter()
             .find(|instance| instance.id == id || instance.host == id)
             .ok_or_else(|| DataError::NotFound(format!("instance {id}")))?;
+        let logs = self.log_state(&instance.id);
         Ok(InstanceDetail {
             instance,
             pid: Some(4242),
@@ -405,7 +421,8 @@ impl InstanceSource for FixtureSource {
                 "signals": {
                     "nacos.nacos.local": {"cachedServices": 42, "lastPushSecondsAgo": 3},
                     "xdp": {"attached": true}
-                }
+                },
+                "logs": logs
             })),
             failure_count: None,
         })
@@ -426,5 +443,43 @@ fn instance(
         online,
         last_seen,
         mcp_reachable,
+    }
+}
+
+#[async_trait]
+impl InstanceControl for FixtureSource {
+    async fn set_log_level(
+        &self,
+        id: &str,
+        change: LogLevelChange,
+    ) -> Result<LogLevelState, DataError> {
+        let instance = self
+            .list()
+            .await?
+            .into_iter()
+            .find(|instance| instance.id == id)
+            .ok_or_else(|| DataError::NotFound(format!("instance {id}")))?;
+        let mut state = self.log_level.lock().unwrap();
+        match change {
+            LogLevelChange::Set(directives) => {
+                let next = LogLevelState {
+                    stdout: Some(directives.clone()),
+                    otlp: Some(directives),
+                };
+                state.insert(instance.id.clone(), next.clone());
+                Ok(next)
+            }
+            LogLevelChange::Reset => {
+                state.remove(&instance.id);
+                Ok(default_log_level())
+            }
+        }
+    }
+}
+
+fn default_log_level() -> LogLevelState {
+    LogLevelState {
+        stdout: Some("info".to_string()),
+        otlp: Some("info".to_string()),
     }
 }

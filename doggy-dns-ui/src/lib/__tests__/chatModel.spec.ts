@@ -166,3 +166,49 @@ describe('messagesFromSessionEvents', () => {
     expect(messagesFromSessionEvents([modelEvent('e1', [{}])])).toEqual([])
   })
 })
+
+describe('tool failure status', () => {
+  it('marks a failed TOOL_CALL_RESULT as an error', () => {
+    const segments = feed([
+      { type: 'TOOL_CALL_START', toolCallId: 'c1', toolCallName: 'set_instance_log_level' },
+      {
+        type: 'TOOL_CALL_RESULT',
+        toolCallId: 'c1',
+        content: '{"error":"tool.unavailable: instance down"}',
+      },
+    ])
+
+    expect(statusAt(segments, 0)).toBe('error')
+  })
+
+  it('replays a failed function response as an error', () => {
+    const messages = messagesFromSessionEvents([
+      modelEvent('e1', [
+        {
+          functionResponse: {
+            name: 'set_instance_log_level',
+            response: { error: 'tool.unavailable: instance down' },
+          },
+          id: 'tc_0',
+        },
+      ]),
+    ])
+
+    expect(messages[0]?.segments[0]).toMatchObject({ kind: 'tool', status: 'error' })
+  })
+})
+
+describe('tool failure heuristic', () => {
+  it('leaves a data-bearing payload with an error field alone', () => {
+    const segments = feed([
+      { type: 'TOOL_CALL_START', toolCallId: 'c3', toolCallName: 'openobserve_search_sql' },
+      {
+        type: 'TOOL_CALL_RESULT',
+        toolCallId: 'c3',
+        content: '{"error":"warning","rows":[]}',
+      },
+    ])
+
+    expect(statusAt(segments, 0)).toBe('done')
+  })
+})

@@ -10,6 +10,8 @@ pub enum DataError {
     NotConfigured(String),
     #[error("rate limited: {0}")]
     RateLimited(String),
+    #[error("control failed: {0}")]
+    Control(String),
     #[error("internal: {0}")]
     Internal(String),
 }

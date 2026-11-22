@@ -2,11 +2,12 @@ use std::sync::Arc;
 
 use adk_rust::prelude::{AdkError, Tool, ToolContext};
 use adk_rust::tool::StatefulTool;
+use adk_rust::{ErrorCategory, ErrorComponent, TOOL_INVALID_ARGUMENTS_CODE};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::domain::{FailureFilter, Range, host_filter};
+use crate::domain::{FailureFilter, LogLevelChange, Range, host_filter};
 use crate::error::DataError;
 use crate::service::ConsoleService;
 
@@ -73,6 +74,17 @@ pub struct InstanceArgs {
     pub to: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceLogLevelArgs {
+    pub instance_id: String,
+    /// EnvFilter-style directives, e.g. `doggy_dns_nacos=debug`; mutually
+    /// exclusive with `reset`.
+    pub directives: Option<String>,
+    /// Restore the startup filters; mutually exclusive with `directives`.
+    pub reset: Option<bool>,
+}
+
 pub struct ConsoleTools {
     pub service: Arc<ConsoleService>,
 }
@@ -136,9 +148,19 @@ pub async fn get_instance_detail(
     serde_json::to_value(detail).map_err(|error| DataError::Invalid(error.to_string()))
 }
 
+pub async fn set_instance_log_level(
+    service: &ConsoleService,
+    args: InstanceLogLevelArgs,
+) -> Result<Value, DataError> {
+    let change =
+        LogLevelChange::from_parts(args.directives, args.reset).map_err(DataError::Invalid)?;
+    let state = service.set_log_level(&args.instance_id, change).await?;
+    serde_json::to_value(state).map_err(|error| DataError::Invalid(error.to_string()))
+}
+
 pub fn build_tools(service: Arc<ConsoleService>) -> Vec<Arc<dyn Tool>> {
     let state = Arc::new(ConsoleTools { service });
-    vec![
+    let mut tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(
             StatefulTool::new(
                 "get_overview",
@@ -194,7 +216,23 @@ pub fn build_tools(service: Arc<ConsoleService>) -> Vec<Arc<dyn Tool>> {
             .with_read_only(true)
             .with_concurrency_safe(true),
         ),
-    ]
+    ];
+    // A console without a control handle must not advertise a write the
+    // service will refuse; the prompt keys off the tool's absence.
+    if state.service.control_enabled() {
+        tools.push(Arc::new(
+            StatefulTool::new(
+                "set_instance_log_level",
+                "Change one doggy-dns instance's runtime log filters. Call only when the operator explicitly asks to change logging; read the current filters with get_instance_detail first, and restate the directives you are applying. instanceId must be the exact id reported by list_instances or get_instance_detail (for example \"host-pid\"), not the host. Pass exactly one of directives (EnvFilter-style, e.g. \"doggy_dns_nacos=debug,hickory_proto=info\") or reset=true (restore the startup filters). The change is non-destructive, idempotent and does not persist across a restart; it affects both stdout and OTLP logs.",
+                state.clone(),
+                tool_set_instance_log_level,
+            )
+            .with_parameters_schema::<InstanceLogLevelArgs>()
+            .with_read_only(false)
+            .with_concurrency_safe(false),
+        ));
+    }
+    tools
 }
 
 async fn tool_get_overview(
@@ -245,11 +283,95 @@ async fn tool_instance_detail(
         .map_err(to_adk)
 }
 
+async fn tool_set_instance_log_level(
+    state: Arc<ConsoleTools>,
+    _ctx: Arc<dyn ToolContext>,
+    args: Value,
+) -> Result<Value, AdkError> {
+    let args = parse(args)?;
+    set_instance_log_level(&state.service, args)
+        .await
+        .map_err(to_adk)
+}
+
 fn parse<T: for<'de> Deserialize<'de>>(args: Value) -> Result<T, AdkError> {
     serde_json::from_value(args)
         .map_err(|error| AdkError::tool(format!("invalid arguments: {error}")))
 }
 
 fn to_adk(error: DataError) -> AdkError {
-    AdkError::tool(error.to_string())
+    match error {
+        DataError::Invalid(message) => AdkError::new(
+            ErrorComponent::Tool,
+            ErrorCategory::InvalidInput,
+            TOOL_INVALID_ARGUMENTS_CODE,
+            message,
+        ),
+        DataError::NotFound(message) => AdkError::new(
+            ErrorComponent::Tool,
+            ErrorCategory::NotFound,
+            "tool.not_found",
+            message,
+        ),
+        DataError::NotConfigured(message) => AdkError::new(
+            ErrorComponent::Tool,
+            ErrorCategory::Unavailable,
+            "tool.not_configured",
+            message,
+        ),
+        DataError::Control(message) => AdkError::new(
+            ErrorComponent::Tool,
+            ErrorCategory::Unavailable,
+            "tool.control_failed",
+            message,
+        ),
+        DataError::Upstream(message) => AdkError::new(
+            ErrorComponent::Tool,
+            ErrorCategory::Unavailable,
+            "tool.upstream",
+            message,
+        ),
+        DataError::RateLimited(message) => AdkError::new(
+            ErrorComponent::Tool,
+            ErrorCategory::RateLimited,
+            "tool.rate_limited",
+            message,
+        ),
+        DataError::Internal(message) => AdkError::new(
+            ErrorComponent::Tool,
+            ErrorCategory::Internal,
+            "tool.internal",
+            message,
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use adk_rust::{ErrorCategory, TOOL_INVALID_ARGUMENTS_CODE};
+
+    #[test]
+    fn invalid_errors_are_model_actionable_arguments_errors() {
+        let error = to_adk(DataError::Invalid("bad directives".to_string()));
+        assert_eq!(error.category, ErrorCategory::InvalidInput);
+        assert_eq!(error.code, TOOL_INVALID_ARGUMENTS_CODE);
+        assert_eq!(error.message, "bad directives");
+    }
+
+    #[test]
+    fn not_found_is_a_rejection_with_its_message() {
+        let error = to_adk(DataError::NotFound("instance missing".to_string()));
+        assert_eq!(error.category, ErrorCategory::NotFound);
+        assert_eq!(error.code, "tool.not_found");
+        assert_eq!(error.message, "instance missing");
+    }
+
+    #[test]
+    fn control_failures_are_unavailable() {
+        let error = to_adk(DataError::Control("instance down".to_string()));
+        assert_eq!(error.category, ErrorCategory::Unavailable);
+        assert_eq!(error.code, "tool.control_failed");
+        assert_eq!(error.message, "instance down");
+    }
 }

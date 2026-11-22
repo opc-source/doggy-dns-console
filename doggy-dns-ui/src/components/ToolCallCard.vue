@@ -36,7 +36,10 @@ function cap(value: string): string {
 </script>
 
 <template>
-  <details class="rounded-xl border border-border bg-surface-2/60 px-3 py-2 text-xs">
+  <details
+    :open="call.status === 'error'"
+    class="rounded-xl border border-border bg-surface-2/60 px-3 py-2 text-xs"
+  >
     <summary class="flex cursor-pointer list-none items-center gap-2">
       <span
         class="h-1.5 w-1.5 rounded-full"
@@ -46,7 +49,9 @@ function cap(value: string): string {
       <span class="rounded-full border border-border px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-muted">
         {{ label }}
       </span>
-      <span class="ml-auto text-[10px] text-muted">{{ call.status }}</span>
+      <span class="ml-auto text-[10px]" :class="call.status === 'error' ? 'text-error' : 'text-muted'">
+        {{ call.status }}
+      </span>
     </summary>
     <div class="mt-2 space-y-2">
       <pre
@@ -56,7 +61,8 @@ function cap(value: string): string {
       >{{ args }}</pre>
       <pre
         v-if="result"
-        class="mono max-h-40 overflow-auto whitespace-pre-wrap break-all text-[10px] text-text/80"
+        class="mono max-h-40 overflow-auto whitespace-pre-wrap break-all text-[10px]"
+        :class="call.status === 'error' ? 'text-error' : 'text-text/80'"
         data-test="tool-result"
       >{{ result }}</pre>
     </div>
